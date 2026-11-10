@@ -318,8 +318,8 @@ pub const LOADER_ABI_MINOR: u16 = 0;
 pub const STUB_RAM: u32 = 0x3871_EEC0; pub const STUB_RAM_SIZE: u32 = 0x1000;
 pub const LOADER_SIZE: u32 = 0x1_0000; pub const APP_SIZE: u32 = 0x2_0000;
 pub const E_BAD: i32 = -2; pub const E_IO: i32 = -5; pub const E_NOMEM: i32 = -12;
-pub fn slot_path(slot: u8, tmp: bool) -> [u8; 24];    // b"/NAND:C/wp2apps/L.pkg\0", b"/NAND:C/wp2apps/3.tmp\0"
-pub const DIR: &[u8] = b"/NAND:C/wp2apps\0";
+pub fn slot_path(slot: u8, tmp: bool) -> [u8; 24];    // b"/NAND:/wp2apps/L.pkg\0", b"/NAND:/wp2apps/3.tmp\0"
+pub const DIR: &[u8] = b"/NAND:/wp2apps\0";
 #[repr(C)] pub struct StubRam {
     pub magic: u32, pub loader_state: u8, pub loader_active: u8, pub running_slot: u8, pub xfer_state: u8,
     pub xfer_slot: u8, pub _pad: [u8; 3], pub xfer_size: u32, pub xfer_crc: u32, pub xfer_written: u32,
@@ -640,7 +640,7 @@ Expected: FAIL — нет `link`, нет `proto`.
 
 - [ ] **Step 3: Implement `proto.rs`, `ble.rs`, P3, `link.py`, `h4.py`, `install.py`, CLI**
 
-При первом `BEGIN` заглушка создаёт каталог через `fs::mkdir(DIR)`, `-17` (EEXIST) не считается ошибкой. Если в задаче 4 указатель mkdir оказался нулевым, вместо каталога используются имена `/NAND:C/wp2apps-<slot>.pkg` в корне `/NAND:C`: `slot_path` меняется в одном месте и попадает в Rulings.
+При первом `BEGIN` заглушка создаёт каталог через `fs::mkdir(DIR)`, `-17` (EEXIST) не считается ошибкой. Каталог — `/NAND:/wp2apps` (FAT; `/NAND:A…K`, включая `/NAND:C`, только для чтения — разведка задачи 4).
 
 - [ ] **Step 4: Run unit tests**
 
