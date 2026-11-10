@@ -5,3 +5,4 @@ __pycache__/
 *.bin
 *.wp2app
 .DS_Store
+/sdk/target/
