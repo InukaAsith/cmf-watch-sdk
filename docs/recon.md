@@ -269,3 +269,23 @@ resources (labels and icons come from vendor `/NAND:A` resources).
 - `0x804D` shows the "ble_connect" popup and sets `set_autosleep_time:5000`.
 - With the clock off by more than 2 minutes, `0x8004` time sync makes the stock app log `TIMESTAMP OVER 2min
   RECOVERED` and reboot through a factory recovery; the host handshake skips `0x8004`.
+
+## Plan 2, task 7: app thread, time, crown and touch
+
+Ghidra (`scripts/recon/decomp`) on `0x101BE1A2`, `0x10146060`, `0x10105C90`, `0x1019B2D8`, `0x1018B234`, the knob
+functions below; disassembly of `0x101842A4`, `0x101BA1C8`, `0x101DB2A6`, `0x1019B7E0`, `0x100D5C90`. Probes:
+`runs/e2e/task7-probe{1,2,3}.log`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| `os_thread_create(buf, size, entry, p1, p2, p3, prio, options, delay_ms)` | `0x101BE1A3` → `k_thread_create(buf, buf + 0x118, size − 0x118, …)`, delay `-1` = never, returns the thread; entry gets `(p1, p2, p3)` | high |
+| `k_thread_abort(tid)` | **`0x10105C91`**: `z_thread_entry` (`0x101BA1C8`) calls it with `k_current_get()` (`0x1019B2CD`) after the entry returns; it unpends, aborts the timeout and unlinks the thread. `0x1019B2D8` is a bool "current thread is preemptible" check, not abort | high |
+| Thread priorities | stock thread table `0x100003A0` (0x1C B: name, stack, `u16` size, `u8` prio at `+0xA`, p1..p3, entry): created at `-16`, then `k_thread_priority_set(+0xA)`. `ui_service` **3** (its loop `0x1018B234` runs the view messages, so view procs, LVGL timers and event callbacks), `lvglworkq` 2 (`k_work_queue_start` at `0x101842BC`), `bluetooth` 2, `media` 1, `gps_service` 4, `sensor_service` 5, `logsrv` 0xB, `vendor`/`ble_fate`/`wewear`/`wewear_ftp` 0xD. Apps run at **4** | high |
+| Time | `sys_clock_tick_get()` `0x1019B7E1` returns `u64` ticks; 1 tick = 1 ms (`os_sleep(ms)` hands ms to `k_sleep` unscaled; the shell `uptime` prints the same value as ms via `0x101DB2A6`) | high |
+| Crown rotation | `view_key 0xFFFF006F/6E` reaches only list views. Any other view gets rotation only through an LVGL object registered as the display's knob object: `lv_obj_add_event_cb(obj, cb, 0x2D, …)` registers it (`0x10125A94` → `lv_disp_add_knob_obj` `0x10128C50`; also `lv_obj_add_flag` bit 30), and the object then gets event `0x2D` whose param points to the `i32` step. `lv_obj_del` unregisters it (`0x1012C644` → `0x10127D14`). The loader maps step > 0 to `+1`; `r 80` → `0x6F` (+1) in a list view, the sign of `0x2D` itself is not observed | high / sign low |
+| Event callback filter | filter 0 (`LV_EVENT_ALL`) also delivers every draw event (`0x12`–`0x2C`) each frame and does not register the knob; the loader registers one callback per code (1 `PRESSED`, 8 `RELEASED`, `0x2D`) | high |
+| Short tap | `PRESSED` at `(200, 140)` but `RELEASED` reports y = 103 for a 125 ms tap (correct after a 0.5 s hold): the menu starts the row that was pressed. Apps see `TOUCH_UP` with that point | high (emulator) |
+| Button | unhandled `0x20000001` is ignored; unhandled `0x04000001` makes the stock jump back to the clock (`view_stack: jump 240 -> 16`). The loader handles `0x04000001` only while an app runs | high |
+| `OPEN_VIEW(0x10, 0)` | jumps the view stack to the clock and deletes view 0xF0 (msg 4) | high |
+| Block placement | opening 0xF0 deletes the face, and the loader (`0x380A9A38`) and app (`0x380A9678`) take the freed face region every time; a block allocated from outside while the face shows cannot move the loader. A block of `app_size` allocated with the menu open moves the app (`0x380A9758`) | high (emulator) |
+| Screen-off after BLE | the panel blanks ~5.7 s after `Ble wake lock 0` (the install connection closing) although `keep_awake` set the timeout to `0xFFFFFFFF`; with the screen off no thread enters `os_mutex_lock` and `emu.call` hangs. `HelloTest.ready` waits for it and wakes the watch with the button | medium |

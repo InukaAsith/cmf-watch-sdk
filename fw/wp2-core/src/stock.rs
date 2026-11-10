@@ -15,6 +15,10 @@ pub const FS_RENAME: u32 = 0x10107705;
 
 pub const OS_THREAD_CREATE: u32 = 0x101BE1A3;
 pub const OS_SLEEP: u32 = 0x101BE1ED;
+// z_thread_entry calls it with k_current_get() after the entry returns
+pub const K_THREAD_ABORT: u32 = 0x10105C91;
+// u64 ticks, CONFIG_SYS_CLOCK_TICKS_PER_SEC 1000 (os_sleep passes ms to k_sleep unscaled)
+pub const SYS_CLOCK_TICK_GET: u32 = 0x1019B7E1;
 pub const VIEW_OPEN: u32 = 0x101898BD;
 // posts "layout" for a view id; a preload handler returns it, else msg 3 never comes
 pub const VIEW_LAYOUT: u32 = 0x101D72FF;

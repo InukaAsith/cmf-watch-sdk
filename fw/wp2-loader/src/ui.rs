@@ -1,5 +1,6 @@
 use core::ffi::c_void;
 use core::ptr::{addr_of_mut, null, null_mut};
+use core::sync::atomic::AtomicBool;
 use wp2_core::gfx::{Canvas, H, W};
 use wp2_core::heap::{self, FB};
 use wp2_core::layout::E_NOMEM;
@@ -11,15 +12,14 @@ const CF_TRUE_COLOR: u32 = 4;
 const FLAG_CLICKABLE: u32 = 2;
 pub const PRESSED: u32 = 1;
 pub const RELEASED: u32 = 8;
+// vendor event: param points to the i32 crown step
+pub const KNOB: u32 = 0x2D;
 
 pub type Cb = extern "C" fn(*mut c_void);
 type Obj = *mut c_void;
 
-macro_rules! stock {
-    ($addr:expr, fn($($t:ty),*) $(-> $r:ty)?) => {
-        unsafe { core::mem::transmute::<usize, extern "C" fn($($t),*) $(-> $r)?>($addr as usize) }
-    };
-}
+// set by the menu and the app's present(); the tick invalidates the image
+pub static DIRTY: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct ImgDsc {
@@ -55,14 +55,17 @@ pub fn preload(view_id: u32) -> i32 {
     rc
 }
 
-pub fn layout(data: *mut c_void, touch: Cb, tick: Cb) -> i32 {
+pub fn layout(data: *mut c_void, input: Cb, tick: Cb) -> i32 {
     let u = ui();
     let scr = stock!(LV_DISP_GET_SCR_ACT, fn(*mut c_void) -> Obj)(unsafe { *(data as *const *mut c_void) });
     u.dsc = ImgDsc { header: CF_TRUE_COLOR | (W as u32) << 10 | (H as u32) << 21, data_size: FB_BYTES, data: u.fb };
     u.img = stock!(LV_IMG_CREATE, fn(Obj) -> Obj)(scr);
     stock!(LV_IMG_SET_SRC, fn(Obj, *const ImgDsc))(u.img, &u.dsc);
     stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(u.img, FLAG_CLICKABLE);
-    stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, *mut c_void) -> *mut c_void)(u.img, touch, 0, null_mut());
+    // a KNOB filter also registers the image as the display's knob object (crown events), docs/recon.md
+    for filter in [PRESSED, RELEASED, KNOB] {
+        stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, *mut c_void) -> *mut c_void)(u.img, input, filter, null_mut());
+    }
     u.timer = stock!(LV_TIMER_CREATE, fn(Cb, u32, *mut c_void) -> *mut c_void)(tick, 20, null_mut());
     0
 }
@@ -95,6 +98,11 @@ pub fn canvas() -> Canvas<'static> {
 
 pub fn event_code(e: *mut c_void) -> u32 {
     stock!(LV_EVENT_GET_CODE, fn(*mut c_void) -> u32)(e)
+}
+
+pub fn knob_step(e: *mut c_void) -> i32 {
+    let p = stock!(LV_EVENT_GET_PARAM, fn(*mut c_void) -> *const i32)(e);
+    if p.is_null() { 0 } else { unsafe { *p } }
 }
 
 // For PRESSED/RELEASED the event parameter is the active indev.

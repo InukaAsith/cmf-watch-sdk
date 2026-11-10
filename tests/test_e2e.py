@@ -284,3 +284,174 @@ class AppListTest(unittest.TestCase):
             self.assertNotIn("MllcFailedHook", uart)
             self.assertNotIn("ZEPHYR FATAL ERROR", uart)
             self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
+
+
+def pixel(rgb: bytes, w: int, x: int, y: int) -> tuple[int, int, int]:
+    return tuple(rgb[3 * (y * w + x):3 * (y * w + x) + 3])
+
+
+ROW0 = (90, 120, 300, 40)
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class HelloTest(unittest.TestCase):
+    def ready(self, emu):
+        """Closes the "Paired" popup, then waits out the screen-off that follows the BLE disconnect: the panel
+        blanks ~5.7 s after "Ble wake lock 0" despite keep_awake (e2e runs 3-5), and an idle guest stalls emu.call."""
+        emu.keep_awake()
+        for _ in range(3):
+            if not emu.peek(POPUP_FLAGS, 1)[0] & 3:
+                break
+            emu.send("c 1", "c 0", pause=2)
+        else:
+            raise RuntimeError("stock popup is still open")
+        for _ in range(60):
+            uart = emu.uart()
+            if uart.rfind("Ble wake lock 0") > uart.rfind("Ble wake lock 1"):
+                break
+            emu.sleep(0.5)
+        emu.sleep(8)
+        uart = emu.uart()
+        if uart.rfind("view_cache: deinit") > uart.rfind("view_cache: init"):
+            emu.send("c 1", "c 0", pause=2)  # wakes the screen on the face
+        emu.keep_awake()
+
+    def open_menu(self, emu):
+        emu.call(harness.OPEN_VIEW, 0xF0, 0)
+        emu.sleep(2)
+        self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")  # loader loaded, active
+
+    def tap_row0(self, emu, pause=2):
+        emu.send("t 1 200 140", "t 0 200 140", pause=pause)
+
+    def assert_hello(self, emu, slot=0) -> int:
+        self.assertEqual(emu.peek(START + 6, 1), bytes([slot]))  # running_slot
+        block = harness.u32(emu, START + harness.APP_BLOCK_OFF)
+        self.assertTrue(0x380A9340 <= block < START, hex(block))
+        w, h, rgb = emu.frame()
+        self.assertEqual(pixel(rgb, w, 233, 100), (0, 0, 0))  # black background
+        self.assertGreater(bright_pixels(rgb, w, (213, 225, 60, 20)), 20)  # "hello" near the centre
+        return block
+
+    def assert_menu(self, emu):
+        self.assertEqual(emu.peek(START + 6, 1), b"\xff")
+        self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+        w, h, rgb = emu.frame()
+        self.assertGreater(bright_pixels(rgb, w, ROW0), 50)
+
+    def row0_lit(self, emu, more_than: int) -> int:
+        """Bright pixels in row 0, polled for up to 1.5 guest s until they exceed `more_than` (frame.ppm lags)."""
+        for _ in range(6):
+            lit = bright_pixels(emu.frame()[2], 466, ROW0)
+            if lit > more_than:
+                break
+            emu.sleep(0.25)
+        return lit
+
+    def assert_clean(self, emu):
+        uart = emu.uart()
+        self.assertNotIn("MllcFailedHook", uart)
+        self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+        self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
+
+    def test_hello_draws_reacts_and_exits(self):
+        with harness.installed(["loader", "hello"]) as (emu, port):
+            self.ready(emu)
+            self.open_menu(emu)
+            self.tap_row0(emu)
+            self.assert_hello(emu)
+            (emu.run / "hello.ppm").write_bytes((emu.run / "frame.ppm").read_bytes())
+            emu.send("r 80", pause=1.5)
+            w, h, rgb = emu.frame()
+            r, g, b = pixel(rgb, w, 233, 100)
+            self.assertTrue(r < 16 and g < 16 and b > 128, (r, g, b))  # 0x001F; the emulator shows 0x1F as 160
+            emu.send("c 1", "c 0", pause=2)  # BUTTON: main returns 0
+            self.assert_menu(emu)
+            self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")  # still in the loader view
+            self.assert_clean(emu)
+
+    def test_view_delete_stops_app(self):
+        with harness.installed(["loader", "hello"]) as (emu, port):
+            self.ready(emu)
+            self.open_menu(emu)
+            self.tap_row0(emu)
+            self.assert_hello(emu)
+            emu.call(harness.OPEN_VIEW, 0x10, 0)  # clock view: the stack jumps away from 0xF0
+            emu.sleep(3)
+            self.assertEqual(emu.peek(START + 4, 3), b"\x00\x00\xff")  # loader_state, loader_active, running_slot
+            self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+            self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+            self.open_menu(emu)
+            self.assert_menu(emu)
+            self.tap_row0(emu)
+            self.assert_hello(emu)
+            self.assert_clean(emu)
+
+    def test_blocks_freed_and_relocated(self):
+        with harness.installed(["loader", "hello"]) as (emu, port):
+            self.ready(emu)
+            frees, blocks, hog, app_size = [], [], 0, 0
+            for cycle in range(5):
+                self.open_menu(emu)
+                loader = harness.u32(emu, START + harness.LOADER_BLOCK_OFF)
+                if cycle == 1:  # the old app place, freed with the face when the view opened (docs/recon.md)
+                    hog = emu.call(harness.UI_MEM_ALIGNED_ALLOC, 2, 8, app_size, 0)
+                self.tap_row0(emu)
+                blocks.append((loader, self.assert_hello(emu)))
+                app_size = app_size or harness.u32(emu, START + harness.APP_BLOCK_OFF + 4)
+                emu.send("c 1", "c 0", pause=2)  # app exits
+                self.assert_menu(emu)
+                if cycle == 1:
+                    emu.call(harness.UI_MEM_FREE, 2, hog)
+                emu.send("c 1", "c 0", pause=2)  # stock closes the view
+                emu.keep_awake()  # back on the face the launcher re-arms auto-sleep (e2e run 2: asleep 6 s later)
+                self.assertEqual(emu.peek(START + 4, 3), b"\x00\x00\xff")
+                self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+                self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+                frees.append(harness.settle(emu)[0])
+            print(f"\nblocks {[(hex(a), hex(b)) for a, b in blocks]} free {[hex(f) for f in frees]}")
+            self.assertNotEqual(blocks[1][1], blocks[0][1], "app block did not move")
+            steady = [frees[i] for i in (0, 2, 3, 4)]
+            self.assertLess(max(steady) - min(steady), 0x1000, [hex(f) for f in frees])
+            self.assert_clean(emu)
+
+    def test_app_no_memory_shows_error(self):
+        with harness.installed(["loader", "hello"]) as (emu, port):
+            self.ready(emu)
+            self.open_menu(emu)
+            w, h, rgb = emu.frame()
+            name = bright_pixels(rgb, w, ROW0)
+            emu.poke(START + harness.ALLOC_LIMIT_OFF, struct.pack("<I", 1))
+            self.tap_row0(emu, pause=0.5)  # the error shows for 2 s
+            self.assertEqual(emu.peek(START + 6, 1), b"\xff")
+            self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+            (emu.run / "error.ppm").write_bytes((emu.run / "frame.ppm").read_bytes())
+            self.assertGreater(self.row0_lit(emu, name), name)  # "Error -12" is longer than "hello"
+            emu.sleep(2.5)
+            self.assertEqual(bright_pixels(emu.frame()[2], w, ROW0), name)
+            emu.poke(START + harness.ALLOC_LIMIT_OFF, bytes(4))
+            self.tap_row0(emu)
+            self.assert_hello(emu)
+            self.assert_clean(emu)
+
+    def test_big_app_starved_heap(self):
+        (paths.ROOT / "target" / "big.wp2app").write_bytes(harness.padded("hello", 0x18000, "big"))
+        with harness.installed(["loader", "big"]) as (emu, port):
+            self.ready(emu)
+            self.open_menu(emu)
+            w, h, rgb = emu.frame()
+            name = bright_pixels(rgb, w, ROW0)
+            hogs = harness.hog(emu, keep=0x10000)
+            try:
+                self.tap_row0(emu, pause=0.5)
+                self.assertEqual(emu.peek(START + 6, 1), b"\xff")
+                self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+                self.assertGreater(self.row0_lit(emu, name), name)  # "Error -12"
+            finally:
+                harness.unhog(emu, hogs)
+            emu.sleep(2.5)
+            self.tap_row0(emu)
+            self.assert_hello(emu)
+            emu.send("c 1", "c 0", pause=2)
+            self.assert_menu(emu)
+            self.assert_clean(emu)
