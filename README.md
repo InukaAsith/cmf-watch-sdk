@@ -23,8 +23,8 @@ Everything runs in the emulator only. Host tools (`llvm-objcopy`, `tk`, `gdb`) c
 Build the patched `app.bin` (stub, heap reservation) and the loader package, then an app package:
 
 ```bash
-scripts/build-fw                      # target/app-wp2.bin, target/loader.wp2app
-scripts/build-app vibration-lab 1     # target/vibration-lab.wp2app (name, version)
+nix-shell -p llvm --run 'scripts/build-fw'                   # target/app-wp2.bin, target/loader.wp2app
+nix-shell -p llvm --run 'scripts/build-app vibration-lab 1'  # target/vibration-lab.wp2app (name, version)
 ```
 
 Put `target/app-wp2.bin` into a NOR image with `wp2apps nor <stock-nor> --app target/app-wp2.bin --output <out>`
@@ -50,7 +50,14 @@ uv run --locked python -m unittest discover -s tests -v     # e2e skipped withou
 WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e -v'
 ```
 
-One e2e run takes minutes; logs go to `runs/e2e/`.
+The e2e tests need `scripts/build-fw` and `scripts/build-app` for `hello`, `vibration-lab`, `motor-hog` and
+`motor-hold` first. A full run takes about half an hour; logs go to `runs/e2e/`. Each test starts its own
+`netsimd` on instance `$WP2_NETSIM_INSTANCE` (default 71). Two `netsimd` on one instance stop each other, so
+parallel runs, or a run beside an emulator you are using, need different instances.
+
+For a real watch, `install`, `list` and `remove` take `--address` (from `wp2apps scan`, a CoreBluetooth UUID
+on macOS) instead of `--hci-port`. Frames longer than MTU − 3 go as writes with response, so the OS does an
+ATT long write at the default MTU 23. Only `scan` has been run against hardware so far.
 
 Limits:
 

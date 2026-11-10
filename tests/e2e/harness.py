@@ -24,8 +24,10 @@ UI_MEM_ALIGNED_ALLOC = 0x101882C5
 UI_MEM_FREE = 0x10188381
 AWAKE_PTR = 0x38037D14
 OS_MUTEX_LOCK = 0x101BE219
+CURRENT_THREAD = 0x380445B8  # _kernel.cpus[0].current; k_thread name at +0x78 (docs/recon.md)
 OPEN_VIEW = 0x101898BD
 FS_FIND_MOUNT = 0x10106FA1
+FS_OPEN, FS_CLOSE, FS_WRITE, FS_SEEK, FS_SYNC = 0x10107031, 0x101071E1, 0x10107295, 0x101072F1, 0x101073A5
 TRACE_OFF = 0x44
 LOADER_BLOCK_OFF = 0x4E8
 APP_BLOCK_OFF = 0x4F0
@@ -90,11 +92,11 @@ def cli_out(args) -> str:
 
 
 @contextmanager
-def installed(names):
+def installed(names, name="installed", fixtures=None):
     """Booted paired watch on Netsim with target/<name>.wp2app installed for each name; yields (emu, hci port)."""
     from .netsim import netsim
     nor = patched_paired_nor()  # runs its own Netsim: two netsimd on one instance exit
-    with netsim() as port, Emu("installed", nor=nor, hci_port=port) as emu:
+    with netsim() as port, Emu(name, nor=nor, fixtures=fixtures, hci_port=port) as emu:
         emu.wait_uart("launcher enter", 60)
         emu.keep_awake()
         for name in names:
@@ -218,13 +220,16 @@ class Emu:
             f.flush()
             self.gdb(f"restore {f.name} binary {addr:#x}")
 
-    def call(self, fn: int, *args: int) -> int:
+    def call(self, fn: int, *args: int, thread: bytes = b"") -> int:
         """Runs fn(*args) in the next thread that enters os_mutex_lock: a plain stop may land in an ISR or
-        the idle thread, where stock code that takes a mutex panics (docs/recon.md)."""
+        the idle thread, where stock code that takes a mutex panics (docs/recon.md). `thread`: the first
+        4 bytes of the name of the thread to wait for (fs calls overflow small stacks such as displayworkq)."""
         # ponytail: that thread may hold another lock; fine for the short calls the tests make
         regs = [f"r{i}" for i in range(13)] + ["sp", "lr", "pc", "xpsr"]
         spin = STUB_RAM + 0xE00
-        out = self.gdb(f"tbreak *{OS_MUTEX_LOCK & ~1:#x}", "continue",
+        only = f" if *(unsigned *)(*(unsigned *){CURRENT_THREAD:#x} + 0x78) == {int.from_bytes(thread, 'little'):#x}" \
+            if thread else ""
+        out = self.gdb(f"tbreak *{OS_MUTEX_LOCK & ~1:#x}{only}", "continue",
                        *(f"set $saved_{r} = ${r}" for r in regs),
                        f"set *(unsigned short *){spin:#x} = 0xe7fe",
                        *(f"set $r{i} = {a:#x}" for i, a in enumerate(args)),
@@ -528,3 +533,41 @@ def heavy_face_fixtures() -> Path:
                     return fixtures
                 rejected.append(entry)
     raise RuntimeError(f"no top-10 face survives the stock walk: {rejected}")
+
+
+def write_file(emu: Emu, path: bytes, offset: int, data: bytes):
+    """Overwrites bytes of a NAND file with the stock fs calls, in ui_service (the thread that loads packages)."""
+    file, name, buf = STUB_RAM + 0xE40, STUB_RAM + 0xE20, STUB_RAM + 0xE70  # past StubRam (<= 0xE00), spin at 0xE00
+    emu.poke(name, path + b"\0")
+    emu.poke(file, bytes(0x2C))
+    emu.poke(buf, data)
+    ui = b"ui_s"
+    if emu.call(FS_OPEN, file, name, 3, thread=ui):  # FS_O_RDWR
+        raise RuntimeError(f"fs_open {path!r} failed")
+    try:
+        if emu.call(FS_SEEK, file, offset, 0, thread=ui) or emu.call(FS_WRITE, file, buf, len(data), thread=ui) != len(data):
+            raise RuntimeError(f"fs write at {offset:#x} failed")
+        emu.call(FS_SYNC, file, thread=ui)
+    finally:
+        emu.call(FS_CLOSE, file, thread=ui)
+
+
+def reboot(emu: Emu, port: int):
+    """AT REBOOT over the shell characteristic, then waits for the launcher of the next boot."""
+    import asyncio
+    from wp2apps import cli as wp2
+    boots = emu.uart().count("*** Booting Zephyr")
+
+    async def at_reboot(s):
+        try:
+            await s.at("AT REBOOT", timeout=3)
+        except TimeoutError:
+            pass  # the reply may die with the link
+
+    asyncio.run(wp2.with_watch(type("Args", (), {"hci_port": port, "address": None})(), at_reboot))
+    end = time.monotonic() + 120
+    while (uart := emu.uart()).count("*** Booting Zephyr") == boots or "launcher enter" not in uart[uart.rfind("*** Booting Zephyr"):]:
+        if time.monotonic() > end:
+            raise TimeoutError("no reboot to the launcher")
+        time.sleep(0.5)
+    emu.keep_awake()
