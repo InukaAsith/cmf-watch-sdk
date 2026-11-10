@@ -6,3 +6,4 @@ __pycache__/
 *.wp2app
 .DS_Store
 /sdk/target/
+/fw/target/
