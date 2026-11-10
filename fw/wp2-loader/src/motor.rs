@@ -7,7 +7,7 @@ const CH: u32 = 0;
 const PIN_SET_CYCLES: usize = 0;
 const PIN_OFF: usize = 4;
 
-// set while the app is paused (Task 9)
+// set while a stock popup covers the app (app::pause_tick)
 pub static PAUSED: AtomicBool = AtomicBool::new(false);
 // millis() | 1 of the off->on switch, 0 while off
 static ON_SINCE: AtomicU32 = AtomicU32::new(0);
@@ -48,10 +48,10 @@ pub fn off() {
     ON_SINCE.store(0, Ordering::Release);
 }
 
-// UI tick (20 ms): continuous run is capped at CAP_MS
+// UI tick (20 ms): continuous run is capped at CAP_MS; also catches a motor() that raced the pause
 pub fn watchdog() {
     let since = ON_SINCE.load(Ordering::Acquire);
-    if since != 0 && over_cap(millis(), since) {
+    if since != 0 && (PAUSED.load(Ordering::Acquire) || over_cap(millis(), since)) {
         off();
     }
 }

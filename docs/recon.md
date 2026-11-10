@@ -313,16 +313,21 @@ functions below; disassembly of `0x101842A4`, `0x101BA1C8`, `0x101DB2A6`, `0x101
 | Block placement | opening 0xF0 deletes the face, and the loader (`0x380A9A38`) and app (`0x380A9678`) take the freed face region every time; a block allocated from outside while the face shows cannot move the loader. A block of `app_size` allocated with the menu open moves the app (`0x380A9758`) | high (emulator) |
 | Screen-off after BLE | the panel blanks ~5.7 s after `Ble wake lock 0` (the install connection closing) although `keep_awake` set the timeout to `0xFFFFFFFF`; with the screen off no thread enters `os_mutex_lock` and `emu.call` hangs. `HelloTest.ready` waits for it and wakes the watch with the button | medium |
 
-## Plan 2, task 9: thread priorities
+## Plan 2, task 9: stock popups, pause and thread priorities
 
-Disassembly (capstone) of `k_thread_foreach` `0x10199430`, the shell `kernel threads` handler `0x100F137D` and
-the thread switch-out hook `0x1004D6F0`; emulator probes `runs/e2e/task9-probe.log`, `task9-hog-prio{4,14}.log`.
+Disassembly (capstone) of `k_thread_foreach` `0x10199430`, the shell `kernel threads` handler `0x100F137D`, the
+thread switch-out hook `0x1004D6F0` and `set_autosleep_time` `0x10149420`; emulator probes
+`runs/e2e/task9-probe{,2,3}.log`, `task9-hog-prio{4,14}.log`.
 
 | Item | Value | Confidence |
 |---|---|---|
 | Thread list | `_kernel` `0x380445B0`, list head `+0x2C`, `k_thread`: next `+0x74`, name `+0x78`, `s8` prio `+0xE`, state `+0xD`, `u64` run time `+0xC0`. The switch-out hook prints `Thread %p %s run time %d ms` for a run over 10 ms at prio ≤ 14 | high |
 | Priority map (emulator, after boot) | cooperative: `displayworkq` −12, `BT HCI RX` −10, `BT TX` −9, `BT RX` −8, `prd_tsk_workq` −2, `dspworkq` −2, `sysworkq` −1. Preemptive: `main` 0, `media` 1, `BT MONITOR` 1, `bluetooth` 2, `lvglworkq` 2, a work queue 2, `ui_service` 3, `gps_service` 4, `diskio_cache` 4, `sensor_service` 5, `res_preload` 5, work queues 6, 7, 8, `userworkq` 8, `launcher` 10, `logsrv` 11, `wewear_read` 12, `tcomp_workq` 12, `vendor`, `vendor_read`, `ble_fate`, `fate_read`, `wewear`, `wewear_ftp`, `wewear_ftp_read` and a work queue 13, `standby` 14, `actlog` 14, `shell_uart` 14, `idle 00` 15 | high |
 | App priority | `idle` is 15, so `CONFIG_NUM_PREEMPT_PRIORITIES` = 15 and 14 is the lowest priority `k_thread_create` accepts for another thread. Apps run at **14**, equal to `standby`, `actlog` and `shell_uart`. With `motor-hog` spinning: at 4, `wp2apps list` failed after 7.3 s (the vendor/wewear threads at 13 starve); at 14 it answered in 1.5 s, and `standby` still ran (the panel blanked after the BLE disconnect and closed the view, which it did not at 4) | high (emulator) |
+| Charge popup | `p 4000 1 60` (charger in) → `msgbox_cache popup … mid:262` → `set_popup_msgbox id:0 - 262, flag:1`: `*(u8*)0x3800FAF4 = 1`, `*(u16*)0x3800FAF6 = 262`; `set_autosleep_time:10000`; the stock buzzes the motor itself (`980 ‰`, 30 Hz, 300 ms). No table lookup or `call` needed | high |
+| View under the popup | `view 240 focus 0` → popup view 62 created and painted → `view 240 defocused`, `pause draw`; `view 62 focused`. The `----->view:N ev:[…]` lines come from stock procs, so they do not show what the stub proc receives; the loader treats msg 8/7 and the flag byte the same (`overlay()`). Over the face the popup's `view_cache: shrink` deleted cached views 209/210; over view 240 it deleted nothing (`call shrink 0) ret:0, -3`) | high / msgs 7, 8 to the stub medium |
+| Knob sign | `r 80` gives a negative `0x2D` step: the loader sends `CROWN` −1 (vibration-lab Pattern Tick → Long), the opposite of `view_key 0x6F` (+1) in list views | high (emulator) |
+| Closing | the button: view 62 gets `0x20000001` and `0x04000001`, `msgbox_cache close` → `set_close_msgbox … flag:0` (byte back to 0) → view 62 deleted → `view 240 focus 1`, `resume draw` (~30 ms). Unplugging (`p 4000 0 60`) also closes it, but sets `set_autosleep_time:5000`; the panel blanks 5 s later and the watch enters S1…S3BT, which stops the emulator (unimplemented read `0x40010000`). `set_autosleep_time` only stores the value (`*ptr = s · 1000`), the armed timer keeps it, so `keep_awake` after the close does not help. The harness closes with the button and leaves the charger in (`dc5v in, wake lock!`) | high |
 
 ## Hardware: caches and MPU
 
