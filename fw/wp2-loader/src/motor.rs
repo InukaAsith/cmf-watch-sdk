@@ -1,6 +1,6 @@
 use crate::app::millis;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use wp2_core::pwm::{over_cap, pulse, pwm_params, STOCK_CLOCK};
+use wp2_core::pwm::{mark_on, over_cap, pulse, pwm_params, STOCK_CLOCK};
 use wp2_core::stock::{CMU_PWMCLK, PWM_DEVICE};
 
 const CH: u32 = 0;
@@ -9,7 +9,7 @@ const PIN_OFF: usize = 4;
 
 // set while the app is paused (Task 9)
 pub static PAUSED: AtomicBool = AtomicBool::new(false);
-// millis() | 1 of the last start, 0 while off
+// millis() | 1 of the off->on switch, 0 while off
 static ON_SINCE: AtomicU32 = AtomicU32::new(0);
 
 fn driver(i: usize) -> usize {
@@ -38,7 +38,7 @@ pub extern "C" fn motor(duty_permille: u16, freq_hz: u16) -> i32 {
     let set = stock!(driver(PIN_SET_CYCLES), fn(u32, u32, u32, u32, u32) -> i32);
     let rc = set(PWM_DEVICE, CH, period.into(), pulse(period, duty_permille).into(), 1);
     // also on a driver error: the watchdog or stop_app restores the stock clock
-    ON_SINCE.store(now | 1, Ordering::Release);
+    mark_on(&ON_SINCE, now);
     rc.min(0)
 }
 
