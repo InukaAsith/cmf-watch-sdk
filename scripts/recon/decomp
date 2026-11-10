@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/../.." && pwd)
+out=${WP2_OUT:-$root/runs/recon/decomp.c}
+args=$(printf ' %q' "$@")
+WP2_OUT=$out nix-shell -p ghidra --run "ghidra-analyzeHeadless '$root/runs/recon/ghidra' wp2 -process app.bin -noanalysis -readOnly -scriptPath '$root/scripts/recon/ghidra' -postScript Dump.java$args" > "$root/runs/recon/decomp.log" 2>&1
+echo "$out"
