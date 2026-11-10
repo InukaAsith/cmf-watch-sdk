@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+name=$1
+version=$2
+(cd "$root/sdk" && cargo build --release -p "$name")
+mkdir -p "$root/target"
+llvm-objcopy -O binary --set-section-flags .data=alloc,load,contents "$root/sdk/target/thumbv7em-none-eabi/release/$name" "$root/target/$name.bin"
+rm -f "$root/target/$name.wp2app"
+cd "$root"
+uv run --locked wp2apps pack "target/$name.bin" --name "$name" --version "$version" --output "target/$name.wp2app"
+echo "$root/target/$name.wp2app"

@@ -1,0 +1,15 @@
+MEMORY
+{
+  APP (rwx) : ORIGIN = 0x386FF000, LENGTH = 0x20000
+}
+
+ENTRY(_start)
+
+SECTIONS
+{
+  .entry : { KEEP(*(.entry)) } > APP
+  .text : { *(.text .text.*) } > APP
+  .rodata : { *(.rodata .rodata.*) } > APP
+  .data : { *(.data .data.*) *(.bss .bss.* COMMON) } > APP
+  /DISCARD/ : { *(.ARM.exidx .ARM.exidx.* .ARM.extab.*) }
+}
