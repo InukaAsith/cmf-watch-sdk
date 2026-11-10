@@ -26,6 +26,7 @@ docs/plans/   implementation plans
 docs/recon.md stock app.bin findings for the loader (from plan 1, task 1)
 src/wp2apps/  Python CLI: package, inspect and install apps
 sdk/          Rust workspace: cmf-wp2-app crate and example apps
+fw/           Rust workspace: wp2-core (shared no_std logic, host-tested), stub and loader
 scripts/      emulator and build wrappers
 tests/        unittest suite
 ```
@@ -44,4 +45,5 @@ tests/        unittest suite
 ```bash
 uv run --locked python -m unittest discover -s tests -v
 (cd sdk && cargo test --target aarch64-apple-darwin)
+(cd fw && cargo test -p wp2-core --target aarch64-apple-darwin)
 ```
