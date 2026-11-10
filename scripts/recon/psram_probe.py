@@ -39,7 +39,9 @@ class Qmp:
 def gdb(*commands):
     script = paths.ROOT / "runs" / "recon" / "probe.gdb"
     script.write_text("\n".join(["set architecture armv7e-m", f"target remote :{GDB_PORT}", *commands, "detach"]) + "\n")
-    subprocess.run(["gdb", "-batch", "-x", str(script)], check=True, capture_output=True)
+    result = subprocess.run(["gdb", "-batch", "-x", str(script)], capture_output=True, text=True, timeout=60)
+    if result.returncode or "Error" in result.stderr:
+        raise RuntimeError(f"gdb failed:\n{result.stdout}{result.stderr}")
 
 
 def walk(events, seconds):

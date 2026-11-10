@@ -21,10 +21,10 @@ code only; **low** = inferred.
 | Reservation | plan 2's stub patches the `ResFbHeap` size literal `0x676B80` → `0x655CC0`, so the heap ends at `0x386FF000` and `[APP_BASE, APP_BASE + APP_SIZE)` is never handed out | decision | — |
 | Display | 466×466 round AMOLED; UI is LVGL (`lv_obj_set_width(…, 0x1D2)` in `FUN_100bb954`) on the Actions view manager (`ui_view`, `view_create`) | high | decompile + emulator frame size |
 | Motor drive | PWM device `"PWM"` (`0x101DF1C0`), registers `0x40060000 + 0x100·ch` (`+0x00` ctrl, `+0x14` period, `+0x18` duty), clock-divider `0x40001068 + 4·ch`, 4 channels; motor uses channel 0 | high | device struct + driver decompile |
-| PWM clock for the motor | `get_cycles_per_sec` (`FUN_10121468`) returns `0x1F40` = **8000 Hz** | high | decompile |
+| PWM clock for the motor | driver init `FUN_10121504` writes `0x303` to every channel's clock register: source 32 MHz (`0x200`), divider 259+1 → **≈123 kHz**. `get_cycles_per_sec` (`FUN_10121468`) reports `0x1F40` = 8000 from the config, which does not match the hardware setting and is not used by the motor path | high | decompile + emulator `motor.log` |
 | Motor call | `FUN_100fb4b4(_, ch=0, period=0xFF, pulse=strength, flags=1)` → PWM `api[0]` `pin_set_cycles` (`FUN_1012197c`); `pulse = 0` → `api[4]` channel off (`FUN_101214ac`) | high | disassembly |
-| Stock PWM frequency | 8000 / 255 ≈ **31 Hz**; duty = `strength / 255` | high | arithmetic from the above |
-| Motor type | **ERM** (single-ended unipolar PWM at 31 Hz, strength by duty, patterns by on/off timing, no resonance tuning) | medium | driver shape; no datasheet |
+| Stock PWM frequency | 123,077 / 255 ≈ **482 Hz**; duty = `strength / 255` | high | arithmetic + emulator `motor.log` |
+| Motor type | **ERM** (single-ended unipolar PWM at 482 Hz, strength by duty, patterns by on/off timing, no resonance tuning) | medium | driver shape; no datasheet |
 | Vibration levels | table `0x101F4A00` = `[255, 250, 0]`; level 0 is forced to 255 with pattern 2 (700 ms), level 1 = **250/255 = 98 %** with pattern 0 (300 ms), level 2 = 0 (off) | high | `FUN_100e17cc` (property `0x25`) |
 | Why "minimum is too strong" | the weaker stock level is 98 % duty; the levels differ mainly by duration | high | follows from the table |
 | Motor driver API | Zephyr device API at `0x101F5E7C`: `+0x0C` vibrate(dev, strength, pattern) = `FUN_100fb330`, `+0x10` set pattern table = `FUN_100fb0ec`, `+0x14` init = `FUN_100fb1fc`; driver handle at `*0x3801B164`; manager init `FUN_100e0cd8` | high | decompile |
@@ -45,12 +45,25 @@ execution there and repeats it on hardware only with approval.
 
 ### Consequences for plan 1
 
-- Task 4 frequency knob: the motor is ERM, but PWM frequency still matters because at 31 Hz a low
-  duty is felt as chopping. The lab keeps the knob with an ERM range (see the ledger ruling).
+- Task 4 frequency knob: the motor is ERM and stock PWM already runs at 482 Hz, so the knob is
+  narrowed to `[250, 482, 1000, 4000, 16000]` Hz with 482 as default (spec: narrow for ERM).
 - `motor(duty, freq)` in the loader maps to `pin_set_cycles` on channel 0 with
-  `period = 8000 / freq`. Frequencies above ~800 Hz need the PWM clock divider changed with the
-  driver's frequency API (`api[6]` = `FUN_10121681`, 32 MHz source); the loader must restore the
-  8000 Hz setting before handing the motor back to stock, or stock vibration timing breaks.
+  `period = 123077 / freq` while the clock register holds the stock `0x303`. Other frequencies
+  with fine duty resolution need the divider changed (`api[6]` = `FUN_10121681`); the loader must
+  write `0x303` back before handing the motor to stock.
+
+## Emulator check of the motor path
+
+`scripts/recon/motor_check.py` boots stock in a QEMU built with the motor log (cmf-watch-utils
+branch `emu-motor-log`) and calls the property handlers through gdb with a manual call frame.
+`motor.log` (virtual ms, duty in ‰, Hz):
+
+| Trigger | Log | Matches |
+|---|---|---|
+| boot | `608 1000 482` → `669 0 0` | pattern 6 (60 ms) at 255 |
+| `0x25` level 1 preview | `21951 980 482` → `22252 0 0` | 250/255, pattern 0 (300 ms) |
+| `0x25` level 0 preview | `24275 1000 482` → `24976 0 0` | 255, pattern 2 (700 ms) |
+| `0x2A` `SETMOTOR 1` | `1000 482` in 1000 ms blocks until switched off | 255, pattern 5 |
 
 ## Items for plan 2 (located, not yet worked out)
 
