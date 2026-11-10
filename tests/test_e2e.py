@@ -183,3 +183,70 @@ class InstallTest(unittest.TestCase):
             self.assertIn(b"GETSECRET:", await s.at("AT GETSECRET"))  # a stock command still answers
 
         with_watch(self.port, probe)
+
+
+POPUP_FLAGS = 0x3800FAF4  # bits 0/1: a stock popup ("Paired" after the first connection) is open
+
+
+def bright_pixels(rgb: bytes, w: int, box) -> int:
+    """Grey/white pixels (all channels > 128; the emulator shows 0xFFFF as a0a0a0), not coloured stock icons."""
+    x, y, bw, bh = box
+    return sum(1 for row in range(y, y + bh) for col in range(x, x + bw)
+               if min(rgb[3 * (row * w + col):3 * (row * w + col) + 3]) > 128)
+
+
+def dismiss_popup(emu):
+    """The first connection pops "Paired" over every view and sets auto-sleep to 60 s; the button closes it."""
+    if emu.peek(POPUP_FLAGS, 1)[0] & 3:
+        emu.send("c 1", "c 0", pause=2)
+        emu.keep_awake()
+    if emu.peek(POPUP_FLAGS, 1)[0] & 3:
+        raise RuntimeError("stock popup is still open")
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class LoaderTest(unittest.TestCase):
+    def test_menu_lists_installed_apps(self):
+        from tests.e2e.netsim import netsim
+        nor = harness.patched_paired_nor()
+        with netsim() as port, harness.Emu("loader", nor=nor, hci_port=port) as emu:
+            emu.wait_uart("launcher enter", 60)
+            emu.keep_awake()
+            for name in ("loader", "hello", "vibration-lab"):
+                self.assertEqual(harness.cli(["install", paths.ROOT / "target" / f"{name}.wp2app", "--hci-port", port]), 0)
+            dismiss_popup(emu)
+            emu.call(harness.OPEN_VIEW, 0xF0, 0)
+            emu.sleep(3)
+            self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")  # loader loaded, active
+            block = harness.u32(emu, START + harness.LOADER_BLOCK_OFF)
+            self.assertTrue(0x380A9340 <= block < START, hex(block))  # the loader lives in ResFbHeap
+            (emu.run / "menu.ppm").write_bytes((emu.run / "frame.ppm").read_bytes())
+            w, h, rgb = emu.frame()
+            self.assertGreater(bright_pixels(rgb, w, (90, 120, 300, 40)), 50)  # "hello"
+            self.assertGreater(bright_pixels(rgb, w, (90, 180, 300, 40)), 50)  # "vibration-lab"
+            self.assertEqual(rgb[300 * w * 3:], bytes(len(rgb) - 300 * w * 3), "framebuffer does not cover the face")
+            emu.send("c 1", "c 0", pause=2)  # button: stock closes the view
+            self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
+            self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+            uart = emu.uart()
+            self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+            self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
+
+    def test_loader_no_memory_keeps_stock(self):
+        with harness.installed(["loader"]) as (emu, port):
+            dismiss_popup(emu)
+            before = emu.frame()
+            for limit in (0x100, 0x60000):  # 1) no block for the loader; 2) loader fits, framebuffer does not
+                emu.poke(START + harness.ALLOC_LIMIT_OFF, struct.pack("<I", limit))
+                emu.call(harness.OPEN_VIEW, 0xF0, 0)
+                emu.sleep(3)
+                self.assertEqual(emu.peek(START + 4, 2), b"\x03\x00")  # no memory, not active
+                self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+                self.assertTrue(same_screen(emu.frame(), before), f"stock screen changed (limit {limit:#x})")
+            emu.poke(START + harness.ALLOC_LIMIT_OFF, bytes(4))
+            emu.call(harness.OPEN_VIEW, 0xF0, 0)
+            emu.sleep(3)
+            self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")
+            uart = emu.uart()
+            self.assertNotIn("MllcFailedHook", uart)
+            self.assertEqual(uart.count("*** Booting Zephyr"), 1)

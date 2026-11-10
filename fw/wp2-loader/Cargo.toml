@@ -1,0 +1,13 @@
+[package]
+name = "wp2-loader"
+description = "Relocatable NAND loader: view 0xF0 with a framebuffer and the installed-apps menu"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+wp2-core = { path = "../wp2-core" }
+
+[[bin]]
+name = "wp2-loader"
+bench = false

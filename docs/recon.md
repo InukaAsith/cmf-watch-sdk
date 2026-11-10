@@ -186,3 +186,23 @@ A plain QMP/gdb stop can land in an ISR or the idle thread. Calling a function t
 (`fs_get_mnt_point`, `FUN_101898bc` → `os_mutex_lock 0x101BE218`) panics with `Fault during interrupt
 handling`. The harness therefore breaks on the entry of `os_mutex_lock` (only threads call it) and runs the
 call from that thread. `os_sleep` is not a usable hook: nothing calls it while the watch idles.
+
+## Plan 2, task 6: LVGL colour format and touch input
+
+Ghidra (`scripts/recon/decomp`) on `0x1013E9AC`, `0x1013E52C`, `0x1012F38C`, `0x10125BD4`, `0x101C4C80..0x101C5000`,
+`0x1012EE94`; view delete path disassembled at `0x1018D7FC..0x1018D8AA`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| `LV_COLOR_DEPTH` | **16**: `lv_canvas_fill_bg` (`0x1013E9AC`) clears a `TRUE_COLOR` buffer with `memset(data, 0, w·h·2)`; stock icons are `TRUE_COLOR_ALPHA` 96×96 in 27648 B (3 B/px) | high |
+| `LV_COLOR_16_SWAP` | **0**: the built-in decoder (`0x1012F38C`) turns palette entries into `b>>3 \| (g>>2)<<5 \| (r>>3)<<11`, plain RGB565 | high |
+| Framebuffer | `FB_BYTES = 466·466·2 = 0x6A088`, type `FB` (0), align `0x40`; `lv_img_dsc_t.header = 4 \| 466<<10 \| 466<<21` | high |
+| `lv_coord_t` | **32 bit** (`LV_USE_LARGE_COORD`): `lv_indev_get_point` copies two words; `lv_point_t` = `{i32 x, i32 y}` | high |
+| `lv_obj_add_flag(obj, flags)` | `0x10128D39` (`obj+0x24 \|= flags`); stock calls it with `2` (`LV_OBJ_FLAG_CLICKABLE`) next to `lv_obj_add_event_cb` (`0x10125A95`) | high |
+| `0x10125BD4` | **not** `lv_event_get_indev`: it is `lv_obj_remove_event_cb(obj, cb)` (walks `spec_attr` event list, returns bool) | high |
+| `lv_event_get_target / current_target / code / param / user_data` | `0x101C4C93` (`e+0`) / `0x101C4C97` (`+4`) / `0x101C4C9B` (`+8 & 0x7F`) / `0x101C4CA3` (`+0x10`) / `0x101C4CA7` (`+0xC`) | high |
+| Event parameter of `PRESSED`/`RELEASED` | the active indev (`*0x3802AED4`), as in LVGL 8.3 (`lv_event_send(obj, 1/8, indev_act)` in the indev proc) | high |
+| `lv_indev_get_point(indev, &point)` | `0x101C4F57`: pointer/button type → `act_point` (`indev+8`, `+0xC`), else `-1,-1` | high |
+| Image cache | `LV_IMG_CACHE_DEF_SIZE = 0`: `_lv_img_cache_open` (`0x1012EE94`) reopens a single static entry per draw and `lv_draw_img` closes it, so no cache entry keeps `&DSC` or the framebuffer | medium |
+| View delete order (`FUN_1018DC9C` area) | display op `+0x10` → `proc(id, 4, view+0x1C)` → … → scene cleanup `FUN_1018E6BC` (display op `+4`). The view's own `lv_obj_del` in msg 4 runs before the scene is torn down | medium |
+| Layout after preload | the view manager sends msg 3 only after a `{9, 3, id}` message: `ui_view_layout(id)` `0x101D72FF` (`0x10182060(id, 3, 0, 0)`). Stock preload handlers (`goodbye_view`) end with `return ui_view_layout(id)`; a preload that just returns 0 leaves the view created and focused but never laid out (e2e: no `view 240 layout started`) | high |
