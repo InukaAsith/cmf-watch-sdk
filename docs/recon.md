@@ -18,7 +18,7 @@ code only; **low** = inferred.
 | Resource heap | `ResFbHeap` (JHeap): base `0x380A9340`, size `0x676B80`, end `0x3871FEC0`; init `FUN_101884e4` → `FUN_10146aa4`. The size literal occurs **three times**: `0x10188508` (init), `0x10188588` (getter `FUN_10188584`, `ldr r0,=0x676B80; bx lr`, no direct callers — likely reached through an ops table) and `0x101885F4` (second getter at `0x101885F0`) | high | decompile + literal search |
 | `APP_BASE` | `0x386FF000` | decision | top of `ResFbHeap` |
 | `APP_SIZE` | `0x20000` (128 KiB) | decision | see below |
-| Reservation | plan 2's stub patches **all three** `ResFbHeap` size literals `0x676B80` → `0x655CC0`, so the heap ends at `0x386FF000` and `[APP_BASE, APP_BASE + APP_SIZE)` is never handed out. Not yet applied or verified: plan 2 patches, fills the region with a marker and walks the UI with a heavy face first | decision, unverified | — |
+| Reservation | plan 2's stub patches **all three** `ResFbHeap` size literals `0x676B80` → `0x655CC0`, so the heap ends at `0x386FF000` and `[APP_BASE, APP_BASE + APP_SIZE)` is never handed out. Not yet applied or verified: plan 2 patches, fills the region with a marker and walks the UI with a heavy face first | decision, unverified; **superseded by plan 2 revision: 4 KiB stub RAM only** | — |
 | Display | 466×466 round AMOLED; UI is LVGL (`lv_obj_set_width(…, 0x1D2)` in `FUN_100bb954`) on the Actions view manager (`ui_view`, `view_create`) | high | decompile + emulator frame size |
 | Motor drive | PWM device `"PWM"` (`0x101DF1C0`), registers `0x40060000 + 0x100·ch` (`+0x00` ctrl, `+0x14` period, `+0x18` duty), clock-divider `0x40001068 + 4·ch`, 4 channels; motor uses channel 0 | high | device struct + driver decompile |
 | PWM clock for the motor | driver init `FUN_10121504` writes `0x303` to every channel's clock register. Actions SDK `pwm_acts.c` (pinned commit `26f51e58`): bits 9–10 select the source (0 = 32 kHz RC, 1 = HOSC 32 MHz, 2 = 64 MHz), divider field `0..255` = n+1, `256..260` = /512, /1024, /2048, /4096, /8192. `0x303` = HOSC /4096 = **7812.5 Hz**, which is the SDK's `PWM_PIN_CYCLES_PER_SEC` 8000 rounded to a power-of-two divider; `get_cycles_per_sec` (`FUN_10121468`) reports that 8000 | high | decompile + SDK source |
@@ -82,3 +82,61 @@ as good as the decoder, which now follows the SDK. `motor.log` (virtual ms, duty
 | BLE command dispatch | handler table and AT group dispatcher `0x101F4D70` are documented in cmf-watch-utils `protocol/ble.md`; a free opcode is chosen in plan 2 | low |
 | Stub location | NOR app partition `0x24000`, size `0x34B000`; `app.bin` uses `0x25A080`, leaving ≈ 964 KiB to append the stub. ACTH payload and header `sum32` must be recomputed (the emulator checks them, `emu/image.py`) | high |
 | Zero runs inside `app.bin` | `0x101E5BB2` (10,830 B) etc. are initialised-data images, not free space | medium |
+
+## Plan 2 findings
+
+### Находки разведки
+
+| Что | Адрес / значение | Увер. |
+|---|---|---|
+| ACTH | `+0x18` размер полезной нагрузки (сток `0x259C3C`), `+0x1C` = `0xFFFFFFFF − sum32(app[0x200:0x200+size])`, `+0x20` выравнивает `sum32(app[0:0x200]) = 0xFFFFFFFF`; пересчёт на стоке воспроизводит `0xDCF84B50`/`0x7929C5D6` | high |
+| XIP | эмулятор отображает NOR `0x24000..+0x3DC000` на `0x10000000`, так что дописанные байты видны сразу | high |
+| Инициализация кучи | `FUN_101884e4`: `bl 0x10146aa4` по `0x101884FA` (8 аргументов, 4 из них на стеке); литералы размера `0x10188508` (init), `0x10188588`, `0x101885F4` (геттеры) | high |
+| BLE-диспетчер | `FUN_100d343c(frame)`, поля уже в host order; `c1 == 0xFFFF && c2 > 0x908B` → `default` по `0x100D34EA`: `ldrh r1,[r5,#1]` → `bl 0x100cc284` по **`0x100D34F0`** (`f8f7c8fe`), то есть чтение payload в `0x3804B0E6`, потом лог; `r5` — указатель на кадр | high |
+| BLE-хелперы | `FUN_100cc284(buf, len)` — прочитать payload (0 = ok); `FUN_101b608c(&u16 out_len, buf, len, cmd)` → указатель на открытый текст или 0 (AES-CBC ключом сессии, CRC32); `FUN_101b605a(&u16 out_len, data, len, cmd)` → указатель на шифротекст; `FUN_101ddb66(dst, src, n, max)` = memcpy_s; `FUN_100cc2d4(frame, total)` — отправить; стоковый кадр ответа `0x3804B0DB` | medium |
+| Ключ по команде | `FUN_100ccab4`: особый ключ только у `0x804B` и `(cmd & 0x7FFF) == 0x49`, остальные команды шифруются ключом сессии | high |
+| Файлы (Zephyr fs, `struct fs_file_t` 0x2C Б) | open `0x10107030(file, path, flags)` (`READ 1`, `WRITE 2`, `CREATE 0x10`); read `0x10107238`; write `0x10107294`; seek `0x101072F0`; tell `0x10107350`; sync `0x101073A4`; close `0x101071E0`; unlink `0x1010764C(path)`; rename `0x10107704(from, to)`; поиск точки монтирования `0x10106FA0(&mp, path, 0)`; vtable `*(mp+0x1C)`: `+0x34` unlink, `+0x38` rename, `+0x3C` mkdir (обёртки `fs_mkdir` в образе нет) | high / mkdir medium |
+| Таблица view | 162 записи по 0x18 Б, `0x100004B8..0x100013E8`: `{name, proc, presenter, 0, u16 id, u16 order, u16 w, u16 h}`; поиск `FUN_1018bc04(id)`; литералы начала: `0x101461AC`, `0x1018BC24`, `0x1018DF3C`; конца: `0x10055458`, `0x1018BC28`, `0x1018DF40`; открыть view: `FUN_101898bc(id, arg)`; id `0xF0` свободен | high |
+| Сообщения view (стиль `proc`, как `goodbye_view` `0x10060A54`) | `proc(view_id, msg, data)`: 2 preload, 3 layout (`*(void**)data` — дисплей), 4 delete, 7 focus, 8 defocus, 0xB update, 0xD key (`data[0]` — код клавиши, байт `data+4 = 1` — «обработано») | medium |
+| Коды клавиш (UART `view_key:`) | нажатие коронки `0x20000001` → `0x04000001`; поворот в списке `0xFFFF006F` / `0xFFFF006E` | medium |
+| LVGL 8.3 | `lv_disp_get_scr_act 0x101255E0`, `lv_img_create 0x1013ED38`, `lv_img_set_src 0x1013ED50`, `lv_obj_set_pos 0x1012926C`, `lv_obj_set_size 0x101294C8`, `lv_obj_invalidate 0x10129FD8`, `lv_obj_del 0x1012C774`, `lv_obj_add_event_cb 0x10125A94`, `lv_timer_create 0x1013B10C`, `lv_timer_del 0x1013B1A4` (medium), `lv_event_get_indev 0x10125BD4` (low); события: `PRESSED 1`, `SHORT_CLICKED 4`, `RELEASED 8`, `SCROLL 0xB` | high, если не указано иное |
+| Память UI | `ui_mem_aligned_alloc(type, align, size, caller) 0x101882C4` (типы 0..2); малые выделения `0x10146A3C(size, tag)` / free `0x101CE04A` | medium |
+| ОС | `os_thread_create(buf, size, entry, p1, p2, p3, prio, opts, delay) 0x101BE1A2` (в начале `buf` лежит `k_thread` на 0x118 Б); `os_sleep(ms) 0x101BE1EC`; `k_thread_abort` — `0x10105C90` или `0x1019B2D8` | high / abort low |
+| Всплывающие окна | `msgbox_cache_popup(id, udata) 0x100D5E34`; `set_popup_msgbox 0x100D6EB0` / `set_close_msgbox 0x100D6FB4` ведут флаги `*(u8*)0x3800FAF4` (бит 0 и бит 1 = окно открыто), id в `0x3800FAF6`/`0x3800FAF8` | high |
+| PWM | `struct device` "PWM" `0x101DF1C0`, api `0x101FB190`: `[0] pin_set_cycles(dev, ch, period, pulse, flags) 0x1012197D`, `[4] off(dev, ch) 0x101214AD`, `[6] set(dev, ch, hz, duty%, pol) 0x10121681`; период — 16 бит | high |
+| Список приложений | иконки из ресурсов сцены, построитель `FUN_1005e9d8` (число по `data+8`, записи по 3 слова с `data+0xC`, клик `0x1005EBA1`, событие 4); процедуры list `0x1005EEC9`, grid `0x1005EBC5`, waterfall `0x1005F101` | low, разбирает задача 9 |
+| Эмулятор | ввод `input.txt`: `t down x y`, `c down` (коронка/питание), `r delta`, `p mV charger percent`; без стокового профиля `STOCK_AWAKE` не включается, поэтому харнес пишет `0xFFFFFFFF` в `**0x38037D14` (таймаут автосна, `system_set_auto_sleep_time`); NAND живёт в памяти QEMU и переживает сброс гостя | high |
+
+`ResFbHeap`: литерал размера `0x676B80` встречается трижды (`0x10188508`, `0x10188588`, `0x101885F4`); патчер меняет **все три** на `0x675B80`: куча кончается на `0x3871EEC0`, выше лежит только RAM заглушки (`0x1000`). Загрузчик и приложения получают блоки кучи на время работы.
+
+Stock 1.0.0.73 crashes (`MllcFailedHook`, 651,548-byte block, then a reboot) when the face carousel is scrolled with face `hvk9m1hmpyuheyd`; reproduced on unpatched stock, so the e2e walk does not scroll the carousel.
+
+## Plan 2 revision: memory while running
+
+Read-only recon for the owner's 2026-11-10 memory decision (loader and app allocated from the stock heap
+only while running). Sources: `scripts/recon/decomp` on `0x10188200–0x10188700`, `0x10147124`,
+`MllcFailedHook`; table dump of `0x101FD7F0`; a scratch build of `sdk/` with `ORIGIN = 0`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| `ui_mem` type table | `*0x1018837C = 0x101FD7F0`, 3 entries × 0x24 B: `{name, init, alloc, aligned_alloc, realloc, free, +0x18 dump, +0x1C, +0x20 total}`. Type 0 `FB`, 1 `GUI` (LVGL heap, 0x18000 B), 2 `RES`. `uimem dump [0\|1\|2], where 0-FB, 1-LVGL, 2-RES` | high |
+| `ui_mem` API | `ui_mem_alloc(type, size, caller)` `0x10188234`; `ui_mem_aligned_alloc(type, align, size, caller)` `0x101882C4` (align must be a power of two, asserts otherwise); `ui_mem_realloc` `0x101883C4`; `ui_mem_free(type, ptr)` `0x10188380`. `caller` is a C string used only in the failure log | high |
+| `FB` and `RES` share `ResFbHeap` | RES: init `0x101884E4` (the `ResFbHeap` init), alloc `0x10188518`, aligned_alloc `0x1018854C`, free `0x10188578`, dump `0x1018858C`, total `0x10188584`. FB: aligned_alloc `0x101D78DC` (align ≤ 0x40, else returns 0) → `0x101885A8` (align 0x40, retries 15× with `os_sleep(2)`), free `0x101D78EA` → `0x10188578`, total `0x101885F0`. Both end in JHeap alloc `0x10147124` on the heap struct `0x38043824` | high |
+| JHeap struct `ResFbHeap` (`0x38043824`) | `+0` name, `+4` total, `+8` free bytes (alloc subtracts, free adds), `+0xC` minimum free ever, `+0x14` flags/alignment bits, `+0x60` free-list head, `+0x68` end marker. Free block: `{next: u32, size: u32 & 0xFFFFFF}` (size includes the header) | medium |
+| JHeap allocation policy | first fit from `+0x60`; a request of exactly `0x6A088` B (466·466·2, a full RGB565 frame) takes the last fitting block instead (best-from-end) | medium |
+| **JHeap never returns NULL** | when `free < need` or no free block fits, `0x10147124` calls `MllcFailedHook` `0x101470C0`, which prints the heap dump, calls `0x100F6D84(0)` and spins forever → the watch resets. This is the `MllcFailedHook at line: 353` reboot seen with the heavy face. So loader, app and framebuffer allocations must be checked against the free list **before** calling `ui_mem_*` | high |
+| Allocation size overhead | `need = size + hdr(type) + (flags & 0x3F) [+ 4 debug guard] [+ align − heap_align]`, rounded up to the heap alignment (4). Plan 2 uses the conservative bound `size + align + 0x100`; plan 2 task 1 measures the real overhead in the emulator | medium |
+| Lock | JHeap alloc/free raise `BASEPRI` to `0x20` around list updates (no mutex). Walking the free list and allocating under the same `BASEPRI` makes check-then-alloc atomic against other threads | medium |
+| Heap statistics | dump `FUN_10146BA4(heap, 1, 0)` (RES `+0x18` = `0x1018858C`) prints `Total:%u, Free:%u (%u%%), Water:%u (%u%%), UsedMax:%u (%u%%), MaxBlock:%u` | high |
+| Rust codegen for relocatable images | with `ORIGIN = 0` and `-C link-arg=--emit-relocs`, rustc 1.97 emits `R_ARM_THM_MOVW_ABS_NC`/`R_ARM_THM_MOVT_ABS` pairs for addresses (hello: 4 + 4, vibration-lab: 20 + 20, plus 6 `R_ARM_ABS32`). With `-C target-feature=+no-movt` addresses go to literal pools: only `R_ARM_ABS32` remain (hello 3, vibration-lab 28), plus PC-relative `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` that need no fix-up. `e_entry = 0x1`. rustc warns that `no-movt` is an unknown/unstable feature, but honours it | high |
+| Cache maintenance for code in PSRAM | not found yet. The only named candidate is `lv_gpu_acts_flush_dcache` (`0x10142C80`, display-specific). The emulator models no cache; hardware needs this answered before the first flash | low |
+
+Heap probes (emulator, patched image): `ui_mem_aligned_alloc(2, 8, 0x10000, 0)` costs 0x10018 bytes of `free` (`u32(0x38043824 + 8)`), i.e. a JHeap overhead of `0x18`, within the plan's `SLACK`. `FUN_1018858D` is not a dump helper but the stock failure path (prints `Dump:ResFbHeap … MaxBlock:0`, then `save_all_data` and panics), so the tests never call it and check the free list (`u32(0x38043824 + 0x60)` chain) instead.
+
+Heavy-face selection for the e2e walk (candidates in `emu faces --sort downloads` order, first whose stock control walk of 240 s has one boot, no `MllcFailedHook`, no fatal):
+
+| Face | Control on unpatched stock | Verdict |
+|---|---|---|
+| `hvk9m1hmpyuheyd` (NMS 176, 1267 downloads) | 2 boots, 1 `MllcFailedHook` (651,548 B) | rejected |
+| `kcumc43wn4cb8e9` (Wavy Seconds, 534) | `emu run --fmc-face` fails: QEMU stops on an unimplemented write at `0x40070504` during boot | rejected |
+| `w23jrco8sqew3nv` (Concentric Hal, 476) | 1 boot, no `MllcFailedHook`, no fatal | chosen |

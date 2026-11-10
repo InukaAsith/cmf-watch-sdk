@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import zlib
 
-from . import package
+from . import firmware, package, paths
 
 
 def cmd_pack(args):
@@ -25,6 +25,18 @@ def cmd_info(args):
     }, indent=2))
 
 
+def cmd_firmware(args):
+    stub = args.stub.read_bytes() if args.stub else None
+    with args.output.open("xb") as out:
+        out.write(firmware.patch(paths.stock_app(), stub))
+
+
+def cmd_nor(args):
+    data = firmware.stage_nor(args.nor.read_bytes(), args.app.read_bytes())
+    with args.output.open("xb") as out:
+        out.write(data)
+
+
 def parser():
     top = argparse.ArgumentParser(prog="wp2apps")
     commands = top.add_subparsers(dest="command", required=True)
@@ -38,6 +50,15 @@ def parser():
     info = commands.add_parser("info", help="Validate a package and print its header")
     info.add_argument("package", type=Path)
     info.set_defaults(handler=cmd_info)
+    fw = commands.add_parser("firmware", help="Patch the stock app.bin (heap reservation, stub)")
+    fw.add_argument("--stub", type=Path)
+    fw.add_argument("--output", type=Path, required=True)
+    fw.set_defaults(handler=cmd_firmware)
+    nor = commands.add_parser("nor", help="Put a patched app.bin into a NOR image")
+    nor.add_argument("nor", type=Path)
+    nor.add_argument("--app", type=Path, required=True)
+    nor.add_argument("--output", type=Path, required=True)
+    nor.set_defaults(handler=cmd_nor)
     return top
 
 

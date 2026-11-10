@@ -1,0 +1,90 @@
+import os
+import struct
+import unittest
+from unittest import skipUnless
+
+from wp2apps import firmware, paths
+
+try:
+    STOCK = paths.stock_app()
+except (FileNotFoundError, ImportError):
+    STOCK = None
+HAVE_STOCK = STOCK is not None
+
+
+class FirmwareTest(unittest.TestCase):
+    def test_thumb_bl_known_encoding(self):
+        self.assertEqual(firmware.thumb_bl(0x100D34F0, 0x100CC284), bytes.fromhex("f8f7c8fe"))
+
+    def test_thumb_range_checked(self):
+        with self.assertRaises(ValueError):
+            firmware.thumb_bl(0x10000000, 0x12000000)
+
+    def test_thumb_b_w_roundtrip(self):
+        self.assertEqual(firmware.thumb_b_w(0x10000000, 0x10000004), bytes.fromhex("00f000b8"))
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_thumb_bl_matches_stock_encoding(self):
+        self.assertEqual(firmware.thumb_bl(0x101884FA, 0x10146AA4), STOCK[0x1884FA:0x1884FE])
+
+    def test_fix_acth_rule(self):
+        app = bytearray(b"ACTHHTCA" + bytes(0x1F8) + os.urandom(4096))
+        firmware.fix_acth(app)
+        size, checksum = struct.unpack_from("<II", app, 0x18)
+        self.assertEqual(size, len(app) - 0x200)
+        self.assertEqual(firmware.sum32(app[:0x200]), 0xFFFFFFFF)
+        self.assertEqual((firmware.sum32(app[0x200:0x200 + size]) + checksum) & 0xFFFFFFFF, 0xFFFFFFFF)
+
+    def test_fix_acth_needs_alignment(self):
+        with self.assertRaises(ValueError):
+            firmware.fix_acth(bytearray(0x203))
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_fix_acth_reproduces_stock(self):
+        size = struct.unpack_from("<I", STOCK, 0x18)[0]
+        app = bytearray(STOCK[:0x200 + size])
+        firmware.fix_acth(app)
+        self.assertEqual(bytes(app), STOCK[:0x200 + size])
+
+    def test_put_checks_old_bytes(self):
+        app = bytearray(b"abcd")
+        firmware.put(app, 0x10000000, b"ab", b"xy")
+        self.assertEqual(app, b"xycd")
+        with self.assertRaisesRegex(ValueError, "0x10000002"):
+            firmware.put(app, 0x10000002, b"zz", b"..")
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_heap_literals_patched(self):
+        out = firmware.patch(STOCK)
+        for off in firmware.HEAP_LITERALS:
+            self.assertEqual(struct.unpack_from("<I", out, off)[0], firmware.HEAP_NEW)
+        diff = [i for i in range(0x200, len(STOCK)) if out[i] != STOCK[i]]
+        self.assertEqual({i & ~3 for i in diff}, set(firmware.HEAP_LITERALS))
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_patch_refuses_other_bytes(self):
+        bad = bytearray(STOCK)
+        bad[0x188508] ^= 1
+        with self.assertRaisesRegex(ValueError, "0x10188508"):
+            firmware.patch(bytes(bad), _verify=False)
+        with self.assertRaisesRegex(ValueError, "sha256"):
+            firmware.patch(bytes(bad))
+
+    def test_heap_shrinks_by_stub_ram_only(self):
+        self.assertEqual(firmware.HEAP_OLD - firmware.HEAP_NEW, 0x1000)
+        self.assertEqual(firmware.STUB_RAM, 0x3871EEC0)
+        self.assertEqual(firmware.STUB_RAM + firmware.STUB_RAM_SIZE, 0x380A9340 + 0x676B80)
+
+    def test_stage_nor(self):
+        nor = firmware.stage_nor(b"\0" * 0x400000, b"\1" * 16)
+        self.assertEqual(nor[0x24000:0x24010], b"\1" * 16)
+        self.assertEqual(nor[0x24010:0x24000 + 0x34B000], b"\xff" * (0x34B000 - 16))
+        self.assertEqual(len(nor), 0x400000)
+
+    def test_stage_nor_too_big(self):
+        with self.assertRaises(ValueError):
+            firmware.stage_nor(b"\0" * 0x400000, b"\1" * 0x34B001)
+
+
+if __name__ == "__main__":
+    unittest.main()
