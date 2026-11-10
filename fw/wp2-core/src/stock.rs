@@ -16,6 +16,8 @@ pub const FS_RENAME: u32 = 0x10107705;
 pub const OS_THREAD_CREATE: u32 = 0x101BE1A3;
 pub const OS_SLEEP: u32 = 0x101BE1ED;
 pub const VIEW_OPEN: u32 = 0x101898BD;
+// posts "layout" for a view id; a preload handler returns it, else msg 3 never comes
+pub const VIEW_LAYOUT: u32 = 0x101D72FF;
 pub const VIEW_TABLE: u32 = 0x100004B8;
 pub const VIEW_TABLE_END: u32 = 0x100013E8;
 
@@ -28,6 +30,12 @@ pub const LV_OBJ_INVALIDATE: u32 = 0x10129FD9;
 pub const LV_OBJ_DEL: u32 = 0x1012C775;
 pub const LV_TIMER_CREATE: u32 = 0x1013B10D;
 pub const LV_TIMER_DEL: u32 = 0x1013B1A5;
+pub const LV_OBJ_ADD_FLAG: u32 = 0x10128D39;
+pub const LV_OBJ_ADD_EVENT_CB: u32 = 0x10125A95;
+pub const LV_EVENT_GET_CODE: u32 = 0x101C4C9B;
+pub const LV_EVENT_GET_PARAM: u32 = 0x101C4CA3;
+// lv_point_t is two i32 here (LV_USE_LARGE_COORD)
+pub const LV_INDEV_GET_POINT: u32 = 0x101C4F57;
 
 pub const PWM_DEVICE: u32 = 0x101DF1C0;
 pub const PWM_PIN_SET_CYCLES: u32 = 0x1012197D;

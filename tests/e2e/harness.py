@@ -297,6 +297,22 @@ def settle(emu: Emu, timeout: float = 60) -> tuple[int, int]:
     raise TimeoutError("heap never settled")
 
 
+def hog(emu: Emu, keep: int) -> list[int]:
+    """RES blocks until the biggest free block is about `keep` (+0x200); each request is below the biggest block,
+    so JHeap never reaches MllcFailedHook. Undo with unhog."""
+    ptrs = []
+    for _ in range(64):
+        size = heap(emu)[1] - keep - 0x200
+        if size <= 0:
+            break
+        ptrs.append(emu.call(UI_MEM_ALIGNED_ALLOC, 2, 8, size, 0))
+    return ptrs
+
+
+def unhog(emu: Emu, ptrs: list[int]):
+    for p in ptrs:
+        emu.call(UI_MEM_FREE, 2, p)
+
 def swipe(emu: Emu, x0, y0, x1, y1, steps=2, pause=2):
     points = [(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps) for i in range(steps + 1)]
     emu.send(*(f"t 1 {x} {y}" for x, y in points), f"t 0 {x1} {y1}", pause=pause)
