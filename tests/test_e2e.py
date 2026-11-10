@@ -747,3 +747,191 @@ class PauseTest(unittest.TestCase):
             self.assertIn(FOCUS, trace[trace.index(DEFOCUS):])
             self.assertEqual(bright_pixels(emu.frame()[2], 466, box=(150, 200, 166, 60)), 166 * 60)
             self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
+
+
+L_PKG = b"/NAND:/wp2apps/L.pkg"  # wp2_core::layout::slot_path(LOADER_SLOT)
+LAB_UP, LAB_DOWN = "r -80", "r 80"  # one knob step +1 / -1 (LAB_TO_LONG)
+LAB_FREQUENCIES = (31, 62, 125, 250, 500, 1000, 4000, 16000)  # lab.rs FREQUENCIES
+FACE, SETTINGS = 16, 0x44
+
+
+def motor_runs(log) -> list[tuple[int, int, int, int]]:
+    """(start ms, length ms, duty, Hz) of each switch-on in motor.log lines."""
+    runs, on = [], None
+    for ms, duty, hz in log:
+        if duty and on is None:
+            on = (ms, duty, hz)
+        elif not duty and on is not None:
+            runs.append((on[0], ms - on[0], on[1], on[2]))
+            on = None
+    return runs
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class AcceptanceTest(unittest.TestCase):
+    """Stages 2-4 of the design (docs/specs/2026-11-10-wp2-app-loader-design.md), each on a fresh paired boot."""
+
+    def assert_clean(self, emu, boots=1):
+        uart = emu.uart()
+        self.assertNotIn("MllcFailedHook", uart)
+        self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+        self.assertEqual(uart.count("*** Booting Zephyr"), boots)
+
+    def open_apps(self, emu) -> int:
+        """Taps "Apps" in the stock list; returns the view the stock focused afterwards."""
+        mark = len(emu.uart())
+        harness.open_apps(emu)
+        return 0xF0 if "]: view 240 focused" in emu.uart()[mark:] else harness.focused(emu)
+
+    def assert_apps_work(self, emu, rows=1):
+        self.assertEqual(self.open_apps(emu), 0xF0)
+        self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")
+        w, h, rgb = emu.frame()
+        for row in range(rows):
+            self.assertGreater(bright_pixels(rgb, w, (90, 120 + 60 * row, 300, 40)), 50, f"menu row {row}")
+        emu.send("c 1", "c 0", pause=3)
+        self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
+        self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+
+    def assert_stock_screens(self, emu):
+        # a failed preload of 240 leaves the stack on 240 with the list deleted; the next input jumps to the face
+        emu.send("c 1", "c 0", pause=3)
+        self.assertEqual(harness.focused(emu), FACE)
+        harness.to_app_list(emu, bottom=True)
+        mark = len(emu.uart())
+        emu.send("t 1 233 236", "t 0 233 236", pause=3)
+        self.assertIn(f"]: view {SETTINGS} focused", emu.uart()[mark:])
+        emu.send("c 1", "c 0", pause=3)
+        self.assertEqual(harness.focused(emu), FACE)
+
+    def test_broken_loader_boots_stock(self):
+        path = paths.ROOT / "target" / "loader.wp2app"
+        loader = path.read_bytes()
+        # header CRC (entry byte), then body CRC (last relocation byte); END rejects both, so they are written on NAND
+        with harness.installed(["loader"], "acceptance") as (emu, port):
+            for boots, (name, offset) in enumerate((("header", 0x28), ("relocs", len(loader) - 1)), start=2):
+                with self.subTest(name):
+                    harness.ready(emu)
+                    harness.write_file(emu, L_PKG, offset, bytes([loader[offset] ^ 1]))
+                    harness.reboot(emu, port)
+                    self.assert_clean(emu, boots)
+                    self.assertNotEqual(self.open_apps(emu), 0xF0)
+                    self.assertEqual(emu.peek(START + 4, 2), b"\x02\x00")  # corrupt, not active
+                    self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+                    self.assert_stock_screens(emu)
+                    harness.cli_out(["install", path, "--hci-port", port])  # the fix
+                    harness.ready(emu)
+                    self.assert_apps_work(emu, rows=0)
+            self.assert_clean(emu, 3)
+
+    def test_install_survives_reboot(self):
+        with harness.installed(["loader", "hello"], "acceptance") as (emu, port):
+            harness.ready(emu)
+            harness.reboot(emu, port)
+            self.assertEqual(self.open_apps(emu), 0xF0)
+            self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")
+            w, h, rgb = emu.frame()
+            self.assertGreater(bright_pixels(rgb, w, ROW0), 50)  # "hello"
+            emu.send("t 1 200 140", "t 0 200 140", pause=2)
+            self.assertEqual(emu.peek(START + 6, 1), b"\x00")  # running_slot
+            w, h, rgb = emu.frame()
+            self.assertEqual(pixel(rgb, w, 233, 100), (0, 0, 0))
+            self.assertGreater(bright_pixels(rgb, w, (213, 225, 60, 20)), 20)  # "hello" drawn by the app
+            self.assert_clean(emu, 2)
+
+    def test_loader_update_over_ble(self):
+        # v2 differs in its image too (0x100 more zeros), so loader_size tells which one the stub loaded
+        pkg = package.parse((paths.ROOT / "target" / "loader.wp2app").read_bytes())
+        v2 = package.pack(pkg.image + bytes(0x100), name=pkg.name, version=2, entry=pkg.entry, kind=pkg.kind,
+                          relocs=pkg.relocs)
+        with harness.installed(["loader", "hello"], "acceptance") as (emu, port):
+            listing = lambda: json.loads(harness.cli_out(["list", "--hci-port", port]))["slots"]
+            self.assertEqual(listing()["L"]["version"], 1)
+            (emu.run / "loader-v2.wp2app").write_bytes(v2)
+            harness.cli_out(["install", emu.run / "loader-v2.wp2app", "--hci-port", port])
+            self.assertEqual(listing()["L"]["version"], 2)
+            harness.ready(emu)
+            for _ in range(2):  # a block per opening, freed on close
+                self.assertEqual(self.open_apps(emu), 0xF0)
+                self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")
+                block, size = struct.unpack("<II", emu.peek(START + harness.LOADER_BLOCK_OFF, 8))
+                self.assertTrue(0x380A9340 <= block < START, hex(block))
+                self.assertEqual(size, len(pkg.image) + 0x100)
+                self.assertGreater(bright_pixels(emu.frame()[2], 466, ROW0), 50)  # "hello"
+                emu.send("c 1", "c 0", pause=3)
+                self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
+                self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+            self.assert_clean(emu)
+
+    def play(self, emu, seconds=1.0):
+        n = len(emu.motor())
+        harness.lab_play(emu)
+        emu.sleep(seconds)
+        runs = motor_runs(emu.motor()[n:])
+        self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)  # back to stock after the stop
+        return runs
+
+    def lab_row(self, emu, row):
+        y = 127 + 50 * row  # lab rows: Strength, Freq, Pattern, Pulse (vibration-lab main.rs)
+        emu.send(f"t 1 233 {y}", f"t 0 233 {y}", pause=0.5)
+
+    def test_vibration_lab_all_knobs(self):
+        with harness.installed(["loader", "vibration-lab"], "acceptance") as (emu, port):
+            harness.open_app(emu, row=0)
+            (emu.run / "lab.ppm").write_bytes((emu.run / "frame.ppm").read_bytes())
+            emu.send(LAB_UP, LAB_UP, LAB_UP, pause=0.5)  # Strength 20 % -> 35 %
+            [(_, ms, duty, hz)] = self.play(emu)
+            self.assertAlmostEqual(duty, 350, delta=5)
+            self.assertEqual(hz, 31)
+            self.lab_row(emu, 1)
+            for i, freq in enumerate(LAB_FREQUENCIES):
+                with self.subTest(freq=freq):
+                    if i:
+                        emu.send(LAB_UP, pause=0.5)
+                    [(_, ms, duty, hz)] = self.play(emu)
+                    self.assertAlmostEqual(hz, freq, delta=1)
+                    self.assertAlmostEqual(duty, 350, delta=5)
+            self.lab_row(emu, 2)
+            emu.send(LAB_DOWN, pause=0.5)  # Tick -> Long
+            n = len(emu.motor())
+            emu.send("t 1 233 360", "t 0 233 360", pause=0)
+            self.assertNotEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)  # 16 kHz runs on the 32 MHz clock
+            emu.sleep(1.5)
+            [(_, ms, duty, hz)] = motor_runs(emu.motor()[n:])
+            self.assertAlmostEqual(ms, 1000, delta=20)
+            self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
+            emu.send(LAB_DOWN, pause=0.5)  # Long -> Double
+            [(s1, ms1, _, _), (s2, ms2, _, _)] = self.play(emu)
+            self.assertAlmostEqual(ms1, 20, delta=20)
+            self.assertAlmostEqual(s2 - s1 - ms1, 80, delta=20)
+            self.assertAlmostEqual(ms2, 20, delta=20)
+            emu.send(LAB_DOWN, pause=0.5)  # Double -> Tick
+            [(_, ms, _, _)] = self.play(emu)
+            self.assertAlmostEqual(ms, 20, delta=20)
+            self.lab_row(emu, 3)
+            for clicks, edge in ((LAB_DOWN, 5), (LAB_UP, 100)):
+                with self.subTest(pulse=edge):
+                    emu.send(*[clicks] * 20, pause=0.5)  # past the edge: clamped
+                    [(_, ms, _, _)] = self.play(emu)
+                    self.assertAlmostEqual(ms, edge, delta=20)
+            emu.send("c 1", "c 0", pause=2)
+            self.assertEqual(emu.peek(START + 6, 1), b"\xff")
+            self.assertEqual(emu.motor()[-1][1], 0)
+            self.assert_clean(emu)
+
+    def test_heavy_face_with_apps(self):
+        with harness.installed(["loader", "vibration-lab"], "acceptance",
+                               fixtures=harness.heavy_face_fixtures()) as (emu, port):
+            harness.ready(emu)
+            self.assertEqual(self.open_apps(emu), 0xF0)
+            emu.send("t 1 200 140", "t 0 200 140", pause=2)
+            self.assertEqual(emu.peek(START + 6, 1), b"\x00")  # the lab runs
+            emu.send("c 1", "c 0", pause=2)  # the lab exits
+            self.assertEqual(emu.peek(START + 6, 1), b"\xff")
+            emu.send("c 1", "c 0", pause=3)  # stock closes the view
+            self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
+            emu.keep_awake()
+            harness.walk(emu)
+            self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+            self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+            self.assert_clean(emu)
