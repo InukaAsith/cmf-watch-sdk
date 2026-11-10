@@ -484,10 +484,12 @@ source = { editable = "." }
 dependencies = [
     { name = "cmf-watch-fwkit" },
     { name = "cmf-watch-utils" },
+    { name = "pycryptodome" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "cmf-watch-fwkit", git = "https://github.com/freethinkel/cmf-watch-utils?subdirectory=tooling&rev=0f768dc371dbb15a09ec34c4189e128c83f22e74" },
     { name = "cmf-watch-utils", git = "https://github.com/freethinkel/cmf-watch-utils?rev=0f768dc371dbb15a09ec34c4189e128c83f22e74" },
+    { name = "pycryptodome", specifier = ">=3.20" },
 ]
