@@ -21,5 +21,5 @@ build-backend = "hatchling.build"
 packages = ["src/wp2apps"]
 
 [tool.uv.sources]
-cmf-watch-utils = { git = "https://github.com/arnav-kr/cmf-watch-utils", rev = "e67d88a87d61c2a65f1d4c024853ef9623b3ff05" }
-cmf-watch-fwkit = { git = "https://github.com/arnav-kr/cmf-watch-utils", rev = "e67d88a87d61c2a65f1d4c024853ef9623b3ff05", subdirectory = "tooling" }
+cmf-watch-utils = { git = "https://github.com/freethinkel/cmf-watch-utils", rev = "0f768dc371dbb15a09ec34c4189e128c83f22e74" }
+cmf-watch-fwkit = { git = "https://github.com/freethinkel/cmf-watch-utils", rev = "0f768dc371dbb15a09ec34c4189e128c83f22e74", subdirectory = "tooling" }

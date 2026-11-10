@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 
@@ -17,3 +18,15 @@ def firmware() -> Path:
     if not path.is_file() or path.stat().st_size < 1 << 20:
         raise FileNotFoundError(f"{path} is missing or a Git LFS pointer; run `git lfs pull` in cmf-watch-utils")
     return path
+
+
+def stock_app() -> bytes:
+    from fwkit import aota
+    from fwkit.image import Image
+
+    temp = Image.open(str(firmware())).decompressed("TEMP.bin")
+    _, entries = aota.parse(temp)
+    data = next(e for e in entries if e.name == "app.bin").stored(temp)
+    if not hashlib.sha256(data).hexdigest().startswith("30e7978c39d8fb79"):
+        raise ValueError("app.bin does not match JX402 1.0.0.73")
+    return data
