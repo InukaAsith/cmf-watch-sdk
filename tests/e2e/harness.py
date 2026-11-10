@@ -322,6 +322,63 @@ def padded(name: str, size: int, new_name: str) -> bytes:
     return package.pack(pkg.image.ljust(size, b"\0"), name=new_name, version=pkg.version, entry=pkg.entry,
                         kind=pkg.kind, relocs=pkg.relocs)
 
+def symbol(elf: Path, name: str) -> int:
+    """Value of the one symbol named `name` (demangled, last path segment); images link at 0, so an image offset."""
+    out = subprocess.run(["llvm-nm", "--demangle", str(elf)], capture_output=True, text=True, check=True).stdout
+    hits = {int(v, 16) for v, _, n in (line.split(maxsplit=2) for line in out.splitlines() if line[:1] != " ")
+            if n == name or n.endswith("::" + name)}
+    if len(hits) != 1:
+        raise KeyError(f"{name}: {len(hits)} matches in {elf}")
+    return hits.pop()
+
+
+POPUP_FLAGS = 0x3800FAF4  # bits 0/1: a stock popup ("Paired" after the first connection) is open
+
+
+def ready(emu: Emu):
+    """Closes the "Paired" popup, then waits out the screen-off that follows the BLE disconnect: the panel
+    blanks ~5.7 s after "Ble wake lock 0" despite keep_awake (task 7 e2e runs 3-5), and an idle guest stalls emu.call."""
+    emu.keep_awake()
+    for _ in range(3):
+        if not emu.peek(POPUP_FLAGS, 1)[0] & 3:
+            break
+        emu.send("c 1", "c 0", pause=2)
+    else:
+        raise RuntimeError("stock popup is still open")
+    for _ in range(60):
+        uart = emu.uart()
+        if uart.rfind("Ble wake lock 0") > uart.rfind("Ble wake lock 1"):
+            break
+        emu.sleep(0.5)
+    emu.sleep(8)
+    uart = emu.uart()
+    if uart.rfind("view_cache: deinit") > uart.rfind("view_cache: init"):
+        emu.send("c 1", "c 0", pause=2)  # wakes the screen on the face
+    emu.keep_awake()
+
+
+def open_menu(emu: Emu):
+    """Opens view 0xF0 (the loader menu) after `installed`; until task 10 through call, not the app list."""
+    ready(emu)
+    emu.call(OPEN_VIEW, 0xF0, 0)
+    emu.sleep(2)
+    if emu.peek(STUB_RAM + 4, 2) != b"\x01\x01":
+        raise RuntimeError("loader is not active")
+
+
+def open_app(emu: Emu, row: int):
+    open_menu(emu)
+    y = 140 + 60 * row  # menu rows: wp2-loader menu.rs
+    emu.send(f"t 1 200 {y}", f"t 0 200 {y}", pause=2)
+    if emu.peek(STUB_RAM + 6, 1) == b"\xff":  # running_slot
+        raise RuntimeError(f"app in row {row} did not start")
+
+
+def lab_play(emu: Emu):
+    """Taps PLAY in vibration-lab (y 330..390)."""
+    emu.send("t 1 233 360", "t 0 233 360", pause=1)
+
+
 def swipe(emu: Emu, x0, y0, x1, y1, steps=2, pause=2):
     points = [(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps) for i in range(steps + 1)]
     emu.send(*(f"t 1 {x} {y}" for x, y in points), f"t 0 {x1} {y1}", pause=pause)
