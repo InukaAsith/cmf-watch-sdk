@@ -90,6 +90,7 @@ as good as the decoder, which now follows the SDK. `motor.log` (virtual ms, duty
 | Что | Адрес / значение | Увер. |
 |---|---|---|
 | ACTH | `+0x18` размер полезной нагрузки (сток `0x259C3C`), `+0x1C` = `0xFFFFFFFF − sum32(app[0x200:0x200+size])`, `+0x20` выравнивает `sum32(app[0:0x200]) = 0xFFFFFFFF`; пересчёт на стоке воспроизводит `0xDCF84B50`/`0x7929C5D6` | high |
+| ACTH = `image_head_t` Actions SDK | `bootloader/soc/arm/actions/leopard/soc_boot.h` (lvgl/lv_port_actions_technology `26f51e5`): `+0x08` load_addr, `+0x0C` `ih_name[8]` (`0x62` = `"b"`), `+0x14` entry, `+0x18` img_size, `+0x1C` img_chksum, `+0x20` hdr_chksum, `+0x24` hdr_size `0x200`, `+0x2C` flags (сток 0, без подписи). `app_image_check()` (`boot/soc_boot_priv.c`) проверяет magic, вектор сброса по `+0x204` (нечётный, в пределах `code_max_len`), `img_size ≤ code_max_len`, обе суммы. Хвост `0x25A000..0x25A080` — `ksdfs.bin`, дописанный `build_firmware.py` после расчёта заголовка (сток не покрывает его размером, `0x1C4` нулей перед ним); прошивка ищет ksdfs по `0x10259E3B` (`FUN_100f5d2a`, «koff»), там нули, так что хвост не используется ни стоком, ни патчем. Установщик OTA проверяет только CRC32 файлов AOTA. Патчер: без заглушки размер стоковый, с заглушкой `len − 0x200`, итог сверяется `check_acth()` | high (SDK), medium (что бинарный загрузчик часов = SDK) |
 | XIP | эмулятор отображает NOR `0x24000..+0x3DC000` на `0x10000000`, так что дописанные байты видны сразу | high |
 | Инициализация кучи | `FUN_101884e4`: `bl 0x10146aa4` по `0x101884FA` (8 аргументов, 4 из них на стеке); литералы размера `0x10188508` (init), `0x10188588`, `0x101885F4` (геттеры) | high |
 | BLE-диспетчер | `FUN_100d343c(frame)`, поля уже в host order; `c1 == 0xFFFF && c2 > 0x908B` → `default` по `0x100D34EA`: `ldrh r1,[r5,#1]` → `bl 0x100cc284` по **`0x100D34F0`** (`f8f7c8fe`), то есть чтение payload в `0x3804B0E6`, потом лог; `r5` — указатель на кадр | high |
@@ -284,6 +285,13 @@ resources (labels and icons come from vendor `/NAND:A` resources).
 - The stub therefore answers `0x90A0..0x90A4` only while both the authkey and the session key are non-zero. A
   non-zero authkey comes only from a passed `0x8047` challenge (needs the pairing secret). There is no cleaner
   stock signal: `0x8047` sets its flags `0x380498AA/AB` before it checks the signature.
+- **Threat model: the gate only closes the zero-key path.** The pairing secret is not secret to a BLE client.
+  Any connected client reads it with `AT GETSECRET` on the shell characteristic, and the second `0x8049` binds
+  without a tap on the watch. This holds in the emulator (the CLI and the e2e "attacker" in
+  `test_unpaired_session_refused` both do it) and on the real watch: the owner's read-only check (2026-11-10)
+  got the 32-hex secret on an unbonded Mac with no confirmation on the watch (macOS MTU 247, all expected UUIDs
+  present). **Anyone in BLE range can complete the stock handshake and install a package silently.** That is
+  the same exposure as stock OTA, and the owner accepted it as is; there is no code change for it.
 - `0x8047` sets `*0x380498AB = 1`; the next `0x8049` (`0x100CDCAC`) then opens the bind popup
   (`ble_pair_request_msgbox`, sets the flag to 2) and does not answer. Any later `0x8049` sees 2 and answers at
   once with the authkey; `0x804D` closes the popup when the flag is 2.
@@ -325,9 +333,27 @@ thread switch-out hook `0x1004D6F0` and `set_autosleep_time` `0x10149420`; emula
 | Priority map (emulator, after boot) | cooperative: `displayworkq` −12, `BT HCI RX` −10, `BT TX` −9, `BT RX` −8, `prd_tsk_workq` −2, `dspworkq` −2, `sysworkq` −1. Preemptive: `main` 0, `media` 1, `BT MONITOR` 1, `bluetooth` 2, `lvglworkq` 2, a work queue 2, `ui_service` 3, `gps_service` 4, `diskio_cache` 4, `sensor_service` 5, `res_preload` 5, work queues 6, 7, 8, `userworkq` 8, `launcher` 10, `logsrv` 11, `wewear_read` 12, `tcomp_workq` 12, `vendor`, `vendor_read`, `ble_fate`, `fate_read`, `wewear`, `wewear_ftp`, `wewear_ftp_read` and a work queue 13, `standby` 14, `actlog` 14, `shell_uart` 14, `idle 00` 15 | high |
 | App priority | `idle` is 15, so `CONFIG_NUM_PREEMPT_PRIORITIES` = 15 and 14 is the lowest priority `k_thread_create` accepts for another thread. Apps run at **14**, equal to `standby`, `actlog` and `shell_uart`. With `motor-hog` spinning: at 4, `wp2apps list` failed after 7.3 s (the vendor/wewear threads at 13 starve); at 14 it answered in 1.5 s, and `standby` still ran (the panel blanked after the BLE disconnect and closed the view, which it did not at 4) | high (emulator) |
 | Charge popup | `p 4000 1 60` (charger in) → `msgbox_cache popup … mid:262` → `set_popup_msgbox id:0 - 262, flag:1`: `*(u8*)0x3800FAF4 = 1`, `*(u16*)0x3800FAF6 = 262`; `set_autosleep_time:10000`; the stock buzzes the motor itself (`980 ‰`, 30 Hz, 300 ms). No table lookup or `call` needed | high |
-| View under the popup | `view 240 focus 0` → popup view 62 created and painted → `view 240 defocused`, `pause draw`; `view 62 focused`. The `----->view:N ev:[…]` lines come from stock procs, so they do not show what the stub proc receives; the loader treats msg 8/7 and the flag byte the same (`overlay()`). Over the face the popup's `view_cache: shrink` deleted cached views 209/210; over view 240 it deleted nothing (`call shrink 0) ret:0, -3`) | high / msgs 7, 8 to the stub medium |
+| View under the popup | `view 240 focus 0` → popup view 62 created and painted → `view 240 defocused`, `pause draw`; `view 62 focused`. The `----->view:N ev:[…]` lines come from stock procs, so they do not show what the stub proc receives; the loader treats msg 8/7 and the flag byte the same (`overlay()`). Over the face the popup's `view_cache: shrink` deleted cached views 209/210; over view 240 it deleted nothing (`call shrink 0) ret:0, -3`). The stub proc does get msg 8 on open and msg 7 on close (`StubRam.trace` `0x800F0`, `0x700F0`; fix-final probe, PauseTest) | high |
 | Knob sign | `r 80` gives a negative `0x2D` step: the loader sends `CROWN` −1 (vibration-lab Pattern Tick → Long), the opposite of `view_key 0x6F` (+1) in list views | high (emulator) |
 | Closing | the button: view 62 gets `0x20000001` and `0x04000001`, `msgbox_cache close` → `set_close_msgbox … flag:0` (byte back to 0) → view 62 deleted → `view 240 focus 1`, `resume draw` (~30 ms). Unplugging (`p 4000 0 60`) also closes it, but sets `set_autosleep_time:5000`; the panel blanks 5 s later and the watch enters S1…S3BT, which stops the emulator (unimplemented read `0x40010000`). `set_autosleep_time` only stores the value (`*ptr = s · 1000`), the armed timer keeps it, so `keep_awake` after the close does not help. The harness closes with the button and leaves the charger in (`dc5v in, wake lock!`) | high |
+
+## Plan 2, final fixes: overlays, swipe back, PWM driver
+
+Probes `runs/e2e/fixfinal-probe{,2}.log`; Ghidra on `0x1012197C`, `0x101214AC`, `0x1012163C`, `0x1014C818`; a
+`BL` scan for callers of `0x100D5E34` and `0x100D6460`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| Msgbox calls | `msgbox_cache_popup(mid, udata)` **`0x100D5E35`**; `0x100D6461 (mid, bsync)` is **close** (`msgbox_cache close … mid:%u, bsync:%u`), not popup. Both are safe to call from any thread through `emu.call` | high |
+| Notifications and calls | every stock overlay is a msgbox in `notify_view` (view 62) and sets `0x3800FAF4`: message notifications are mid **252** (`todo_list_msgbox_handler`), the incoming call is mid **246** (`btcall`, `BTCALL_MSGBOX_ID`). Mid 252 without stock message data fails its layout (`ev:25 err:-5`) and closes within 3 ms, so the e2e uses the call box: it opens without data, ignores the button (`btcall_msgbox_key`) and is closed with `0x100D6461(246, 0)`. A real phone notification (ANCS or the wewear app protocol) is not reproduced: its BLE opcode and payload were not found in the time box | high / BLE path not found |
+| Swipe back | a right swipe in view 240 arrives as key `0xFFFF0071`; unhandled, the stock jumps back to the clock (`jump 240 -> 16`) and deletes 240. The loader leaves the key unhandled, so a swipe back also stops a running app (msg 4). A btcall/msgbox close holds `gesture lock` for a few seconds | high |
+| PWM driver | `pin_set_cycles` `0x1012197D` logs through the Zephyr log core (`0x1014C818`) and selects the pin (`0x1012163C`) before it raises `BASEPRI` to `0x20` for the register writes; `off` `0x101214AD` writes the control word and logs. No `k_mutex`/`k_sem` seen in these, but the log path is not proven non-blocking, so the loader does not call the driver under `BASEPRI`. Each `pin_set_cycles` first writes control `0` and then enables: `motor.log` shows a `0` line before every re-set in the same ms | medium / log path |
+| Tap vs drag | LVGL 8.3 sends `SHORT_CLICKED` after a drag too unless an object scrolled; the full-screen image does not scroll, so the menu instead ignores a release more than 80 px (per axis) from its press | medium (from LVGL 8.3 source, not decompiled) |
+
+ABI 2 note (final review M7): `wp2_core::events::Queue::clear` moves `head` to `tail` with a plain store while `pop`
+CASes `head`; a consumer preempted for ≥ 2 clears plus 14 pushes can see `head` back at its old value and pass the
+CAS (ABA). Unreachable in ABI 1 (`clear` only on launch and pause); an ABI 2 queue should carry a generation
+counter in `head`.
 
 ## Hardware: caches and MPU
 

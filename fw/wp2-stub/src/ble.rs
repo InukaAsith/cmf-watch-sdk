@@ -10,7 +10,9 @@ const DECRYPT: u32 = 0x101B608D;
 const ENCRYPT: u32 = 0x101B605B;
 const SEND: u32 = 0x100CC2D5;
 // stock key buffers (docs/recon.md): 0x804B answers with whatever authkey is set, all zero after boot or after the
-// bind popup is confirmed, so a session counts only when both keys are non-zero
+// bind popup is confirmed, so a session counts only when both keys are non-zero. This only closes the zero-key
+// path: any client in BLE range reads the pairing secret (AT GETSECRET, also on the real watch) and binds without
+// a tap, so it can install silently; same exposure as stock OTA, accepted by the owner (docs/recon.md).
 const AUTHKEY: u32 = 0x3804_8E08;
 const SESSION_KEY: u32 = 0x3800_29A6;
 const EEXIST: i32 = -17;
