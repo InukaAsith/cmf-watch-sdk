@@ -33,15 +33,27 @@ def sum32(data: bytes) -> int:
     return sum(struct.unpack(f"<{len(data) // 4}I", data)) & 0xFFFFFFFF
 
 
-def fix_acth(app: bytearray) -> None:
+def fix_acth(app: bytearray, size: int | None = None) -> None:
     if len(app) % 4:
         raise ValueError("app length must be a multiple of 4")
-    size = len(app) - 0x200
+    size = len(app) - 0x200 if size is None else size
     struct.pack_into("<I", app, 0x18, size)
     struct.pack_into("<I", app, 0x1C, 0)
     struct.pack_into("<I", app, 0x20, 0)
     struct.pack_into("<I", app, 0x1C, (0xFFFFFFFF - sum32(app[0x200:0x200 + size])) & 0xFFFFFFFF)
     struct.pack_into("<I", app, 0x20, (0xFFFFFFFF - sum32(app[:0x200])) & 0xFFFFFFFF)
+
+
+def check_acth(app: bytes, max_len: int = NOR_APP_SIZE) -> None:
+    # app_image_check() of the Actions SDK bootloader (header at 0, vectors at 0x200)
+    size, checksum = struct.unpack_from("<II", app, 0x18)
+    hdr_size, flags = struct.unpack_from("<H", app, 0x24)[0], struct.unpack_from("<I", app, 0x2C)[0]
+    reset = struct.unpack_from("<I", app, 0x204)[0]
+    if (app[:8] != b"ACTHHTCA" or hdr_size != 0x200 or flags or not reset & 1
+            or not APP_VBASE <= reset <= APP_VBASE + max_len or not 0 < size <= len(app) - 0x200
+            or size % 4 or len(app) > max_len or sum32(app[:0x200]) != 0xFFFFFFFF
+            or (sum32(app[0x200:0x200 + size]) + checksum) & 0xFFFFFFFF != 0xFFFFFFFF):
+        raise ValueError("ACTH header fails the bootloader image check")
 
 
 def _thumb_branch(at: int, target: int, second: int) -> bytes:
@@ -75,12 +87,15 @@ def patch(app: bytes, stub: bytes | None = None, *, _verify: bool = True) -> byt
     if _verify and not hashlib.sha256(app).hexdigest().startswith(STOCK_SHA256_PREFIX):
         raise ValueError("not the stock JX402 1.0.0.73 app.bin (sha256 mismatch)")
     out = bytearray(app)
+    stock_size = struct.unpack_from("<I", out, 0x18)[0]
     for off in HEAP_LITERALS:
         put(out, APP_VBASE + off, struct.pack("<I", HEAP_OLD), struct.pack("<I", HEAP_NEW))
     if stub is not None:
         add_stub(out, stub)
     out += bytes(-len(out) % 4)
-    fix_acth(out)
+    # stock size stops before the appended ksdfs tail; appended code must be covered
+    fix_acth(out, None if stub is not None else stock_size)
+    check_acth(out)
     return bytes(out)
 
 
