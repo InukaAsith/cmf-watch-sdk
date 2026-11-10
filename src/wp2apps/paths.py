@@ -1,6 +1,8 @@
 import hashlib
 import os
 from pathlib import Path
+import subprocess
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = Path("dumps/binaries/firmware/JX402_V1.0.0.73.bin")
@@ -21,12 +23,14 @@ def firmware() -> Path:
 
 
 def stock_app() -> bytes:
-    from fwkit import aota
-    from fwkit.image import Image
+    def fwkit(*args):
+        subprocess.run(["uv", "run", "--locked", "fwkit", "unpack", *args], cwd=ROOT, check=True, capture_output=True)
 
-    temp = Image.open(str(firmware())).decompressed("TEMP.bin")
-    _, entries = aota.parse(temp)
-    data = next(e for e in entries if e.name == "app.bin").stored(temp)
+    with tempfile.TemporaryDirectory() as tmp:
+        outer, inner = Path(tmp) / "image", Path(tmp) / "temp"
+        fwkit(str(firmware()), str(outer))
+        fwkit("--no-raw", str(outer / "raw/TEMP.bin.bin"), str(inner))
+        data = (inner / "parts/app.bin.part").read_bytes()
     if not hashlib.sha256(data).hexdigest().startswith("30e7978c39d8fb79"):
         raise ValueError("app.bin does not match JX402 1.0.0.73")
     return data

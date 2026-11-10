@@ -185,14 +185,15 @@ def u32(emu: Emu, addr: int) -> int:
 
 
 def heap(emu: Emu) -> tuple[int, int]:
-    free = u32(emu, HEAP + 8)
-    biggest, p = 0, u32(emu, HEAP + 0x60)
-    for _ in range(4096):
-        if not p:
-            return free, biggest
-        biggest = max(biggest, u32(emu, p + 4) & 0xFFFFFF)
-        p = u32(emu, p)
-    raise RuntimeError("free list does not end")
+    out = emu.gdb(f"set $free = *(unsigned *){HEAP + 8:#x}", f"set $p = *(unsigned *){HEAP + 0x60:#x}",
+                  "set $max = 0", "set $n = 0",
+                  "while $p != 0 && $n < 4096\n set $s = *(unsigned *)($p + 4) & 0xffffff\n"
+                  " if $s > $max\n  set $max = $s\n end\n set $p = *(unsigned *)$p\n set $n = $n + 1\n end",
+                  'printf "heap %u %u %u\\n", $free, $max, $n')
+    free, biggest, steps = map(int, out.split("heap ")[-1].split()[:3])
+    if steps >= 4096:
+        raise RuntimeError("free list does not end")
+    return free, biggest
 
 
 def settle(emu: Emu, timeout: float = 60) -> tuple[int, int]:

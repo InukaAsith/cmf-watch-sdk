@@ -15,6 +15,7 @@ class ReservationTest(unittest.TestCase):
         with harness.Emu("reserve", nor=nor, fixtures=harness.heavy_face_fixtures()) as emu:
             emu.wait_uart("launcher enter", 60)
             emu.keep_awake()
+            self.assertEqual(harness.u32(emu, harness.HEAP + 4), firmware.HEAP_NEW, "patch is not live in the guest")
             emu.poke(START, MARK * ((END - START) // 4))
             harness.walk(emu, seconds=240)
             uart = emu.uart()
@@ -36,7 +37,7 @@ class HeapTest(unittest.TestCase):
             emu.wait_uart("launcher enter", 60)
             emu.keep_awake()
             harness.walk(emu, seconds=60)
-            free, biggest = harness.heap(emu)
+            free, biggest = harness.settle(emu)
             self.assertLessEqual(biggest, free)
             size = biggest - 0x200
             p = emu.call(harness.UI_MEM_ALIGNED_ALLOC, 2, 8, size, 0)
