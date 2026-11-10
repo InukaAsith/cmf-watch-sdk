@@ -1,10 +1,11 @@
 import argparse
+import asyncio
 import json
 from pathlib import Path
 import sys
 import zlib
 
-from . import firmware, package, paths
+from . import firmware, h4, install, link, package, paths
 
 
 def cmd_pack(args):
@@ -39,6 +40,42 @@ def cmd_nor(args):
         out.write(data)
 
 
+def slot_arg(text):
+    if text.upper() == "L":
+        return install.LOADER_SLOT
+    if not text.isdigit() or int(text) >= install.SLOTS:
+        raise argparse.ArgumentTypeError("slot must be 0..7 or L")
+    return int(text)
+
+
+def slot_name(slot):
+    return "L" if slot == install.LOADER_SLOT else str(slot)
+
+
+async def with_watch(args, action):
+    async with h4.gatt_over_h4(args.hci_port) as gatt:
+        session = link.Session()
+        await session.handshake(gatt)
+        return await action(session)
+
+
+def cmd_install(args):
+    data = args.package.read_bytes()
+    slot = asyncio.run(with_watch(args, lambda s: install.install(s, data, args.slot)))
+    print(json.dumps({"installed": slot_name(slot)}))
+
+
+def cmd_remove(args):
+    asyncio.run(with_watch(args, lambda s: install.remove(s, args.slot)))
+    print(json.dumps({"removed": slot_name(args.slot)}))
+
+
+def cmd_list(args):
+    found = asyncio.run(with_watch(args, install.listing))
+    print(json.dumps({"slots": {slot_name(n): {"name": h.name, "version": h.version, "kind": h.kind,
+                                               "abi_minor": h.abi_minor} for n, h in found.items()}}))
+
+
 def parser():
     top = argparse.ArgumentParser(prog="wp2apps")
     commands = top.add_subparsers(dest="command", required=True)
@@ -62,6 +99,17 @@ def parser():
     nor.add_argument("--app", type=Path, required=True)
     nor.add_argument("--output", type=Path, required=True)
     nor.set_defaults(handler=cmd_nor)
+    for name, handler, help_ in (("install", cmd_install, "Install a package over BLE"),
+                                 ("remove", cmd_remove, "Delete a slot"),
+                                 ("list", cmd_list, "List installed packages")):
+        sub = commands.add_parser(name, help=help_)
+        if name == "install":
+            sub.add_argument("package", type=Path)
+            sub.add_argument("--slot", type=slot_arg)
+        if name == "remove":
+            sub.add_argument("--slot", type=slot_arg, required=True)
+        sub.add_argument("--hci-port", type=int, required=True, help="netsimd H4 TCP port")
+        sub.set_defaults(handler=handler)
     return top
 
 
@@ -69,8 +117,8 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         return args.handler(args) or 0
-    except (OSError, ValueError) as error:
-        print(f"Error: {error}", file=sys.stderr)
+    except (OSError, ValueError, ConnectionError) as error:
+        print(f"Error: {error or type(error).__name__}", file=sys.stderr)
         return 1
 
 
