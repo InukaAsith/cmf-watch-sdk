@@ -1,7 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
-import random
+import shlex
 import socket
 import struct
 import subprocess
@@ -18,6 +19,23 @@ HEAP = 0x38043824
 UI_MEM_ALIGNED_ALLOC = 0x101882C5
 UI_MEM_FREE = 0x10188381
 AWAKE_PTR = 0x38037D14
+GUEST_CLOCK = 0x40004118  # low 26 bits: QEMU_CLOCK_VIRTUAL in 125 ms steps (ats3089c.c acts_read)
+WALK = "tour1"  # names the walk in cache keys; bump when walk() changes
+PARALLEL = 3  # stock control walks at once during heavy-face selection
+
+
+def fast_qemu(directory: Path, qemu: Path = QEMU) -> Path:
+    """QEMU wrapper adding icount sleep=off: idle guest time is skipped instead of slept (1.5x, see e2e-speed-report)."""
+    # ponytail: rewrites the CLI's fixed icount string; drop once cmf-watch-utils takes an icount option
+    wrapper = directory / "qemu"
+    wrapper.write_text('#!/bin/sh\nfor a; do shift; [ "$a" = shift=3,align=off ] && a="$a,sleep=off"; set -- "$@" "$a"; done\n'
+                       f"exec {shlex.quote(str(qemu))} \"$@\"\n")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def guest_seconds(xp: str) -> float:
+    return (int(xp.split()[-1], 16) & 0x3FFFFFF) / 8
 
 
 def free_port() -> int:
@@ -71,7 +89,7 @@ class Emu:
         self.inputs.mkdir(parents=True)
         (self.inputs / "in-nor.bin").write_bytes(self.nor)
         argv = ["uv", "run", "--locked", "cmf-watch-utils", "emu", "run", "--headless", "--allow-reboot",
-                "--fixtures", str(self.fixtures), "--qemu", str(QEMU), "--rom", str(cmf / "runtime/compat.bin"),
+                "--fixtures", str(self.fixtures), "--qemu", str(fast_qemu(self.inputs)), "--rom", str(cmf / "runtime/compat.bin"),
                 "--nor", str(self.inputs / "in-nor.bin"), "--qmp-port", str(self.qmp_port),
                 "--seconds", str(self.seconds), "--output", str(self.run)]
         if self.hci_port:
@@ -91,13 +109,26 @@ class Emu:
             self.vm.terminate()
             self.vm.wait(timeout=10)
 
+    def clock(self) -> float:
+        """Guest virtual time in seconds, 125 ms resolution."""
+        return guest_seconds(self.qmp.hmp(f"xp /1wx {GUEST_CLOCK:#x}")["return"])
+
+    def sleep(self, seconds: float):
+        """Waits for guest time, so gestures mean the same at any host load."""
+        target, end = self.clock() + seconds, time.monotonic() + 30 + seconds * 10
+        while self.clock() < target:
+            if time.monotonic() > end:
+                raise TimeoutError(f"guest clock did not advance {seconds}s")
+            time.sleep(0.05)
+
     def send(self, *lines, pause=0.3):
+        """Input lines 125 ms (guest) apart, then `pause` guest seconds."""
         with (self.run / "input.txt").open("a") as out:
             for line in lines:
                 out.write(line + "\n")
                 out.flush()
-                time.sleep(0.15)
-        time.sleep(pause)
+                self.sleep(0.125)
+        self.sleep(pause)
 
     def gdb(self, *commands) -> str:
         self.qmp.hmp(f"gdbserver tcp::{self.gdb_port}")
@@ -207,34 +238,47 @@ def settle(emu: Emu, timeout: float = 60) -> tuple[int, int]:
     raise TimeoutError("heap never settled")
 
 
-def swipe(emu: Emu, x0, y0, x1, y1, steps=4, pause=2):
+def swipe(emu: Emu, x0, y0, x1, y1, steps=2, pause=2):
     points = [(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps) for i in range(steps + 1)]
     emu.send(*(f"t 1 {x} {y}" for x, y in points), f"t 0 {x1} {y1}", pause=pause)
 
 
-def walk(emu: Emu, seconds: float):
-    rng = random.Random(1)
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        emu.send("c 1", "c 0", pause=1.5)
-        emu.send(*["r 80"] * rng.randint(0, 12), pause=1.5)
-        emu.send("t 1 233 233", "t 0 233 233", pause=4)
-        for _ in range(rng.randint(1, 3)):
-            swipe(emu, *rng.choice(((380, 233, 80, 233), (80, 233, 380, 233), (233, 380, 233, 80), (233, 80, 233, 380))),
-                  steps=2)
-        emu.send("t 1 233 300", "t 0 233 300", pause=3)
-        emu.send("c 1", "c 0", "c 1", "c 0", pause=2)
-        emu.send("t 1 233 233", pause=1.5)
-        emu.send("t 0 233 233", pause=4)
+def walk(emu: Emu):
+    """Targeted tour from the watch face, ~60 guest s: every stock view the old 240 s random walk reached.
+    Frames of each step: runs/e2e-speed/explore4/sheet.png (e2e-speed-report)."""
+    emu.send("t 1 233 233", pause=1.5)
+    emu.send("t 0 233 233", pause=3)  # long press: face picker
+    emu.send("c 1", "c 0", pause=2)
+    swipe(emu, 380, 233, 80, 233)  # widget cards
+    swipe(emu, 80, 233, 380, 233)
+    swipe(emu, 233, 80, 233, 380)  # control centre
+    emu.send("c 1", "c 0", pause=2)
+    swipe(emu, 233, 380, 233, 80)  # notifications
+    emu.send("c 1", "c 0", pause=2)
+    for y in (233, 130):  # Exercise Records, Exercise
+        emu.send("c 1", "c 0", pause=2)  # app list
+        emu.send(f"t 1 233 {y}", f"t 0 233 {y}", pause=3)
+        emu.send("c 1", "c 0", pause=2)  # back to the face
+    emu.send("c 1", "c 0", pause=2)
+    swipe(emu, 233, 380, 233, 80)  # scroll the list
+    emu.send("t 1 233 300", "t 0 233 300", pause=3)  # Activity
+    swipe(emu, 380, 233, 80, 233)
+    emu.send("c 1", "c 0", pause=2)
+    emu.send("c 1", "c 0", pause=2)
+    emu.send(*["r 80"] * 3, pause=1)  # crown rotation in the list
+    emu.send("c 1", "c 0", pause=2)
 
 
 def face_fixtures(directory: Path, face_id: str) -> Path:
     cmf = paths.cmf_watch_utils()
     run = RUNS / f"face-{face_id}"
-    if not (run / "nand.bin").is_file():
+    report = run / "report.json"  # the CLI writes it even on failure; nand.bin alone proves nothing
+    if not report.is_file():
         subprocess.run(["uv", "run", "--locked", "cmf-watch-utils", "emu", "run", "--headless", "--fmc-face", face_id,
                         "--fixtures", str(cmf / "fixtures"), "--qemu", str(QEMU), "--rom", str(cmf / "runtime/compat.bin"),
                         "--seconds", "8", "--output", str(run)], cwd=paths.ROOT, check=True)
+    if json.loads(report.read_text())["outcome"] != "completed":
+        raise subprocess.CalledProcessError(1, f"emu run --fmc-face {face_id}")
     directory.mkdir(parents=True, exist_ok=True)
     links = (("nor.bin", cmf / "fixtures/nor.bin"), ("nand-id.bin", cmf / "fixtures/nand-id.bin"),
              ("nand-defaults.bin", run / "nand.bin"), ("wfc-index.txt", run / "wfc-index.txt"))
@@ -244,8 +288,8 @@ def face_fixtures(directory: Path, face_id: str) -> Path:
     return directory
 
 
-def control_walk(face_id: str, seconds: int = 240) -> dict:
-    cache = RUNS / f"control-{face_id}.json"
+def control_walk(face_id: str) -> dict:
+    cache = RUNS / f"control-{face_id}-{WALK}.json"
     if cache.is_file():
         return json.loads(cache.read_text())
     try:
@@ -256,7 +300,7 @@ def control_walk(face_id: str, seconds: int = 240) -> dict:
         with Emu(f"control-{face_id}", nor=stock_nor(), fixtures=fixtures) as emu:
             emu.wait_uart("launcher enter", 60)
             emu.keep_awake()
-            walk(emu, seconds=seconds)
+            walk(emu)
             uart = emu.uart()
         result = {"boots": uart.count("*** Booting Zephyr"), "mllc_failed": uart.count("MllcFailedHook"),
                   "fatal": uart.count("ZEPHYR FATAL ERROR"), "run": emu.run.name}
@@ -265,18 +309,20 @@ def control_walk(face_id: str, seconds: int = 240) -> dict:
 
 
 def heavy_face_fixtures() -> Path:
-    fixtures = RUNS / "fixtures-heavy"
+    fixtures = RUNS / f"fixtures-heavy-{WALK}"
     if (fixtures / "face.json").is_file():
         return fixtures
     listing = subprocess.run(["uv", "run", "--locked", "cmf-watch-utils", "emu", "faces", "--sort", "downloads"],
                              cwd=paths.ROOT, capture_output=True, text=True, check=True).stdout
-    rejected = []
-    for face in json.loads(listing)[:10]:
-        result = control_walk(face["id"])
-        entry = {"id": face["id"], "name": face["name"], "downloads": face["downloads"], "control": result}
-        if (result.get("boots"), result.get("mllc_failed"), result.get("fatal")) == (1, 0, 0):
-            face_fixtures(fixtures, face["id"])
-            (fixtures / "face.json").write_text(json.dumps({**entry, "rejected": rejected}, indent=2))
-            return fixtures
-        rejected.append(entry)
+    faces, rejected = json.loads(listing)[:10], []
+    with ThreadPoolExecutor(PARALLEL) as pool:  # PARALLEL walks at a time; the first survivor in download order wins
+        for batch in (faces[i:i + PARALLEL] for i in range(0, len(faces), PARALLEL)):
+            for face, result in zip(batch, pool.map(control_walk, [face["id"] for face in batch])):
+                entry = {"id": face["id"], "name": face["name"], "downloads": face["downloads"], "control": result}
+                if (result.get("boots"), result.get("mllc_failed"), result.get("fatal")) == (1, 0, 0):
+                    face_fixtures(fixtures, face["id"])
+                    (fixtures / "face.json").write_text(json.dumps({**entry, "walk": WALK, "rejected": rejected},
+                                                                   indent=2))
+                    return fixtures
+                rejected.append(entry)
     raise RuntimeError(f"no top-10 face survives the stock walk: {rejected}")
