@@ -24,7 +24,7 @@ mod target {
         fn raise() -> Self {
             let old: u32;
             unsafe {
-                asm!("mrs {}, basepri", "msr basepri, {}", out(reg) old, in(reg) 0x20u32, options(nostack));
+                asm!("mrs {}, basepri", "msr basepri_max, {}", out(reg) old, in(reg) 0x20u32, options(nostack));
             }
             Basepri(old)
         }

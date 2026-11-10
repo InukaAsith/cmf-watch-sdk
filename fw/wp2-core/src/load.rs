@@ -57,13 +57,14 @@ fn fill(file: &mut File, image: &mut [u8], scratch: &mut [u8], header: &Header) 
     let base = image.as_ptr() as u32;
     let step = scratch.len() & !3;
     let mut left = 4 * header.reloc_count as usize;
+    let mut next = 0;
     while left > 0 {
         let chunk = &mut scratch[..left.min(step)];
         if !fs::read_exact(file, chunk) {
             return Err(E_IO);
         }
         crc = crc32(crc, chunk);
-        relocate(image, base, chunk).map_err(|_| E_BAD)?;
+        relocate(image, base, chunk, &mut next).map_err(|_| E_BAD)?;
         left -= chunk.len();
     }
     if crc != header.body_crc { Err(E_BAD) } else { Ok(()) }

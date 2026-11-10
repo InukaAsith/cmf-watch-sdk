@@ -83,12 +83,17 @@ pub fn file_size(h: &Header) -> u32 {
     HEADER_SIZE as u32 + h.image_size + 4 * h.reloc_count
 }
 
-pub fn relocate(image: &mut [u8], base: u32, relocs: &[u8]) -> Result<(), PkgError> {
+// `next` is the lowest allowed offset, 0 before the first chunk of a table: offsets must strictly increase
+pub fn relocate(image: &mut [u8], base: u32, relocs: &[u8], next: &mut usize) -> Result<(), PkgError> {
     if relocs.len() % 4 != 0 {
         return Err(PkgError::Reloc);
     }
     for r in relocs.chunks_exact(4) {
         let off = u32::from_le_bytes(r.try_into().unwrap()) as usize;
+        if off < *next {
+            return Err(PkgError::Reloc);
+        }
+        *next = off + 1;
         let end = off.checked_add(4).filter(|&e| e <= image.len()).ok_or(PkgError::Reloc)?;
         let w = u32::from_le_bytes(image[off..end].try_into().unwrap()).wrapping_add(base);
         image[off..end].copy_from_slice(&w.to_le_bytes());
@@ -135,9 +140,19 @@ mod tests {
     #[test]
     fn relocate_adds_base() {
         let mut image = GOLDEN[0x40..0x50].to_vec();
-        relocate(&mut image, 0x3810_0000, &GOLDEN[0x50..]).unwrap();
+        relocate(&mut image, 0x3810_0000, &GOLDEN[0x50..], &mut 0).unwrap();
         assert_eq!(image, [0u32, 0x3810_0010, 1, 0x3810_0008].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<_>>());
-        assert_eq!(relocate(&mut image, 0, &13u32.to_le_bytes()), Err(PkgError::Reloc));
+        assert_eq!(relocate(&mut image, 0, &13u32.to_le_bytes(), &mut 0), Err(PkgError::Reloc));
+    }
+
+    #[test]
+    fn relocs_strictly_increase_across_chunks() {
+        let mut image = [0u8; 16];
+        let mut next = 0;
+        relocate(&mut image, 1, &4u32.to_le_bytes(), &mut next).unwrap();
+        assert_eq!(relocate(&mut image, 1, &4u32.to_le_bytes(), &mut next), Err(PkgError::Reloc));
+        let pair: Vec<u8> = [8u32, 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+        assert_eq!(relocate(&mut image, 1, &pair, &mut 0), Err(PkgError::Reloc));
     }
 
     #[test]

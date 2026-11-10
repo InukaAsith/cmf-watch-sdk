@@ -122,6 +122,10 @@ class FirmwareTest(unittest.TestCase):
             firmware.patch(STOCK, b"XXXX" + fake_stub()[4:])
         with self.assertRaisesRegex(ValueError, "stub"):
             firmware.patch(STOCK, fake_stub(boot=0x1025A0A0))
+        for bad in (dict(ble=0x1025A0C0), dict(view_proc=0x10000001), dict(view_name=0x1025A1A0),
+                    dict(applist=0x1025A081 + 0x4000)):
+            with self.subTest(**bad), self.assertRaisesRegex(ValueError, "stub"):
+                firmware.patch(STOCK, fake_stub(**bad))
 
     def test_heap_shrinks_by_stub_ram_only(self):
         self.assertEqual(firmware.HEAP_OLD - firmware.HEAP_NEW, 0x1000)

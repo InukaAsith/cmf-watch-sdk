@@ -1,4 +1,8 @@
+import io
+from pathlib import Path
 import struct
+import subprocess
+import tempfile
 import unittest
 import zlib
 
@@ -46,6 +50,13 @@ class InstallFlowTest(unittest.IsolatedAsyncioTestCase):
     async def test_loader_goes_to_loader_slot(self):
         self.assertEqual(await install.install(FakeSession(), sample("l", package.KIND_LOADER)), 0xFF)
 
+    async def test_kind_and_slot_checked_before_begin(self):
+        for data, slot in ((sample("l", package.KIND_LOADER), 2), (sample(), install.LOADER_SLOT)):
+            s = FakeSession()
+            with self.assertRaisesRegex(ValueError, "slot L"):
+                await install.install(s, data, slot)
+            self.assertEqual(s.calls, [])
+
     async def test_status_error(self):
         class Busy(FakeSession):
             async def request(self, *a, **k):
@@ -66,6 +77,16 @@ class CliTest(unittest.TestCase):
         self.assertEqual(cli.slot_arg("7"), 7)
         with self.assertRaises(Exception):
             cli.slot_arg("8")
+
+    def test_stock_app_failure_is_error_with_stderr(self):
+        from unittest import mock
+        from wp2apps import cli, paths
+        failed = subprocess.CalledProcessError(2, "fwkit", stderr="no such file\n")
+        with mock.patch.object(paths, "firmware", return_value=Path("x")), \
+                mock.patch.object(paths.subprocess, "run", side_effect=failed), \
+                tempfile.TemporaryDirectory() as tmp, mock.patch("sys.stderr", new=io.StringIO()) as err:
+            self.assertEqual(cli.main(["firmware", "--output", f"{tmp}/out.bin"]), 1)
+        self.assertIn("no such file", err.getvalue())
 
     def test_connection_refused_is_error_not_traceback(self):
         from wp2apps import cli
