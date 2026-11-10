@@ -47,22 +47,53 @@ pub fn scan() -> [Option<Entry>; ROWS] {
 }
 
 // ponytail: rows 6 and 7 fall below the round screen; scroll when 7+ apps get real
-pub fn draw(c: &mut Canvas, entries: &[Option<Entry>; ROWS], selected: usize) {
+// `failed`: (row, code) shows "Error <code>" in place of that row's name
+pub fn draw(c: &mut Canvas, entries: &[Option<Entry>; ROWS], selected: usize, failed: Option<(usize, i32)>) {
     use wp2_core::gfx::{H, W};
     c.fill_rect(0, 0, W as u16, H as u16, 0);
     c.text((W as i16 - 4 * 16) / 2, 60, b"Apps", WHITE);
     let mut shown = 0;
+    let mut buf = [0u8; 18];
     for (i, e) in entries.iter().flatten().enumerate() {
         let y = TOP + ROW_H * i as i16 + TEXT_DY;
         if i == selected {
             c.text(X - 24, y, b">", WHITE);
         }
-        c.text(X, y, &e.name[..usize::from(e.len)], WHITE);
+        let text = match failed {
+            Some((row, code)) if row == i => error(code, &mut buf),
+            _ => &e.name[..usize::from(e.len)],
+        };
+        c.text(X, y, text, WHITE);
         shown += 1;
     }
     if shown == 0 {
         c.text(X, TOP + TEXT_DY, b"No apps", WHITE);
     }
+}
+
+pub fn error(code: i32, buf: &mut [u8; 18]) -> &[u8] {
+    buf[..6].copy_from_slice(b"Error ");
+    let mut n = 6;
+    if code < 0 {
+        buf[n] = b'-';
+        n += 1;
+    }
+    let mut digits = [0u8; 10];
+    let mut v = code.unsigned_abs();
+    let mut d = 0;
+    loop {
+        digits[d] = b'0' + (v % 10) as u8;
+        d += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    for &b in digits[..d].iter().rev() {
+        buf[n] = b;
+        n += 1;
+    }
+    &buf[..n]
 }
 
 pub fn hit(y: i16) -> Option<usize> {
@@ -120,7 +151,7 @@ mod tests {
         let mut entries = [None; ROWS];
         entries[0] = a;
         entries[1] = b;
-        draw(&mut Canvas { px: &mut px }, &entries, 1);
+        draw(&mut Canvas { px: &mut px }, &entries, 1, None);
         assert!(lit(&px, 0, 60, W, 16) > 50);
         assert!(lit(&px, 90, 120, 300, 40) > 50);
         assert!(lit(&px, 90, 180, 300, 40) > 50);
@@ -130,9 +161,31 @@ mod tests {
     }
 
     #[test]
+    fn error_text() {
+        let mut buf = [0u8; 18];
+        assert_eq!(error(-12, &mut buf), b"Error -12");
+        assert_eq!(error(i32::MIN, &mut buf), b"Error -2147483648");
+        assert_eq!(error(5, &mut buf), b"Error 5");
+    }
+
+    #[test]
+    fn error_replaces_the_row_name() {
+        let mut entries = [None; ROWS];
+        entries[0] = entry(0, &header(b"hello", 0));
+        let mut plain = vec![0u16; W * H];
+        draw(&mut Canvas { px: &mut plain }, &entries, 0, None);
+        let mut px = vec![0u16; W * H];
+        draw(&mut Canvas { px: &mut px }, &entries, 0, Some((0, -12)));
+        assert!(lit(&px, 90, 120, 300, 40) > lit(&plain, 90, 120, 300, 40), "\"Error -12\" is longer than \"hello\"");
+        let mut other = vec![0u16; W * H];
+        draw(&mut Canvas { px: &mut other }, &entries, 0, Some((1, -12)));
+        assert_eq!(other, plain);
+    }
+
+    #[test]
     fn empty_menu_says_no_apps() {
         let mut px = vec![0xFFFFu16; W * H];
-        draw(&mut Canvas { px: &mut px }, &[None; ROWS], 0);
+        draw(&mut Canvas { px: &mut px }, &[None; ROWS], 0, None);
         assert!(lit(&px, 90, 120, 300, 40) > 50);
         assert_eq!(lit(&px, 0, 180, W, H - 180), 0);
     }

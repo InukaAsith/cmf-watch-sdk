@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import time
 
-from wp2apps import cli as wp2cli, firmware, paths
+from wp2apps import cli as wp2cli, firmware, package, paths
 
 E2E = os.environ.get("WP2_E2E") == "1"
 QEMU = Path(os.environ.get("WP2_QEMU") or paths.ROOT.parent / "cmf-watch-utils-motor-log/runtime-motor/qemu-system-arm")
@@ -314,6 +314,13 @@ def hog(emu: Emu, keep: int) -> list[int]:
 def unhog(emu: Emu, ptrs: list[int]):
     for p in ptrs:
         emu.call(UI_MEM_FREE, 2, p)
+
+
+def padded(name: str, size: int, new_name: str) -> bytes:
+    """target/<name>.wp2app with its image zero-padded to `size`, repacked as `new_name`."""
+    pkg = package.parse((paths.ROOT / "target" / f"{name}.wp2app").read_bytes())
+    return package.pack(pkg.image.ljust(size, b"\0"), name=new_name, version=pkg.version, entry=pkg.entry,
+                        kind=pkg.kind, relocs=pkg.relocs)
 
 def swipe(emu: Emu, x0, y0, x1, y1, steps=2, pause=2):
     points = [(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps) for i in range(steps + 1)]
