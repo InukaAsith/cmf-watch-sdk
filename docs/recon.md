@@ -13,7 +13,7 @@ code only; **low** = inferred.
 | Item | Value | Confidence | How |
 |---|---|---|---|
 | Core | Cortex-M33 (ARMv8-M MPU RBAR/RLAR format at `FUN_100f6708`), FPU present (S-registers in QEMU state) | high | decompile + emulator registers |
-| MPU | enabled with `PRIVDEFENA` (`MPU_CTRL = 5`); regions only added on demand for guards; default map keeps `0x2000_0000–0x3FFF_FFFF` executable | medium | `FUN_100f6708` |
+| MPU | enabled with `PRIVDEFENA` (`MPU_CTRL = 5`) at boot with three fixed regions, none on `ResFbHeap`; default map keeps `0x2000_0000–0x3FFF_FFFF` executable (see "Hardware: caches and MPU") | high | `FUN_100f6708`, `FUN_100f67cc` |
 | PSRAM | 8 MiB at `0x38000000` (aliases `0x18000000`, `0x34000000` write-through, `0x3C000000` uncached) | high | emulator machine model + literal survey |
 | Resource heap | `ResFbHeap` (JHeap): base `0x380A9340`, size `0x676B80`, end `0x3871FEC0`; init `FUN_101884e4` → `FUN_10146aa4`. The size literal occurs **three times**: `0x10188508` (init), `0x10188588` (getter `FUN_10188584`, `ldr r0,=0x676B80; bx lr`, no direct callers — likely reached through an ops table) and `0x101885F4` (second getter at `0x101885F0`) | high | decompile + literal search |
 | `APP_BASE` | `0x386FF000` | decision | top of `ResFbHeap` |
@@ -129,7 +129,7 @@ only while running). Sources: `scripts/recon/decomp` on `0x10188200–0x10188700
 | Lock | JHeap alloc/free raise `BASEPRI` to `0x20` around list updates (no mutex). Walking the free list and allocating under the same `BASEPRI` makes check-then-alloc atomic against other threads | medium |
 | Heap statistics | dump `FUN_10146BA4(heap, 1, 0)` (RES `+0x18` = `0x1018858C`) prints `Total:%u, Free:%u (%u%%), Water:%u (%u%%), UsedMax:%u (%u%%), MaxBlock:%u` | high |
 | Rust codegen for relocatable images | with `ORIGIN = 0` and `-C link-arg=--emit-relocs`, rustc 1.97 emits `R_ARM_THM_MOVW_ABS_NC`/`R_ARM_THM_MOVT_ABS` pairs for addresses (hello: 4 + 4, vibration-lab: 20 + 20, plus 6 `R_ARM_ABS32`). With `-C target-feature=+no-movt` addresses go to literal pools: only `R_ARM_ABS32` remain (hello 3, vibration-lab 28), plus PC-relative `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` that need no fix-up. `e_entry = 0x1`. rustc warns that `no-movt` is an unknown/unstable feature, but honours it | high |
-| Cache maintenance for code in PSRAM | not found yet. The only named candidate is `lv_gpu_acts_flush_dcache` (`0x10142C80`, display-specific). The emulator models no cache; hardware needs this answered before the first flash | low |
+| Cache maintenance for code in PSRAM | `0x101BEE52 (addr, size)`: SPI1 (PSRAM) cache write-buffer flush + write back and invalidate of the range; `wp2_core::load::load` calls it. See "Hardware: caches and MPU" | high |
 
 Heap probes (emulator, patched image): `ui_mem_aligned_alloc(2, 8, 0x10000, 0)` costs 0x10018 bytes of `free` (`u32(0x38043824 + 8)`), i.e. a JHeap overhead of `0x18`, within the plan's `SLACK`. `FUN_1018858D` is not a dump helper but the stock failure path (prints `Dump:ResFbHeap … MaxBlock:0`, then `save_all_data` and panics), so the tests never call it and check the free list (`u32(0x38043824 + 0x60)` chain) instead.
 
@@ -289,3 +289,26 @@ functions below; disassembly of `0x101842A4`, `0x101BA1C8`, `0x101DB2A6`, `0x101
 | `OPEN_VIEW(0x10, 0)` | jumps the view stack to the clock and deletes view 0xF0 (msg 4) | high |
 | Block placement | opening 0xF0 deletes the face, and the loader (`0x380A9A38`) and app (`0x380A9678`) take the freed face region every time; a block allocated from outside while the face shows cannot move the loader. A block of `app_size` allocated with the menu open moves the app (`0x380A9758`) | high (emulator) |
 | Screen-off after BLE | the panel blanks ~5.7 s after `Ble wake lock 0` (the install connection closing) although `keep_awake` set the timeout to `0xFFFFFFFF`; with the screen off no thread enters `os_mutex_lock` and `emu.call` hangs. `HelloTest.ready` waits for it and wakes the watch with the button | medium |
+
+## Hardware: caches and MPU
+
+Ghidra (`scripts/recon/decomp`) on `0x10142C80`, `0x100F0084`, `0x101BEE00`, `0x101BEE52`, `0x10199CC8`,
+`0x100F6708`, `0x100F67CC` and callers; capstone on `0x100F0072…0x100F00F4`, `0x100F6804`, `0x101053C0`,
+`0x10105534…0x10105C88`; a literal scan for `0xE000EF50…0xE000EF7C`, `0xE000ED14`, `0xE000ED9x`; a scan for
+`BL` to the functions below and for `MSR CONTROL`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| Core caches | none used. No literal in `0xE000EF50…0xE000EF7C` (ICIALLU, DCIMVAC, DCISW, DCCMVAC, DCCIMVAC), and the one `0xE000ED14` literal (`0x10105418`) is the `SHPR` base of `NVIC_SetPriority` (`0x101053E4`, `[0xE000ED14 + (irq & 0xF)]` for irq < 0), not a CCR write. The Cortex-M33 has no architectural L1 cache; Zephyr is built without cache support | high |
+| PSRAM cache | the vendor SPI1 cache in front of PSRAM. Ops register `0x40018004` (bit 0 start/busy, bit 1 range, bit 3 invalidate, bit 4 write back; `0x1F` with bit 2 is the write-buffer flush), range `0x40018008` start / `0x4001800C` last byte, both CPU addresses. Driver `0x100F0084 (op, addr, size)`, no-op for `addr` outside `0x34000000…0x3FFFFFFF`: op 1 write back range (`0x13`), 2 invalidate range (`0x0B`), 3 write-buffer flush (`0x1F`), 4 write back all (`0x11`), 5 invalidate all (`0x09`), 6 write back + invalidate range (`0x1B`), 7 same for all (`0x19`); range ops and 3, 5 busy-wait on bit 0 (`0x100F0074`) | high (code), bit names medium |
+| Mappings | `0x38…` is write-back cached: `0x101BEE00 (addr, size)` does op 3 + op 1 for `0x38000000…0x3BFFFFFF` and only op 3 for `0x34…`/`0x3C…` (write-through and uncached). This matches the alias table above | high |
+| Stock routine used | **`0x101BEE52 (addr, size)`**: under the k_mutex `0x380040D0` (`0x10101BDC` → `k_mutex_lock` `0x10199CC8`, asserts when called from an ISR) it runs op 3 then op 6 for `0x34000000…0x3BFFFFFF`, op 3 alone for `0x3C…`, returns 0. Stock calls it from UI and GPU paths on PSRAM buffers before DMA (`0x100FFA70`, `0x10142574`, `0x1018898C`, `0x101CD670`) | high |
+| `lv_gpu_acts_flush_dcache` (`0x10142C80`) | only widens a dirty-range record and forwards; no cache operation | high |
+| Loader/app load | `wp2_core::load::load` calls `0x101BEE52(block, image_size)` after relocation and CRC, with `dsb` before and `dsb; isb` after. The stub loads the loader through it, the loader loads apps through it. Callers run in the UI thread, never in an ISR or under `BASEPRI` | decision |
+| MPU setup | boot `0x100F6804` (prints `arm mpu init`) and PM resume `0x101BAC78` call `0x100F67CC`, which sets three regions through `0x100F6708 (idx, base, size, type)`. The first region enables the MPU: `MAIR0 = 0x44444444`, `MPU_CTRL = 5` (ENABLE + PRIVDEFENA). `RBAR = base | attr`, `RLAR = (base + size − 0x20) | 1`; attr `0x1F` type 0 (RO, XN), `0x1A` type 1 (RW), `0x1E` type 2 (RO, executable) | high |
+| MPU regions | 0: `0x00000000…0x0000FFFF` RO exec; 1: `0x10000000…0x10FFFFFF` RO exec (NOR XIP); 2: `0x38000000…0x38000A77` RO exec. None is XN and none covers `ResFbHeap` `0x380A9340…0x3871EEC0`; that range falls to the privileged default map (SRAM region, executable). Other regions come only from the debug shell `mpu_set` (`0x100F3F7E`) | high |
+| Thread privilege | all threads privileged: the only `MSR CONTROL` writes (`0x10105544`, `0x101055E0`, `0x10105C80`, `0x10253642`) clear FPCA or set SPSEL, never nPRIV; no userspace syscall strings | high |
+
+Unverified on hardware: whether the SPI1 cache serves instruction fetches from `0x38…` through the same lines as
+data (if it does, the write back alone would be enough; the invalidate costs only refills). The emulator does
+not model the controller (stock calls it during normal drawing, so its writes are accepted there).
