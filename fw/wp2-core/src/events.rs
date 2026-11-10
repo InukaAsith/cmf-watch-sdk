@@ -30,7 +30,7 @@ pub struct Queue {
     tail: AtomicU8,
 }
 
-// one producer (push) and one consumer (pop, clear)
+// one producer (push, clear) and one consumer (pop)
 unsafe impl Sync for Queue {}
 
 impl Queue {
@@ -51,13 +51,17 @@ impl Queue {
     }
 
     pub fn pop(&self) -> Option<Event> {
-        let head = self.head.load(Ordering::Relaxed);
-        if head == self.tail.load(Ordering::Acquire) {
-            return None;
+        loop {
+            let head = self.head.load(Ordering::Acquire);
+            if head == self.tail.load(Ordering::Acquire) {
+                return None;
+            }
+            let e = unsafe { (self.buf.get() as *const Event).add(usize::from(head)).read() };
+            // a clear() that preempted us moved head: drop e and read again
+            if self.head.compare_exchange(head, (head + 1) % LEN, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                return Some(e);
+            }
         }
-        let e = unsafe { (self.buf.get() as *const Event).add(usize::from(head)).read() };
-        self.head.store((head + 1) % LEN, Ordering::Release);
-        Some(e)
     }
 
     pub fn clear(&self) {

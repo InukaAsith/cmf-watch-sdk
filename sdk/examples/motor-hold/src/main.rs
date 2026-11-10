@@ -29,6 +29,9 @@ fn record(kind: u8) {
 }
 
 fn main(api: &'static Api) -> i32 {
+    // PauseTest checks this box is back on screen after RESUME
+    api.rect(150, 200, 166, 60, 0xFFFF);
+    api.show();
     api.vibrate(1000, 31);
     loop {
         if let Some(event) = api.event(1000) {

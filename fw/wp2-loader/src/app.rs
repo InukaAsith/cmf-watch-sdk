@@ -1,11 +1,14 @@
 use crate::{motor, ui};
 use core::ptr::addr_of_mut;
-use core::sync::atomic::{AtomicU32, Ordering};
-use wp2_core::events::{Api, Event, Queue};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use wp2_core::events::{Api, Event, Queue, PAUSE, RESUME};
 use wp2_core::heap::{self, RES};
 use wp2_core::layout::stub_ram;
 use wp2_core::load;
 use wp2_core::stock::{K_THREAD_ABORT, OS_SLEEP, OS_THREAD_CREATE, SYS_CLOCK_TICK_GET};
+
+// bits 0/1: a stock popup is open (set_popup_msgbox / set_close_msgbox, docs/recon.md)
+const POPUP_FLAGS: usize = 0x3800_FAF4;
 
 pub const NONE: u8 = 0xFF;
 // lowest preemptible priority (idle is 15): every stock thread but standby, actlog and shell_uart (also 14)
@@ -21,6 +24,8 @@ struct ThreadBuf([u8; 0x118 + 0x2000]);
 static mut THREAD_BUF: ThreadBuf = ThreadBuf([0; 0x118 + 0x2000]);
 pub static QUEUE: Queue = Queue::new();
 static EXITED: AtomicU32 = AtomicU32::new(0);
+// view msg 8 (defocus) until msg 7 (focus)
+pub static DEFOCUSED: AtomicBool = AtomicBool::new(false);
 
 static API: Api = Api {
     abi: 1,
@@ -56,6 +61,7 @@ pub fn launch(slot: u8) -> Result<(), i32> {
     ram.app_size = h.image_size;
     ram.running_slot = slot;
     EXITED.store(0, Ordering::Release);
+    motor::PAUSED.store(false, Ordering::Release);
     QUEUE.clear();
     ui::canvas().fill_rect(0, 0, 466, 466, 0);
     ui::DIRTY.store(true, Ordering::Release);
@@ -81,6 +87,32 @@ pub fn stop_app() {
     ram.app_block = 0;
     ram.app_size = 0;
     ram.running_slot = NONE;
+    motor::PAUSED.store(false, Ordering::Release);
+}
+
+fn overlay() -> bool {
+    DEFOCUSED.load(Ordering::Acquire) || unsafe { (POPUP_FLAGS as *const u8).read_volatile() } & 3 != 0
+}
+
+// UI tick: a stock popup over a running app pauses it (PAUSE, app's motor off), its close resumes it (RESUME, redraw)
+pub fn pause_tick() {
+    let paused = running() && overlay();
+    if paused == motor::PAUSED.swap(paused, Ordering::AcqRel) {
+        return;
+    }
+    if paused {
+        // no motor::off() here: the popup may already buzz the motor itself (charge popup: 300 ms);
+        // the watchdog right after this cuts the motor only if the app left it on
+        QUEUE.clear();
+        QUEUE.push(Event { kind: PAUSE, ..Event::default() });
+    } else {
+        QUEUE.push(Event { kind: RESUME, ..Event::default() });
+        ui::invalidate();
+    }
+}
+
+pub fn paused() -> bool {
+    motor::PAUSED.load(Ordering::Acquire)
 }
 
 extern "C" fn app_thread(entry: u32, api: *const Api, _: u32) {
@@ -112,8 +144,11 @@ extern "C" fn draw_text(x: i16, y: i16, text: *const u8, len: usize, c: u16) {
     ui::canvas().text(x, y, s, c);
 }
 
+// paused: the frame stays in the buffer until RESUME redraws it
 extern "C" fn present() {
-    ui::DIRTY.store(true, Ordering::Release);
+    if !paused() {
+        ui::DIRTY.store(true, Ordering::Release);
+    }
 }
 
 extern "C" fn next_event(ev: *mut Event, timeout_ms: u32) -> bool {

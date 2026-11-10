@@ -366,12 +366,43 @@ def open_menu(emu: Emu):
         raise RuntimeError("loader is not active")
 
 
-def open_app(emu: Emu, row: int):
+def open_app(emu: Emu, row: int, pause: float = 2):
     open_menu(emu)
     y = 140 + 60 * row  # menu rows: wp2-loader menu.rs
-    emu.send(f"t 1 200 {y}", f"t 0 200 {y}", pause=2)
+    emu.send(f"t 1 200 {y}", f"t 0 200 {y}", pause=pause)
     if emu.peek(STUB_RAM + 6, 1) == b"\xff":  # running_slot
         raise RuntimeError(f"app in row {row} did not start")
+
+
+def wait_popup(emu: Emu, is_open: bool):
+    for _ in range(40):
+        if bool(emu.peek(POPUP_FLAGS, 1)[0] & 3) == is_open:
+            return
+        emu.sleep(0.125)
+    raise RuntimeError(f"stock popup did not {'open' if is_open else 'close'}")
+
+
+def popup(emu: Emu):
+    """Plugs the charger: the stock charge popup (msgbox 262, docs/recon.md) covers the current view."""
+    emu.send("p 4000 1 60", pause=0)
+    wait_popup(emu, True)
+
+
+def close_popup(emu: Emu):
+    """The button closes the popup. The charger stays plugged: unplugging also closes it, but then auto-sleep
+    is 5 s and the deep sleep that follows stops the emulator; the charger's wake lock prevents that."""
+    emu.send("c 1", "c 0", pause=0)
+    wait_popup(emu, False)
+
+
+MOTOR_HOLD_ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/motor-hold"
+
+
+def read_marker(emu: Emu) -> list[int]:
+    """Event kinds motor-hold recorded in its JOURNAL ([count: u32, kinds: [u8; 16]])."""
+    journal = emu.peek(u32(emu, STUB_RAM + APP_BLOCK_OFF) + symbol(MOTOR_HOLD_ELF, "JOURNAL"), 20)
+    count = struct.unpack_from("<I", journal)[0]
+    return list(journal[4:4 + min(count, 16)])
 
 
 def lab_play(emu: Emu):

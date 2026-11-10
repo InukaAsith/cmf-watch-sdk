@@ -26,6 +26,8 @@ mod view {
     const PRELOAD: u32 = 2;
     const LAYOUT: u32 = 3;
     const DELETE: u32 = 4;
+    const FOCUS: u32 = 7;
+    const DEFOCUS: u32 = 8;
     const KEY: u32 = 0xD;
     const ERROR_MS: u32 = 2000;
 
@@ -57,6 +59,10 @@ mod view {
                 m.count = m.entries.iter().flatten().count();
                 redraw();
                 rc
+            }
+            FOCUS | DEFOCUS => {
+                app::DEFOCUSED.store(msg == DEFOCUS, Ordering::Release);
+                0
             }
             KEY => {
                 key(data);
@@ -90,10 +96,12 @@ mod view {
         unsafe { *(data as *mut u8).add(4) = 1 };
     }
 
-    // crown or button: to the app, else the crown moves the menu selection
+    // crown or button: to the app (dropped while paused), else the crown moves the menu selection
     fn crown(e: Event) {
         if app::running() {
-            app::QUEUE.push(e);
+            if !app::paused() {
+                app::QUEUE.push(e);
+            }
             return;
         }
         let m = st();
@@ -117,6 +125,9 @@ mod view {
         }
         let (x, y) = ui::touch_point(e);
         if app::running() {
+            if app::paused() {
+                return;
+            }
             let kind = if code == ui::PRESSED { TOUCH_DOWN } else { TOUCH_UP };
             let c = |v: i32| v.clamp(i16::MIN.into(), i16::MAX.into()) as i16;
             app::QUEUE.push(Event { kind, x: c(x), y: c(y), ..Event::default() });
@@ -143,6 +154,7 @@ mod view {
 
     extern "C" fn tick(_timer: *mut c_void) {
         let m = st();
+        app::pause_tick();
         motor::watchdog();
         if app::running() && app::exited() {
             app::stop_app();

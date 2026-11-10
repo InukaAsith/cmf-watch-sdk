@@ -603,3 +603,54 @@ class MotorTest(unittest.TestCase):
             emu.sleep(0.5)
             self.assertEqual(emu.motor()[n:], [])
             self.assert_stock_clock(emu)
+
+
+PAUSE, RESUME = 5, 6  # wp2-core events.rs
+LAB_TO_LONG = "r 80"  # knob step -1: Pattern Tick -> Long (runs/e2e/task9-knob.log)
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd, gdb and llvm-nm)")
+class PauseTest(unittest.TestCase):
+    def test_popup_pauses_and_releases_motor(self):
+        with harness.installed(["loader", "motor-hold"]) as (emu, port):
+            n = len(emu.motor())
+            harness.open_app(emu, row=0, pause=0.25)  # popup well inside the 2 s cap
+            self.assertGreater(emu.motor()[-1][1], 0)
+            harness.popup(emu)
+            emu.sleep(1)
+            log = emu.motor()[n:]
+            print(f"\nhold motor.log {log}")
+            start = next(m for m, d, hz in log if d == 1000 and hz == 31)
+            stop = next(m for m, d, _ in log if m > start and d == 0)
+            self.assertLess(stop - start, 1900)  # cut by the pause, not by the cap
+            self.assertEqual(log[-1][1], 0)
+            self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
+            self.assertEqual(emu.peek(START + 6, 1), b"\x00")  # the app lives on
+            self.assertNotEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+            harness.close_popup(emu)
+            emu.sleep(1.5)
+            self.assertEqual(harness.read_marker(emu), [PAUSE, RESUME])
+            self.assertEqual(bright_pixels(emu.frame()[2], 466, box=(150, 200, 166, 60)), 166 * 60)
+            # the charge popup buzzes at 30 Hz itself; the app's lines are the 31 Hz ones
+            self.assertFalse([e for e in emu.motor()[n:] if e[0] > stop and e[2] == 31], "app motor came back")
+
+    def test_lab_stops_measurement_on_pause(self):
+        with harness.installed(["loader", "vibration-lab"]) as (emu, port):
+            harness.open_app(emu, row=0)
+            emu.send("t 1 233 220", "t 0 233 220", pause=1)  # Pattern row
+            emu.send(LAB_TO_LONG, pause=1)
+            n = len(emu.motor())
+            emu.send("t 1 233 360", "t 0 233 360", pause=0)  # PLAY: 1000 ms on
+            harness.popup(emu)
+            emu.sleep(1)
+            log = emu.motor()[n:]
+            print(f"\nlab motor.log {log}")
+            start = next(m for m, d, hz in log if d > 0 and hz == 31)
+            stop = next(m for m, d, _ in log if m > start and d == 0)
+            self.assertLess(stop - start, 900)  # Long runs 1000 ms
+            self.assertEqual(log[-1][1], 0)
+            harness.close_popup(emu)
+            emu.sleep(2)
+            self.assertFalse([e for e in emu.motor()[n:] if e[0] > stop and e[2] == 31], "lab motor came back")
+            self.assertNotEqual(emu.peek(START + 6, 1), b"\xff")
+            self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
