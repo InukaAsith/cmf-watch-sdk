@@ -1,6 +1,9 @@
 // JX402 1.0.0.73 only (docs/recon.md). Functions carry the Thumb bit, data does not.
 pub const UI_MEM_ALIGNED_ALLOC: u32 = 0x101882C5;
 pub const UI_MEM_FREE: u32 = 0x10188381;
+// (addr, len): SPI1 (PSRAM) cache write-buffer flush + clean/invalidate range, no-op outside
+// 0x34000000..0x3C000000; takes a k_mutex, thread context only
+pub const PSRAM_CACHE_FLUSH_INVALIDATE: u32 = 0x101BEE53;
 
 pub const FS_FIND_MOUNT: u32 = 0x10106FA1;
 pub const FS_OPEN: u32 = 0x10107031;

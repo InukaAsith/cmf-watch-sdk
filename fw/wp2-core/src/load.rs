@@ -2,6 +2,7 @@ use crate::fs::{self, File};
 use crate::heap::{self, RES};
 use crate::layout::{slot_path, E_BAD, E_IO, E_NOMEM};
 use crate::pkg::{check_slot, crc32, parse_header, relocate, Header, HEADER_SIZE};
+use crate::stock::PSRAM_CACHE_FLUSH_INVALIDATE;
 
 // Reads the package of `slot` into a fresh RES heap block and relocates it there.
 pub fn load(slot: u8, file: &mut File, scratch: &mut [u8]) -> Result<(*mut u8, Header), i32> {
@@ -27,12 +28,25 @@ fn load_open(slot: u8, file: &mut File, scratch: &mut [u8]) -> Result<(*mut u8, 
     }
     let image = unsafe { core::slice::from_raw_parts_mut(block, header.image_size as usize) };
     match fill(file, image, scratch, &header) {
-        Ok(()) => Ok((block, header)),
+        Ok(()) => {
+            sync_code(block, header.image_size);
+            Ok((block, header))
+        }
         Err(e) => {
             unsafe { heap::free(RES, block) };
             Err(e)
         }
     }
+}
+
+// Code written through the cached 0x38… PSRAM mapping must reach PSRAM before it is fetched
+// (docs/recon.md, "Hardware: caches and MPU").
+fn sync_code(block: *mut u8, len: u32) {
+    let f: extern "C" fn(*mut u8, u32) -> i32 =
+        unsafe { core::mem::transmute(PSRAM_CACHE_FLUSH_INVALIDATE as usize) };
+    unsafe { core::arch::asm!("dsb sy", options(nostack)) };
+    f(block, len);
+    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack)) };
 }
 
 fn fill(file: &mut File, image: &mut [u8], scratch: &mut [u8], header: &Header) -> Result<(), i32> {
