@@ -75,10 +75,14 @@ class Gatt:
         pdu, self.partial = self.partial[4:4 + size], b""
         if cid != CID_ATT or not pdu:
             return
-        if pdu[0] == 0x1B:
+        if pdu[0] in (0x1B, 0x1D):
             callback = self.callbacks.get(struct.unpack_from("<H", pdu, 1)[0])
             if callback:
                 callback(pdu[3:])
+            if pdu[0] == 0x1D:
+                self._l2cap(b"\x1e")
+        elif pdu[0] == 0x02:
+            self._l2cap(struct.pack("<BH", 0x03, ATT_MTU))
         else:
             self.att.put_nowait(pdu)
 

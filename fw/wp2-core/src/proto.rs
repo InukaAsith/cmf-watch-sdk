@@ -41,7 +41,8 @@ pub fn parse(c2: u16, payload: &[u8]) -> Result<Request<'_>, Status> {
         (INFO, 1) => Ok(Request::Info(slot(payload[0])?)),
         (BEGIN, 9) => Ok(Request::Begin { slot: slot(payload[0])?, size: word(payload, 1), crc: word(payload, 5) }),
         (DATA, 5..=0x84) => Ok(Request::Data { offset: word(payload, 0), bytes: &payload[4..] }),
-        (END, 0) => Ok(Request::End),
+        // the stock decrypt helper returns NULL for an empty plaintext, so END carries one dummy byte
+        (END, 1) => Ok(Request::End),
         (DELETE, 1) => Ok(Request::Delete(slot(payload[0])?)),
         _ => Err(Status::BadRequest),
     }
@@ -56,7 +57,9 @@ mod tests {
         assert_eq!(parse(0x90A0, &[]), Err(Status::BadRequest));
         assert_eq!(parse(0x90A0, &[0, 0]), Err(Status::BadRequest));
         assert_eq!(parse(0x90A2, &[0; 4]), Err(Status::BadRequest));
-        assert_eq!(parse(0x90A3, &[0]), Err(Status::BadRequest));
+        assert_eq!(parse(0x90A3, &[]), Err(Status::BadRequest));
+        assert_eq!(parse(0x90A3, &[0, 0]), Err(Status::BadRequest));
+        assert_eq!(parse(0x90A3, &[0]), Ok(Request::End));
         assert_eq!(parse(0x90A5, &[]), Err(Status::BadRequest));
         assert_eq!(parse(0x90A4, &[9]), Err(Status::BadRequest));
     }

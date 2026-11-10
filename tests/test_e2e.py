@@ -1,9 +1,14 @@
+import asyncio
+import json
+import os
 import struct
+import types
 import unittest
+import zlib
 from unittest import skipUnless
 
 from tests.e2e import harness
-from wp2apps import firmware
+from wp2apps import cli, firmware, install, link, package, paths
 
 MARK = bytes.fromhex("a55ac33c")
 START, END = firmware.STUB_RAM, firmware.STUB_RAM + firmware.STUB_RAM_SIZE
@@ -95,3 +100,86 @@ class StubTest(unittest.TestCase):
         self.assertNotIn("ZEPHYR FATAL ERROR", uart)
         self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
         self.assertTrue(same_screen(emu.frame(), before), "the stock screen changed")
+
+
+def repack(data: bytes, version: int) -> bytes:
+    pkg = package.parse(data)
+    return package.pack(pkg.image, name=pkg.name, version=version, entry=pkg.entry, kind=pkg.kind, relocs=pkg.relocs)
+
+
+def with_watch(port, action):
+    return asyncio.run(cli.with_watch(types.SimpleNamespace(hci_port=port), action))
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class InstallTest(unittest.TestCase):
+    # one boot for the class; setUp empties every slot
+    @classmethod
+    def setUpClass(cls):
+        cls.emu, cls.port = cls.enterClassContext(harness.installed([]))
+        cls.hello = (paths.ROOT / "target" / "hello.wp2app").read_bytes()
+
+    def args(self, *args):
+        return [*args, "--hci-port", self.port]
+
+    def listing(self):
+        return json.loads(harness.cli_out(self.args("list")))["slots"]
+
+    def setUp(self):
+        for slot in self.listing():
+            harness.cli_out(self.args("remove", "--slot", slot))
+
+    def test_install_list_remove(self):
+        self.assertEqual(harness.cli(self.args("install", paths.ROOT / "target" / "hello.wp2app")), 0)
+        slots = self.listing()
+        self.assertEqual(slots["0"]["name"], "hello")
+        self.assertEqual(harness.cli(self.args("remove", "--slot", "0")), 0)
+        self.assertNotIn("0", self.listing())
+
+    def test_install_rejects_corrupt(self):
+        image_byte = bytearray(self.hello)
+        image_byte[package.HEADER_SIZE] ^= 1
+        reloc_byte = bytearray(self.hello)
+        reloc_byte[-1] ^= 1
+        minor = bytearray(self.hello)
+        minor[7] = 1
+        struct.pack_into("<I", minor, package.HEADER_CRC_SPAN, zlib.crc32(bytes(minor[:package.HEADER_CRC_SPAN])))
+        for name, data in (("image", image_byte), ("relocs", reloc_byte), ("abi_minor", minor)):
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, "INVALID"):
+                    with_watch(self.port, lambda s: install.upload(s, 0, bytes(data)))
+                self.assertNotIn("0", self.listing())
+
+    def test_install_interrupted_keeps_old(self):
+        v2 = repack(self.hello, 2)
+        harness.cli_out(self.args("install", paths.ROOT / "target" / "hello.wp2app"))
+
+        async def half(s):
+            await install._call(s, install.BEGIN, struct.pack("<BII", 0, len(v2), zlib.crc32(v2)))
+            for offset, part in list(install.chunks(v2))[:len(v2) // 256]:
+                await install._call(s, install.DATA, struct.pack("<I", offset) + part)
+
+        with_watch(self.port, half)
+        self.assertEqual(self.listing()["0"]["version"], 1)
+
+        async def sequence(s):
+            await install._call(s, install.BEGIN, struct.pack("<BII", 0, len(v2), zlib.crc32(v2)))
+            reply = await s.request(link.SYSTEM, install.DATA, struct.pack("<I", 8) + b"x", install.DATA | 0xA000)
+            self.assertEqual((reply[0], struct.unpack("<I", reply[1:])[0]), (install.Status.SEQUENCE, 0))
+            await install.upload(s, 0, v2)
+
+        with_watch(self.port, sequence)
+        self.assertEqual(self.listing()["0"]["version"], 2)
+
+    def test_unauthenticated_frame_ignored(self):
+        async def probe(s):
+            bad = link.frame(link.SYSTEM, install.INFO, b"\0", os.urandom(16))
+            await s.gatt.write(link.CMD_W, bad, response=False)
+            with self.assertRaises(TimeoutError):
+                async with asyncio.timeout(3):
+                    while (await s.frames.get())[1] != install.INFO | 0xA000:
+                        pass
+            self.assertIsNone(await install.info(s, 0))
+            self.assertIn(b"GETSECRET:", await s.at("AT GETSECRET"))  # a stock command still answers
+
+        with_watch(self.port, probe)

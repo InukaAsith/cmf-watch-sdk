@@ -21,6 +21,8 @@ VIEW_END_LITERALS = (0x1018BC28, 0x1018DF40)
 VIEW_ID = 0xF0
 BOOT_CALL = 0x101884FA
 STOCK_HEAP_INIT = 0x10146AA4
+BLE_CALL = 0x100D34F0
+STOCK_BLE_READ = 0x100CC284
 
 
 def sum32(data: bytes) -> int:
@@ -80,7 +82,7 @@ def patch(app: bytes, stub: bytes | None = None, *, _verify: bool = True) -> byt
 
 
 def add_stub(out: bytearray, stub: bytes) -> None:
-    magic, version, boot, _ble, view_proc, view_name, _ = STUB_HEADER.unpack_from(stub)
+    magic, version, boot, ble, view_proc, view_name, _ = STUB_HEADER.unpack_from(stub)
     if magic != b"WP2S" or version != 1 or not boot & 1 or not view_proc & 1:
         raise ValueError("bad stub header")
     if len(out) != STUB_OFFSET:
@@ -97,6 +99,8 @@ def add_stub(out: bytearray, stub: bytes) -> None:
     for lit in VIEW_END_LITERALS:
         put(out, lit, struct.pack("<I", VIEW_TABLE_END), struct.pack("<I", APP_VBASE + len(out)))
     put(out, BOOT_CALL, thumb_bl(BOOT_CALL, STOCK_HEAP_INIT), thumb_bl(BOOT_CALL, boot & ~1))
+    if ble:
+        put(out, BLE_CALL, thumb_bl(BLE_CALL, STOCK_BLE_READ), thumb_bl(BLE_CALL, ble & ~1))
 
 
 def stage_nor(nor: bytes, app: bytes) -> bytes:

@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+mod ble;
 mod view;
 
 use core::ffi::c_void;
@@ -11,7 +12,7 @@ pub struct StubHeader {
     magic: [u8; 4],
     version: u32,
     boot: unsafe extern "C" fn(),
-    ble: Option<extern "C" fn()>,
+    ble: unsafe extern "C" fn(),
     view_proc: extern "C" fn(u32, u32, *mut c_void) -> i32,
     view_name: *const u8,
     _r: [u32; 2],
@@ -25,7 +26,7 @@ static HEADER: StubHeader = StubHeader {
     magic: *b"WP2S",
     version: 1,
     boot: wp2_boot,
-    ble: None,
+    ble: ble::wp2_ble_default,
     view_proc: view::wp2_view_proc,
     view_name: b"wp2_view\0".as_ptr(),
     _r: [0; 2],

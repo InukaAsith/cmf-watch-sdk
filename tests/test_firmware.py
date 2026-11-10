@@ -80,6 +80,7 @@ class FirmwareTest(unittest.TestCase):
         out = firmware.patch(STOCK, stub)
         self.assertEqual(out[0x25A080:0x25A080 + len(stub)], stub)
         self.assertEqual(out[0x1884FA:0x1884FE], firmware.thumb_bl(0x101884FA, 0x1025A0A0))
+        self.assertEqual(out[0xD34F0:0xD34F4], firmware.thumb_bl(0x100D34F0, 0x1025A0C0))
         table = struct.unpack_from("<I", out, 0x1018BC24 - 0x10000000)[0]
         end = struct.unpack_from("<I", out, 0x1018BC28 - 0x10000000)[0]
         self.assertEqual(table % 8, 0)
