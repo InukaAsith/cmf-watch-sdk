@@ -5,7 +5,9 @@ from pathlib import Path
 import sys
 import zlib
 
-from . import firmware, h4, install, link, package, paths
+from bleak.exc import BleakError
+
+from . import blegatt, firmware, h4, install, link, package, paths
 
 
 def cmd_pack(args):
@@ -53,7 +55,8 @@ def slot_name(slot):
 
 
 async def with_watch(args, action):
-    async with h4.gatt_over_h4(args.hci_port) as gatt:
+    transport = blegatt.gatt_over_ble(args.address) if args.address else h4.gatt_over_h4(args.hci_port)
+    async with transport as gatt:
         session = link.Session()
         await session.handshake(gatt)
         return await action(session)
@@ -74,6 +77,13 @@ def cmd_list(args):
     found = asyncio.run(with_watch(args, install.listing))
     print(json.dumps({"slots": {slot_name(n): {"name": h.name, "version": h.version, "kind": h.kind,
                                                "abi_minor": h.abi_minor} for n, h in found.items()}}))
+
+
+def cmd_scan(args):
+    found = asyncio.run(blegatt.scan(args.timeout))
+    print(json.dumps({"devices": [
+        {"name": name, "rssi": rssi, "address": address if args.show_address else "<redacted>"}
+        for name, rssi, address in found]}))
 
 
 def parser():
@@ -108,8 +118,14 @@ def parser():
             sub.add_argument("--slot", type=slot_arg)
         if name == "remove":
             sub.add_argument("--slot", type=slot_arg, required=True)
-        sub.add_argument("--hci-port", type=int, required=True, help="netsimd H4 TCP port")
+        where = sub.add_mutually_exclusive_group(required=True)
+        where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
+        where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
         sub.set_defaults(handler=handler)
+    scan = commands.add_parser("scan", help="List nearby CMF watches (read-only; address redacted by default)")
+    scan.add_argument("--timeout", type=float, default=5.0)
+    scan.add_argument("--show-address", action="store_true")
+    scan.set_defaults(handler=cmd_scan)
     return top
 
 
@@ -117,7 +133,7 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         return args.handler(args) or 0
-    except (OSError, ValueError, ConnectionError) as error:
+    except (OSError, ValueError, ConnectionError, BleakError) as error:
         print(f"Error: {error or type(error).__name__}", file=sys.stderr)
         return 1
 

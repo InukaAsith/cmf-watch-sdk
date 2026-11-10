@@ -9,6 +9,7 @@ dependencies = [
   "cmf-watch-utils",
   "cmf-watch-fwkit",
   "pycryptodome>=3.20",
+  "bleak>=3.1.0",
 ]
 
 [project.scripts]
