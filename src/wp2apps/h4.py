@@ -34,8 +34,9 @@ def adv_reports(params: bytes):
 
 
 class Gatt:
-    def __init__(self, reader, writer):
+    def __init__(self, reader, writer, mtu: int = ATT_MTU):
         self.reader, self.writer = reader, writer
+        self.mtu = mtu  # 23 = the default MTU of a real watch: no Exchange MTU, long writes and split commands
         self.events = asyncio.Queue()
         self.att = asyncio.Queue()
         self.lock = asyncio.Lock()
@@ -82,7 +83,7 @@ class Gatt:
             if pdu[0] == 0x1D:
                 self._l2cap(b"\x1e")
         elif pdu[0] == 0x02:
-            self._l2cap(struct.pack("<BH", 0x03, ATT_MTU))
+            self._l2cap(struct.pack("<BH", 0x03, self.mtu))
         else:
             self.att.put_nowait(pdu)
 
@@ -147,7 +148,8 @@ class Gatt:
         if params[1]:
             raise ConnectionError(f"connection failed with status {params[1]:#04x}")
         self.handle = struct.unpack_from("<H", params, 2)[0]
-        await self._att(struct.pack("<BH", 0x02, ATT_MTU))
+        if self.mtu > 23:
+            await self._att(struct.pack("<BH", 0x02, self.mtu))
         start = 1
         while start < 0xFFFF:
             try:
@@ -182,10 +184,16 @@ class Gatt:
 
     async def write(self, uuid: str, data: bytes, response: bool = True) -> None:
         handle = self.chars[uuid][0]
-        if response:
+        room = self.mtu - 3
+        if response and len(data) <= room:
             await self._att(struct.pack("<BH", 0x12, handle) + data)
-        else:
-            self._l2cap(struct.pack("<BH", 0x52, handle) + data)
+        elif response:  # Prepare Write / Execute Write, as an OS does for a long write
+            for i in range(0, len(data), room - 2):
+                await self._att(struct.pack("<BHH", 0x16, handle, i) + data[i:i + room - 2])
+            await self._att(b"\x18\x01")
+        else:  # consecutive Write Commands; the watch reassembles by the frame header length
+            for i in range(0, len(data), room):
+                self._l2cap(struct.pack("<BH", 0x52, handle) + data[i:i + room])
             await self.writer.drain()
 
     async def subscribe(self, uuid: str, callback) -> None:
@@ -214,9 +222,9 @@ class Gatt:
 
 
 @asynccontextmanager
-async def gatt_over_h4(port: int, name: str = "cmf"):
+async def gatt_over_h4(port: int, name: str = "cmf", mtu: int = ATT_MTU):
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    gatt = Gatt(reader, writer)
+    gatt = Gatt(reader, writer, mtu)
     try:
         await gatt.connect(name)
         yield gatt

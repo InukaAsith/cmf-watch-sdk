@@ -44,12 +44,14 @@ class AdapterTest(unittest.TestCase):
                     await gatt.write(link.SHELL_W, b"x")
                     await gatt.subscribe(link.CMD_N, got.append)
                     clients[0].notify[link.CMD_N](None, bytearray(b"\x01\x02"))
-                    with self.assertRaises(ConnectionError):
-                        await gatt.write(link.CMD_W, bytes(200), response=False)
+                    clients[0].mtu_size = 23
+                    await gatt.write(link.CMD_W, bytes(200), response=False)  # long frame -> with response
+                    await gatt.write(link.CMD_W, bytes(20), response=False)
 
         asyncio.run(run())
         self.assertEqual(clients[0].target, ADDR)
-        self.assertEqual(clients[0].writes, [(link.CMD_W, b"abc", False), (link.SHELL_W, b"x", True)])
+        self.assertEqual(clients[0].writes, [(link.CMD_W, b"abc", False), (link.SHELL_W, b"x", True),
+                                            (link.CMD_W, bytes(200), True), (link.CMD_W, bytes(20), False)])
         self.assertEqual(got, [b"\x01\x02"])
 
     def test_name_not_found(self):
@@ -87,3 +89,12 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SplitNotificationTest(unittest.TestCase):
+    def test_parser_reassembles_mtu23_notifications(self):
+        data = link.frame(link.SYSTEM, 0x804D, bytes(range(100)), bytes(16))
+        parser, out = link.Parser(), []
+        for i in range(0, len(data), 20):
+            out += parser.feed(data[i:i + 20])
+        self.assertEqual([(c1, c2) for c1, c2, _ in out], [(link.SYSTEM, 0x804D)])

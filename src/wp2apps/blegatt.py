@@ -17,9 +17,10 @@ class Gatt:
         self.client = client
 
     async def write(self, uuid: str, data: bytes, response: bool = True) -> None:
-        room = self.client.mtu_size - ATT_OVERHEAD
-        if len(data) > room:  # fail loudly instead of a silent drop; no fragmentation on this link
-            raise ConnectionError(f"{len(data)}-byte write exceeds the negotiated ATT payload of {room}")
+        # A frame longer than MTU-3 must go as a write with response: the OS then does an ATT long write
+        # (Prepare/Execute) and the watch reassembles it. Split write commands do not work (emulator probe).
+        if len(data) > self.client.mtu_size - ATT_OVERHEAD:
+            response = True
         await self.client.write_gatt_char(uuid, data, response=response)
 
     async def subscribe(self, uuid: str, callback) -> None:
