@@ -2,7 +2,8 @@
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-pub const ABI: u32 = 1;
+pub const ABI: u16 = 1;
+pub const ABI_MINOR: u16 = 0;
 
 pub const TOUCH_DOWN: u8 = 1;
 pub const TOUCH_UP: u8 = 2;
@@ -23,7 +24,8 @@ pub struct Event {
 
 #[repr(C)]
 pub struct Api {
-    pub abi: u32,
+    pub abi: u16,
+    pub abi_minor: u16,
     pub width: u16,
     pub height: u16,
     pub fill_rect: extern "C" fn(x: i16, y: i16, w: u16, h: u16, rgb565: u16),
@@ -70,7 +72,7 @@ pub fn api() -> Option<&'static Api> {
 
 #[doc(hidden)]
 pub fn __start(api: &'static Api, main: fn(&'static Api) -> i32) -> i32 {
-    if api.abi != ABI {
+    if api.abi != ABI || api.abi_minor < ABI_MINOR {
         return -2;
     }
     API.store(api as *const Api as *mut Api, Ordering::Relaxed);
@@ -96,4 +98,48 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
         (api.exit)(-1)
     }
     loop {}
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use std::boxed::Box;
+
+    extern "C" fn rect(_: i16, _: i16, _: u16, _: u16, _: u16) {}
+    extern "C" fn text(_: i16, _: i16, _: *const u8, _: usize, _: u16) {}
+    extern "C" fn present() {}
+    extern "C" fn next(_: *mut Event, _: u32) -> bool {
+        false
+    }
+    extern "C" fn motor(_: u16, _: u16) -> i32 {
+        0
+    }
+    extern "C" fn millis() -> u32 {
+        0
+    }
+    extern "C" fn exit(_: i32) -> ! {
+        panic!("exit")
+    }
+
+    fn table(abi: u16, abi_minor: u16) -> &'static Api {
+        Box::leak(Box::new(Api {
+            abi, abi_minor, width: 466, height: 466, fill_rect: rect, draw_text: text, present,
+            next_event: next, motor, millis, exit,
+        }))
+    }
+
+    fn app(_: &'static Api) -> i32 {
+        7
+    }
+
+    #[test]
+    fn runs_on_same_major_and_newer_minor() {
+        assert_eq!(__start(table(ABI, ABI_MINOR + 1), app), 7);
+    }
+
+    #[test]
+    fn rejects_other_major() {
+        assert_eq!(__start(table(ABI + 1, ABI_MINOR), app), -2);
+    }
 }

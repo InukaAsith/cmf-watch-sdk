@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -35,6 +36,36 @@ class PackageTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 package.parse(broken)
 
+    def test_header_bit_flip_rejected(self):
+        data = bytearray(package.pack(b"\0" * 64, name="x", version=1))
+        data[0x28] ^= 0x01
+        with self.assertRaises(ValueError):
+            package.parse(bytes(data))
+
+    def test_nonzero_reserved_rejected(self):
+        data = bytearray(package.pack(b"\0" * 64, name="x", version=1))
+        data[0x3F] = 1
+        with self.assertRaises(ValueError):
+            package.parse(bytes(data))
+
+    def test_abi_minor_round_trip(self):
+        pkg = package.parse(package.pack(b"\0" * 4, name="x", version=1))
+        self.assertEqual(pkg.abi_minor, package.ABI_MINOR)
+        self.assertEqual(package.HEADER.unpack_from(package.pack(b"\0" * 4, name="x", version=1))[3],
+                         package.ABI_MINOR)
+
+    def test_elf_matching_image_accepted(self):
+        package.check_elf(b"\0" * 0x30, fake_elf(package.APP_BASE | 1, [(package.APP_BASE, 0x30)]))
+
+    def test_elf_linked_elsewhere_rejected(self):
+        with self.assertRaises(ValueError):
+            package.check_elf(b"\0" * 0x30, fake_elf(0x10000001, [(0x10000000, 0x30)]))
+
+    def test_elf_image_missing_bss_rejected(self):
+        elf = fake_elf(package.APP_BASE | 1, [(package.APP_BASE, 0x30), (package.APP_BASE + 0x30, 0x8)])
+        with self.assertRaises(ValueError):
+            package.check_elf(b"\0" * 0x30, elf)
+
     def test_entry_size_and_address_bounds(self):
         with self.assertRaises(ValueError):
             package.pack(b"\0" * 16, name="x", version=1, entry=16)
@@ -61,6 +92,17 @@ class PackageTest(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()) as stderr:
                 self.assertEqual(cli.main(["info", str(bad)]), 1)
             self.assertIn("Error:", stderr.getvalue())
+
+
+def fake_elf(entry, sections):
+    header = bytearray(0x34)
+    header[:4] = b"\x7fELF"
+    struct.pack_into("<I", header, 0x18, entry)
+    struct.pack_into("<I", header, 0x20, 0x34)
+    struct.pack_into("<HH", header, 0x2E, 40, len(sections) + 1)
+    table = bytes(40) + b"".join(struct.pack("<IIIIII", 1, 1, 2, addr, 0, size) + bytes(16)
+                                 for addr, size in sections)
+    return bytes(header) + table
 
 
 if __name__ == "__main__":

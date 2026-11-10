@@ -8,7 +8,7 @@ from psram_probe import GDB_PORT, QMP_PORT, Qmp, gdb
 from wp2apps import paths
 
 SCRATCH = 0x386FF000
-CALL_TIMEOUT = 30
+EXPECTED = {(980, 30), (1000, 30)}
 CALLS = (("level 1 preview", 0x25, 1, 0x100E17CD), ("level 0 preview", 0x25, 0, 0x100E17CD),
          ("SETMOTOR 1", 0x2A, 1, 0x101B9AB1))
 
@@ -51,7 +51,13 @@ def main():
     finally:
         qmp.request("quit")
         vm.wait(timeout=30)
-    print((out / "motor.log").read_text())
+    log = (out / "motor.log").read_text()
+    print(log)
+    seen = {tuple(map(int, line.split()[1:])) for line in log.splitlines() if line.split()[1] != "0"}
+    missing = EXPECTED - seen
+    if missing:
+        sys.exit(f"motor check FAILED: expected {sorted(missing)} in motor.log, saw {sorted(seen)}")
+    print("motor check OK")
 
 
 if __name__ == "__main__":

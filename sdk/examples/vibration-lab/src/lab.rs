@@ -1,5 +1,5 @@
-pub const FREQUENCIES: [u16; 5] = [250, 482, 1000, 4000, 16000];
-pub const STOCK_FREQUENCY: u16 = 482;
+pub const FREQUENCIES: [u16; 8] = [31, 62, 125, 250, 500, 1000, 4000, 16000];
+pub const STOCK_FREQUENCY: u16 = 31;
 const GAP_MS: u16 = 80;
 const CONTINUOUS_MS: u16 = 1000;
 
@@ -129,13 +129,13 @@ mod tests {
     #[test]
     fn frequency_steps_through_list() {
         let mut s = Settings::default();
-        assert_eq!(s.freq_hz, 482);
+        assert_eq!(s.freq_hz, 31);
         s.adjust(Field::Frequency, 1);
-        assert_eq!(s.freq_hz, 1000);
+        assert_eq!(s.freq_hz, 62);
         s.adjust(Field::Frequency, 100);
         assert_eq!(s.freq_hz, 16000);
         s.adjust(Field::Frequency, -100);
-        assert_eq!(s.freq_hz, 250);
+        assert_eq!(s.freq_hz, 31);
     }
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
         let s = Settings { pattern: Pattern::Tick, ..Settings::default() };
         let mut p = Player::start(&s);
         assert_eq!(p.next().unwrap().duty_permille, 200);
-        assert_eq!(p.next(), Some(Step { duty_permille: 0, freq_hz: 482, ms: 0 }));
+        assert_eq!(p.next(), Some(Step { duty_permille: 0, freq_hz: 31, ms: 0 }));
         assert_eq!(p.next(), None);
     }
 }
