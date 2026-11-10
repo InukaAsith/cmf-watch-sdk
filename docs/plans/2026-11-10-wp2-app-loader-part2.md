@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Этапы 2–4 спеки. В стоковом `app.bin` 1.0.0.73 появляется маленькая заглушка. Загрузчик лежит на NAND и ставится по своему BLE-каналу вместе с приложениями. Через пункт «Apps» в эмуляторе запускаются `hello` и `vibration-lab`; стоковое всплывающее окно ставит приложение на паузу, битый загрузчик не мешает часам работать как сток.
+**Goal:** Этапы 2–4 спеки. В стоковом `app.bin` 1.0.0.73 появляется маленькая заглушка. Загрузчик лежит на NAND и ставится по своему BLE-каналу вместе с приложениями. Через пункт «Apps» в эмуляторе запускаются `hello` и `vibration-lab`; стоковое всплывающее окно ставит приложение на паузу, битый загрузчик и нехватка памяти не мешают часам работать как сток.
 
-**Architecture:** Патч `app.bin` состоит из подмены литералов и трёх инструкций `bl`, а сама заглушка дописывается в конец образа (XIP, `0x1025A080`). Перехватов при загрузке почти нет. Один `bl` в инициализации кучи обнуляет RAM заглушки, а загрузчик вызывается лениво: при открытии нового view `0xF0`. Заглушка регистрирует его в перенесённой таблице view, читает и проверяет `/NAND:C/wp2apps/L.pkg` и отдаёт ему все сообщения view. Если загрузчика нет или он битый, view не открывается, а часы остаются стоковыми. Свой BLE-канал (системные команды `0xFFFF:0x90A0…0x90A4`, расшифровка стоковым ключом сессии) живёт в заглушке, поэтому загрузчик всегда можно переустановить. Загрузчик рисует в свой RGB565-буфер, показанный стоковым `lv_img`, и обрабатывает сообщения view (layout/key/focus/defocus/delete). Приложение он запускает в отдельном потоке Zephyr и реализует ABI 1 `Api`.
+**Architecture:** Патч `app.bin` состоит из подмены литералов и трёх инструкций `bl`, а сама заглушка дописывается в конец образа (XIP, `0x1025A080`). `ResFbHeap` уменьшается на `0x1000`, и под ней постоянно лежит только RAM заглушки. Загрузчик и приложения — перемещаемые пакеты: образ слинкован с базой 0, к нему приложена таблица смещений `R_ARM_ABS32`. Заглушка при открытии view `0xF0` берёт блок из `ResFbHeap` через стоковый `ui_mem`, копирует в него загрузчик с NAND, правит адреса и отдаёт ему сообщения view; при закрытии view блок возвращается. Так же загрузчик поступает с приложением при запуске и выходе. Стоковая JHeap при нехватке памяти не возвращает NULL, а перезагружает часы. Поэтому каждое выделение сначала проверяется по списку свободных блоков под тем же `BASEPRI`, что и у JHeap. Если блок не помещается, view не открывается, а приложение показывает `Error -12`. Свой BLE-канал (системные команды `0xFFFF:0x90A0…0x90A4`, расшифровка стоковым ключом сессии) живёт в заглушке, поэтому загрузчик всегда можно переустановить. Загрузчик рисует в свой RGB565-буфер, показанный стоковым `lv_img`, приложение запускает в отдельном потоке Zephyr и реализует ABI 1 `Api`.
 
-**Tech Stack:** Rust `no_std` (`thumbv7em-none-eabi`): новый workspace `fw/` с крейтами `wp2-core` (логика, тестируется на хосте), `wp2-stub`, `wp2-loader`. Python 3.12 (uv, unittest, `pycryptodome`): патчер прошивки, BLE-клиент по H4 через Netsim, e2e-харнес эмулятора. Ghidra headless и capstone для разведки. QEMU с логом мотора из `../cmf-watch-utils-motor-log`, gdb из `nix-shell -p gdb`.
+**Tech Stack:** Rust `no_std` (`thumbv7em-none-eabi`): новый workspace `fw/` с крейтами `wp2-core` (логика, тестируется на хосте), `wp2-stub`, `wp2-loader`. Python 3.12 (uv, unittest, `pycryptodome`): упаковщик с релокациями, патчер прошивки, BLE-клиент по H4 через Netsim, e2e-харнес эмулятора. Ghidra headless и capstone для разведки. QEMU с логом мотора из `../cmf-watch-utils-motor-log`, gdb и llvm из `nix-shell -p gdb llvm`.
 
-**Spec:** `docs/specs/2026-11-10-wp2-app-loader-design.md` (часть 1: `docs/plans/2026-11-10-wp2-app-loader-foundations.md`, разведка: `docs/recon.md`)
+**Spec:** `docs/specs/2026-11-10-wp2-app-loader-design.md` (часть 1: `docs/plans/2026-11-10-wp2-app-loader-foundations.md`, разведка: `docs/recon.md`, раздел «Plan 2 revision: memory while running» — аллокатор)
+
+**Нумерация после ревизии:** добавлена задача 2 (перемещаемые пакеты). Старые задачи 2–11 стали 3–12. Решения в журнале контроллера с номерами `T2…T11` относятся к задачам `3…12`. Решение «T3 добавляет `--kind` в `wp2apps pack`» переехало в задачу 2.
 
 ## Global Constraints
 
@@ -17,35 +19,57 @@
 - Код из `cmf-watch-utils` не копируется и не импортируется в `src/`. Его CLI (`emu run`, `emu pair-fixture`, `emu faces`) вызывается как внешняя программа, и только из e2e-харнеса. BLE-клиент и рукопожатие пишутся заново по описанию протокола из этого плана.
 - Хост-инструменты берутся из `nix-shell -p …`; `netsimd` — из Android SDK (`$WP2_NETSIMD`, по умолчанию `~/Library/Android/sdk/emulator/netsimd`).
 - Все адреса действительны только для JX402 `1.0.0.73`, sha256 `app.bin` начинается с `30e7978c39d8fb79`. Патчер сверяет старые байты в каждой точке патча и при расхождении отказывает.
-- **Карта памяти (решение этого плана):**
+- **Карта памяти (решение владельца 2026-11-10, заменяет резерв 196 KiB):**
 
-  | Что | Адрес | Размер |
+  | Что | Где | Размер |
   |---|---|---|
   | заглушка (XIP, только чтение) | `STUB_BASE = 0x1025A080` (смещение в `app.bin` `0x25A080`) | `STUB_MAX = 0x4000` вместе с таблицей view |
-  | `ResFbHeap` | `0x380A9340` | `0x676B80` → **`0x645CC0`**, конец `0x386EF000` |
-  | загрузчик | `LOADER_BASE = 0x386EF000` | `LOADER_SIZE = 0x10000` |
-  | приложение | `APP_BASE = 0x386FF000` | `APP_SIZE = 0x20000` |
-  | RAM заглушки | `STUB_RAM = 0x3871F000` | `STUB_RAM_SIZE = 0xEC0` (до `0x3871FEC0`, где кончалась стоковая куча) |
+  | `ResFbHeap` | `0x380A9340` | `0x676B80` → **`0x675B80`** (все три литерала), конец `0x3871EEC0` |
+  | RAM заглушки | `STUB_RAM = 0x3871EEC0` | `STUB_RAM_SIZE = 0x1000` (до `0x3871FEC0`, где кончалась стоковая куча): `StubRam` ≤ `0xE00`, по `STUB_RAM + 0xE00` спин-заглушка харнеса |
+  | загрузчик | блок `ui_mem` типа `RES` (2), выделяется на preload view `0xF0`, освобождается после delete | образ ≤ `LOADER_SIZE = 0x10000` |
+  | приложение | блок `RES`, выделяется при запуске, освобождается при остановке | образ ≤ `APP_SIZE = 0x20000` |
+  | буфер кадра | блок `FB` (0), `466·466·2 = 0x6A088` Б, выделяется на preload, освобождается на delete | — |
 
-  Отступление от постановки: вместо `0x655CC0` куча уменьшается до `0x645CC0`, на 64 KiB больше. Загрузчику нужен свой фиксированный адрес, а PIC/ROPI ради этого дороже. Всего отнимается 196 KiB, около 3 % `ResFbHeap`. Проверка — задача 1.
+  Фиксированных адресов у загрузчика и приложений нет. `LOADER_BASE` и `APP_BASE` удаляются отовсюду.
+- **Память (разведка, `docs/recon.md`):** `ui_mem_aligned_alloc(type, align, size, caller) = 0x101882C5`, `ui_mem_free(type, ptr) = 0x10188381`. Тип `0` FB (align ≤ `0x40`), тип `2` RES; оба берут память из `ResFbHeap` (JHeap `HEAP = 0x38043824`: `+8` свободно байт, `+0x60` голова списка свободных блоков `{next, size & 0xFFFFFF}`). JHeap при неудаче вызывает `MllcFailedHook` и перезагружает часы. Поэтому `ui_mem_*` вызываются только через `wp2_core::heap::alloc`. Он под `BASEPRI = 0x20` проверяет `free ≥ need` и наличие блока `≥ need`, где `need = size + align + 0x100`. Если проверка не прошла, возвращается NULL и `ui_mem` не вызывается. `caller` = указатель на `b"wp2\0"`.
+- **Перемещаемые образы:** линковка с `ORIGIN = 0`, флаги `-C link-arg=--emit-relocs -C target-feature=+no-movt` (без них rustc выдаёт пары MOVW/MOVT, см. `docs/recon.md`). Поддерживается только `R_ARM_ABS32`: загрузка прибавляет базу блока к 32-битному слову по каждому смещению. PC-относительные релокации внутри образа (`R_ARM_THM_CALL`, `THM_JUMP24/19/11/8`, `THM_PC8/12`, `THM_ALU_PREL_11_0`, `REL32`, `PREL31`, `NONE`) пропускаются. Остальные типы и любая релокация на символ `SHN_ABS` — ошибка упаковщика. Стоковый код загрузчик и приложения вызывают только через константы адресов (`stock.rs`), а не через символы линкера.
 - **PWM мотора (поправка к части 1):** такт канала задаёт `CMU_PWMCLK` `0x40001068 + 4·ch`. Поле делителя `0..255` означает `/(n+1)`, значения `256..260` — `/512 … /8192`, биты 9–10 выбирают источник (`0` — RC 16K/32K, `1` — HOSC 32 MHz, `2` — 64M). Сток пишет `0x303` (HOSC/4096 = 7812,5 Гц) и period `0xFF`, отсюда **≈30,6 Гц**. Загрузчик восстанавливает `0x303` на канале 0 при выключении мотора, паузе и выходе.
 - Защита мотора: непрерывная работа не дольше **2000 мс** (сторож с шагом 20 мс, допуск ≤ 2020 мс), скважность в промилле `0..=1000`, частота `1..=20000` Гц, вне диапазона `motor` возвращает `-1` и регистры не трогает. Пока приложение на паузе, `motor` возвращает `-3` и ничего не делает.
-- **Пакет (поправка к части 1):** байт `0x07` — `abi_minor`, `u32` по `0x34` — `crc32(header[0:0x34])`, байты `0x38..0x40` нулевые. `Api`: `abi: u16` (мажорная версия, сравнение `==`), `abi_minor: u16` (у загрузчика `>=`, чем у приложения), `width: u16`, `height: u16`, затем указатели функций; новые функции только дописываются в конец. Загрузчик этого плана — ABI `1.0`.
-- Тесты: `uv run --locked python -m unittest discover -s tests -v` (e2e пропускаются без `WP2_E2E=1`); `(cd sdk && cargo test --target aarch64-apple-darwin)`; `(cd fw && cargo test -p wp2-core --target aarch64-apple-darwin)`. E2E: `WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e -v'`. Один прогон e2e занимает минуты.
+- **Пакет (заменяет формат части 1, на устройствах его ещё нет):** заголовок 0x40 Б, `struct.Struct("<4sHBB24sIIIIII8s")`:
+
+  | off | поле |
+  |---|---|
+  | 0x00 | magic `WP2A` |
+  | 0x04 | `u16 abi` (= 1) |
+  | 0x06 | `u8 kind` (0 app, 1 loader) |
+  | 0x07 | `u8 abi_minor` |
+  | 0x08 | `name[24]`, UTF-8, 1..=23 Б, дополнено NUL |
+  | 0x20 | `u32 version` |
+  | 0x24 | `u32 image_size` (с `.bss`, он внутри образа) |
+  | 0x28 | `u32 entry` (смещение, `< image_size`) |
+  | 0x2C | `u32 reloc_count` (было `load_addr`) |
+  | 0x30 | `u32 crc32(image ‖ relocs)` |
+  | 0x34 | `u32 crc32(header[0:0x34])` |
+  | 0x38 | 8 нулевых байт |
+
+  За заголовком идёт `image`, за ним `relocs`: `reloc_count` значений `u32` LE, строго возрастающих, каждое `+ 4 ≤ image_size`. Длина файла равна `0x40 + image_size + 4·reloc_count`. Ограничения: `kind == 1` ⇒ `image_size ≤ LOADER_SIZE`, `kind == 0` ⇒ `image_size ≤ APP_SIZE`. `Api`: `abi: u16` (мажорная версия, сравнение `==`), `abi_minor: u16` (у загрузчика `>=`, чем у приложения), `width: u16`, `height: u16`, затем указатели функций; новые функции только дописываются в конец. Загрузчик этого плана — ABI `1.0`.
+- Тесты: `uv run --locked python -m unittest discover -s tests -v` (e2e пропускаются без `WP2_E2E=1`); `(cd sdk && cargo test --target aarch64-apple-darwin)`; `(cd fw && cargo test -p wp2-core --target aarch64-apple-darwin)`. E2E: `WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e -v'`. Один прогон e2e занимает минуты; долгие команды идут в отдельную панель (CLAUDE.md владельца), логи — в `runs/e2e/`.
 
 ## Review Focus
 
-1. Связь пропала посреди установки, или пришёл `DATA` с чужим смещением. Ожидается, что активная версия слота не меняется, `.tmp` не становится пакетом, следующий `BEGIN` начинает заново. Тест — задача 4 (`test_install_interrupted_keeps_old`).
-2. Приложение включило мотор и зависло в цикле без `next_event`. Ожидается, что мотор всё равно выключится не позже 2020 мс, потому что сторож работает в UI-потоке. Тест — задача 7 (`test_motor_cap_without_event_loop`, пример `motor-hog`).
-3. Стоковое окно появилось, когда мотор включён. Ожидается, что до показа окна мотор выключен, в `CMU_PWMCLK0` снова `0x303`, а `motor` на паузе возвращает `-3`. Тест — задача 8 (`test_popup_pauses_and_releases_motor`).
-4. На NAND лежит загрузчик или приложение с чужим ABI, `abi_minor` больше, чем у загрузчика, испорченным заголовком или образом. Ожидается отказ при установке; если файл всё же оказался на NAND — отказ при загрузке, без прыжка в образ. Тесты — задача 2 (`pkg`), задача 4 (`test_install_rejects_corrupt`), задача 10 (`test_broken_loader_boots_stock`).
-5. Свайп назад или закрытие view во время работы приложения. Ожидается, что поток приложения остановлен, мотор выключен, буфер и таймер освобождены, а следующее открытие «Apps» работает. Тест — задача 6 (`test_view_delete_stops_app`).
+1. Связь пропала посреди установки, или пришёл `DATA` с чужим смещением. Ожидается, что активная версия слота не меняется, `.tmp` не становится пакетом, следующий `BEGIN` начинает заново. Тест — задача 5 (`test_install_interrupted_keeps_old`).
+2. В куче нет блока под загрузчик, буфер кадра или приложение. Ожидается, что `ui_mem` не вызывается (нет `MllcFailedHook`, ровно одна загрузка Zephyr). View «Apps» не открывается (`loader_state = 3`), приложение показывает `Error -12`, сток работает дальше. Тесты — задача 6 (`test_loader_no_memory_keeps_stock`), задача 7 (`test_app_no_memory_shows_error`, `test_big_app_starved_heap`).
+3. Блоки не возвращаются в кучу после выхода из приложения, закрытия view или удаления. Ожидается, что после пяти циклов «открыть → запустить → выйти → закрыть» свободная память `ResFbHeap` (`*(HEAP + 8)`) отличается от первого цикла меньше чем на `0x1000`, а `app_block` и `loader_block` в `StubRam` равны 0. Тест — задача 7 (`test_blocks_freed_and_relocated`).
+4. Приложение включило мотор и зависло в цикле без `next_event`. Ожидается, что мотор всё равно выключится не позже 2020 мс, потому что сторож работает в UI-потоке. Тест — задача 8 (`test_motor_cap_without_event_loop`, пример `motor-hog`).
+5. Стоковое окно появилось, когда мотор включён. Ожидается, что до показа окна мотор выключен, в `CMU_PWMCLK0` снова `0x303`, а `motor` на паузе возвращает `-3`. Тест — задача 9 (`test_popup_pauses_and_releases_motor`).
+6. На NAND лежит загрузчик или приложение с чужим ABI, `abi_minor` больше, чем у загрузчика, испорченным заголовком, образом или таблицей релокаций. Ожидается отказ при установке; если файл всё же оказался на NAND — отказ при загрузке, блок освобождён, прыжка в образ нет. Тесты — задача 3 (`pkg`, `relocate`), задача 5 (`test_install_rejects_corrupt`), задача 11 (`test_broken_loader_boots_stock`).
+7. Свайп назад или закрытие view во время работы приложения. Ожидается, что поток приложения остановлен, мотор выключен, буфер, таймер, объект `lv_img` и оба блока освобождены, а следующее открытие «Apps» работает. Тест — задача 7 (`test_view_delete_stops_app`).
 
 ---
 
 ## Находки разведки для этого плана
 
-Источники: `scripts/recon/decomp` (Ghidra), capstone, `runs/window-174132/uart0.log`. Уверенность обозначена так же, как в `docs/recon.md`. В `docs/recon.md` эти находки **не** переносятся, пока владелец правит часть 1. Это делает шаг 1 задачи 1.
+Источники: `scripts/recon/decomp` (Ghidra), capstone, `runs/window-174132/uart0.log`. Уверенность обозначена так же, как в `docs/recon.md`. Задача 1 уже перенесла таблицу в `docs/recon.md` («Plan 2 findings», в рабочем дереве). Аллокатор описан там же, в разделе «Plan 2 revision: memory while running».
 
 | Что | Адрес / значение | Увер. |
 |---|---|---|
@@ -60,167 +84,265 @@
 | Сообщения view (стиль `proc`, как `goodbye_view` `0x10060A54`) | `proc(view_id, msg, data)`: 2 preload, 3 layout (`*(void**)data` — дисплей), 4 delete, 7 focus, 8 defocus, 0xB update, 0xD key (`data[0]` — код клавиши, байт `data+4 = 1` — «обработано») | medium |
 | Коды клавиш (UART `view_key:`) | нажатие коронки `0x20000001` → `0x04000001`; поворот в списке `0xFFFF006F` / `0xFFFF006E` | medium |
 | LVGL 8.3 | `lv_disp_get_scr_act 0x101255E0`, `lv_img_create 0x1013ED38`, `lv_img_set_src 0x1013ED50`, `lv_obj_set_pos 0x1012926C`, `lv_obj_set_size 0x101294C8`, `lv_obj_invalidate 0x10129FD8`, `lv_obj_del 0x1012C774`, `lv_obj_add_event_cb 0x10125A94`, `lv_timer_create 0x1013B10C`, `lv_timer_del 0x1013B1A4` (medium), `lv_event_get_indev 0x10125BD4` (low); события: `PRESSED 1`, `SHORT_CLICKED 4`, `RELEASED 8`, `SCROLL 0xB` | high, если не указано иное |
-| Память UI | `ui_mem_aligned_alloc(type, align, size, caller) 0x101882C4` (типы 0..2); малые выделения `0x10146A3C(size, tag)` / free `0x101CE04A` | medium |
+| Память | `ui_mem_aligned_alloc 0x101882C4`, `ui_mem_free 0x10188380`, типы `0 FB`, `1 GUI`, `2 RES`; FB и RES — одна `ResFbHeap` (JHeap `0x38043824`); JHeap не возвращает NULL, а перезагружает часы через `MllcFailedHook`; дамп статистики `0x1018858C` | high (подробности — `docs/recon.md`) |
 | ОС | `os_thread_create(buf, size, entry, p1, p2, p3, prio, opts, delay) 0x101BE1A2` (в начале `buf` лежит `k_thread` на 0x118 Б); `os_sleep(ms) 0x101BE1EC`; `k_thread_abort` — `0x10105C90` или `0x1019B2D8` | high / abort low |
 | Всплывающие окна | `msgbox_cache_popup(id, udata) 0x100D5E34`; `set_popup_msgbox 0x100D6EB0` / `set_close_msgbox 0x100D6FB4` ведут флаги `*(u8*)0x3800FAF4` (бит 0 и бит 1 = окно открыто), id в `0x3800FAF6`/`0x3800FAF8` | high |
 | PWM | `struct device` "PWM" `0x101DF1C0`, api `0x101FB190`: `[0] pin_set_cycles(dev, ch, period, pulse, flags) 0x1012197D`, `[4] off(dev, ch) 0x101214AD`, `[6] set(dev, ch, hz, duty%, pol) 0x10121681`; период — 16 бит | high |
-| Список приложений | иконки из ресурсов сцены, построитель `FUN_1005e9d8` (число по `data+8`, записи по 3 слова с `data+0xC`, клик `0x1005EBA1`, событие 4); процедуры list `0x1005EEC9`, grid `0x1005EBC5`, waterfall `0x1005F101` | low, разбирает задача 9 |
+| Список приложений | иконки из ресурсов сцены, построитель `FUN_1005e9d8` (число по `data+8`, записи по 3 слова с `data+0xC`, клик `0x1005EBA1`, событие 4); процедуры list `0x1005EEC9`, grid `0x1005EBC5`, waterfall `0x1005F101` | low, разбирает задача 10 |
 | Эмулятор | ввод `input.txt`: `t down x y`, `c down` (коронка/питание), `r delta`, `p mV charger percent`; без стокового профиля `STOCK_AWAKE` не включается, поэтому харнес пишет `0xFFFFFFFF` в `**0x38037D14` (таймаут автосна, `system_set_auto_sleep_time`); NAND живёт в памяти QEMU и переживает сброс гостя | high |
 
 ---
 
-### Task 1: Патчер прошивки, e2e-харнес и проверка резервирования
+### Task 1: Патчер прошивки, e2e-харнес, проверка резерва 4 KiB и кучи
+
+Задача уже начата: в рабочем дереве лежат незакоммиченные `firmware.py`, `paths.stock_app`, CLI `firmware`/`nor`, `tests/test_firmware.py`, `tests/e2e/harness.py`, `tests/test_e2e.py`, заметки в `docs/recon.md` и фиксация `cmf-watch-utils` на `freethinkel/cmf-watch-utils@0f768dc`. Отчёт: `.superpowers/sdd/2026-11-10-wp2-app-loader-part2/task-1-report.md`. Продолжать на этом дереве, ничего не переписывать заново.
 
 **Files:**
-- Create: `src/wp2apps/firmware.py`
-- Modify: `src/wp2apps/cli.py` (подкоманды `firmware`, `nor`), `src/wp2apps/paths.py` (`stock_app()`), `src/wp2apps/package.py` (`LOADER_BASE`, `LOADER_SIZE`, границы для `KIND_LOADER`), `docs/recon.md` (раздел «Plan 2 findings» из таблицы выше, плюс три литерала кучи)
-- Create: `tests/e2e/__init__.py`, `tests/e2e/harness.py`
-- Test: `tests/test_firmware.py`, `tests/test_e2e.py`
+- Modify: `src/wp2apps/firmware.py` (`HEAP_NEW`, `HEAP_BASE`, `STUB_RAM`, `STUB_RAM_SIZE`)
+- Revert: `src/wp2apps/package.py` (`git restore src/wp2apps/package.py`; границы загрузчика переезжают в задачу 2 без `LOADER_BASE`)
+- Modify: `tests/test_firmware.py` (новое значение кучи; `test_loader_package_bounds` удалить — его новая форма в задаче 2)
+- Modify: `tests/e2e/harness.py` (`STUB_RAM` из `firmware`, `heap()`, константы памяти; дописать выбор тяжёлого циферблата)
+- Modify: `tests/test_e2e.py` (`ReservationTest` на 4 KiB, новый `HeapTest`)
+- Modify: `docs/recon.md` (устаревшие строки про `0x655CC0`/`0x645CC0` и 196 KiB; отклонённые циферблаты; измеренный оверхед JHeap)
 
 **Interfaces:**
-- Produces (`firmware.py`):
-  - `STUB_OFFSET = 0x25A080`, `HEAP_LITERALS = (0x188508, 0x188588, 0x1885F4)`, `HEAP_OLD = 0x676B80`, `HEAP_NEW = 0x645CC0`
-  - `sum32(data: bytes) -> int`, `fix_acth(app: bytearray) -> None` — размер = `len(app) − 0x200`, затем `+0x1C`, затем `+0x20`; `len(app) % 4 == 0` обязательно
-  - `thumb_bl(at: int, target: int) -> bytes`, `thumb_b_w(at: int, target: int) -> bytes` — адреса виртуальные (`0x1…`)
-  - `put(app: bytearray, addr: int, old: bytes, new: bytes) -> None` — если по адресу не `old`, `ValueError(f"unexpected bytes at {addr:#x}")`
-  - `patch(app: bytes, stub: bytes | None = None) -> bytes` — проверяет sha256 стока; без `stub` меняет только три литерала и пересчитывает ACTH (задачи 3 и 9 добавляют свои точки)
-  - `stage_nor(nor: bytes, app: bytes) -> bytes` — `app` в `0x24000`, раздел `0x34B000` дополняется `0xFF`
-  - CLI: `wp2apps firmware --stub STUB --output OUT` (сток берётся через `paths.stock_app()`), `wp2apps nor NOR --app APP --output OUT`
-- Produces (`paths.py`): `stock_app() -> bytes` — `app.bin` из `paths.firmware()` через `fwkit` (как в `scripts/recon/extract.py`), с проверкой sha256.
-- Produces (`tests/e2e/harness.py`, без кода `cmf-watch-utils`):
-  - `E2E = os.environ.get("WP2_E2E") == "1"`; `QEMU = $WP2_QEMU` или `../cmf-watch-utils-motor-log/runtime-motor/qemu-system-arm`
-  - `class Emu` (контекст-менеджер): `Emu(name: str, *, nor: bytes, fixtures: Path | None = None, hci_port: int | None = None, seconds: int = 900)`. Запускает `uv run --locked cmf-watch-utils emu run --headless --allow-reboot --nor <run>/in-nor.bin --qmp-port <free> [--hci-port] --seconds … --output runs/e2e/<name>-<ts>`. Методы: `send(*lines, pause=0.3)`, `gdb(*commands) -> str`, `peek(addr, size) -> bytes` (QMP `pmemsave`), `poke(addr, data)`, `call(fn, *args) -> int` (ручной кадр gdb, спин-заглушка `0xE7FE` по `STUB_RAM + 0xE00`), `keep_awake()`, `frame() -> tuple[int, int, bytes]` (`frame.ppm`, RGB888), `uart() -> str`, `wait_uart(needle, timeout)`, `motor() -> list[tuple[int, int, int]]`
-  - `stock_nor() -> bytes` (из `<cmf>/fixtures/nor.bin`), `heavy_face_fixtures() -> Path` (см. шаг 6)
+- Produces (`firmware.py`, к уже написанному):
+  - `HEAP_BASE = 0x380A9340`, `HEAP_NEW = 0x675B80`, `STUB_RAM = HEAP_BASE + HEAP_NEW` (`0x3871EEC0`), `STUB_RAM_SIZE = 0x1000`
+  - остальное без изменений: `STUB_OFFSET`, `HEAP_LITERALS`, `HEAP_OLD`, `sum32`, `fix_acth`, `thumb_bl`, `thumb_b_w`, `put`, `patch(app, stub=None, *, _verify=True)`, `stage_nor`, CLI `wp2apps firmware --stub STUB --output OUT`, `wp2apps nor NOR --app APP --output OUT`
+- Produces (`tests/e2e/harness.py`, к уже написанному `Emu`, `walk`, `swipe`, `stock_nor`, `face_fixtures`, `control_walk`, `heavy_face_fixtures`):
+  - `STUB_RAM = firmware.STUB_RAM`; `HEAP = 0x38043824`; `UI_MEM_ALIGNED_ALLOC = 0x101882C5`; `UI_MEM_FREE = 0x10188381`; `HEAP_DUMP = 0x1018858D`
+  - `heap(emu) -> tuple[int, int]` — `(free, max_block)`: `free = u32(HEAP + 8)`; обход `p = u32(HEAP + 0x60)`, пока `p != 0`: `size = u32(p + 4) & 0xFFFFFF`, `p = u32(p)`; не больше 4096 шагов, иначе `RuntimeError`
+  - `u32(emu, addr) -> int` — `struct.unpack("<I", emu.peek(addr, 4))[0]`
 
-- [ ] **Step 1: Перенести находки в `docs/recon.md`.** Делать после того, как владелец закончит правку части 1. Добавить в конец раздел «Plan 2 findings» с таблицей «Находки разведки» из этого плана. Отдельной строкой — три литерала `ResFbHeap` и что пропатчены все три.
+- [ ] **Step 1: Привести дерево к новому решению о памяти**
+
+`git restore src/wp2apps/package.py`; в `tests/test_firmware.py` удалить `test_loader_package_bounds` и заменить `0x645CC0` на `firmware.HEAP_NEW`; добавить в `firmware.py` константы из Interfaces; в харнесе `STUB_RAM = firmware.STUB_RAM`. В `docs/recon.md` заменить предложение про `0x645CC0`/`0x386EF000` на: патчер меняет все три литерала на `0x675B80`, куча кончается на `0x3871EEC0`, выше лежит только RAM заглушки (`0x1000`). Строку «Reservation» части 1 (`0x655CC0`) пометить «superseded by plan 2 revision: 4 KiB stub RAM only».
 
 - [ ] **Step 2: Write the failing tests** (`tests/test_firmware.py`)
 
 ```python
-class FirmwareTest(unittest.TestCase):
-    def test_thumb_bl_matches_stock_encoding(self):
-        self.assertEqual(firmware.thumb_bl(0x100D34F0, 0x100CC284), bytes.fromhex("f8f7c8fe"))
-        self.assertEqual(firmware.thumb_bl(0x101884FA, 0x10146AA4), STOCK[0x1884FA:0x1884FE])  # skip без стока
+def test_heap_shrinks_by_stub_ram_only(self):
+    self.assertEqual(firmware.HEAP_OLD - firmware.HEAP_NEW, 0x1000)
+    self.assertEqual(firmware.STUB_RAM, 0x3871EEC0)
+    self.assertEqual(firmware.STUB_RAM + firmware.STUB_RAM_SIZE, 0x380A9340 + 0x676B80)
 
-    def test_fix_acth_rule(self):
-        app = bytearray(b"ACTHHTCA" + bytes(0x1F8) + os.urandom(4096))
-        firmware.fix_acth(app)
-        size, checksum = struct.unpack_from("<II", app, 0x18)
-        self.assertEqual(size, len(app) - 0x200)
-        self.assertEqual(firmware.sum32(app[:0x200]), 0xFFFFFFFF)
-        self.assertEqual((firmware.sum32(app[0x200:0x200 + size]) + checksum) & 0xFFFFFFFF, 0xFFFFFFFF)
-
-    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
-    def test_heap_literals_patched(self):
-        out = firmware.patch(STOCK)
-        for off in firmware.HEAP_LITERALS:
-            self.assertEqual(struct.unpack_from("<I", out, off)[0], 0x645CC0)
-        diff = [i for i in range(0x200, len(STOCK)) if out[i] != STOCK[i]]
-        self.assertEqual({i & ~3 for i in diff}, set(firmware.HEAP_LITERALS))
-
-    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
-    def test_patch_refuses_other_bytes(self):
-        bad = bytearray(STOCK); bad[0x188508] ^= 1
-        with self.assertRaisesRegex(ValueError, "0x10188508"):
-            firmware.patch(bytes(bad))   # проверка sha256 отключается внутренним параметром только в тесте
-
-    def test_stage_nor(self):
-        nor = firmware.stage_nor(b"\0" * 0x400000, b"\1" * 16)
-        self.assertEqual(nor[0x24000:0x24010], b"\1" * 16)
-        self.assertEqual(nor[0x24010:0x24000 + 0x34B000], b"\xff" * (0x34B000 - 16))
-
-    def test_loader_package_bounds(self):
-        package.pack(b"\0" * 16, name="loader", version=1, kind=package.KIND_LOADER, load_addr=package.LOADER_BASE)
-        with self.assertRaises(ValueError):
-            package.pack(b"\0" * 16, name="loader", version=1, kind=package.KIND_LOADER, load_addr=package.APP_BASE)
-        with self.assertRaises(ValueError):
-            package.pack(b"\0" * (package.LOADER_SIZE + 1), name="loader", version=1,
-                         kind=package.KIND_LOADER, load_addr=package.LOADER_BASE)
+@skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+def test_heap_literals_patched(self):                       # существующий тест, новое значение
+    out = firmware.patch(STOCK)
+    for off in firmware.HEAP_LITERALS:
+        self.assertEqual(struct.unpack_from("<I", out, off)[0], 0x675B80)
 ```
 
 - [ ] **Step 3: Run to verify failure**
 
 Run: `uv run --locked python -m unittest tests.test_firmware -v`
-Expected: FAIL — `ImportError: cannot import name 'firmware'`.
+Expected: FAIL — `AttributeError: … 'STUB_RAM'`.
 
-- [ ] **Step 4: Implement `firmware.py`, `paths.stock_app`, loader bounds in `package.py`, CLI**
-
-`thumb_bl`: `off = target − (at + 4)`, стандартная кодировка T1 BL (`S, J1, J2, imm10, imm11`), с проверкой диапазона ±16 MiB. `patch` вызывает `put` для каждой точки и затем `fix_acth`; длина дополняется нулями до кратной 4.
+- [ ] **Step 4: Implement the constants**
 
 - [ ] **Step 5: Run to verify pass**
 
 Run: `uv run --locked python -m unittest discover -s tests -v`
 Expected: PASS (тесты на стоке пропускаются только без прошивки).
 
-- [ ] **Step 6: Харнес и фикстура с тяжёлым циферблатом**
+- [ ] **Step 6: Дописать выбор тяжёлого циферблата** (решение контроллера в журнале)
 
-`heavy_face_fixtures()` запускает `cmf-watch-utils emu faces --sort downloads` и берёт первый id. Затем стоковым профилем: `emu run --headless --fmc-face <id> --seconds 20 --output runs/e2e/face-<id>`. Строит каталог `runs/e2e/fixtures-heavy/` со ссылками на `nor.bin` и `nand-id.bin` из `<cmf>/fixtures`, а также `nand-defaults.bin → runs/e2e/face-<id>/nand.bin` и `wfc-index.txt → runs/e2e/face-<id>/wfc-index.txt`. Результат кешируется, id и размер циферблата записываются в `runs/e2e/fixtures-heavy/face.json`. В тесте ниже `Emu` получает `fixtures=heavy_face_fixtures()`.
+`heavy_face_fixtures()` уже переписан: берёт топ-10 по загрузкам и перебирает их по убыванию размера. Для каждого запускается контрольный обход стока (`control_walk`, 240 с). Берётся первый, у которого ровно одна загрузка Zephyr, нет `MllcFailedHook` и нет `FATAL`. Выбор и результаты контроля кешируются в `runs/e2e/fixtures-heavy/face.json`. Прокрутки карусели в `walk` нет. Осталось одно: в `docs/recon.md` под заметкой про `hvk9m1hmpyuheyd` перечислить отклонённые id, их контрольные результаты из `face.json` и выбранный циферблат.
 
-- [ ] **Step 7: Write the e2e test** (`tests/test_e2e.py`, класс `ReservationTest`, `@skipUnless(harness.E2E, …)`)
+- [ ] **Step 7: Write the e2e tests** (`tests/test_e2e.py`)
 
 ```python
-def test_reservation_survives_ui_walk(self):
-    nor = firmware.stage_nor(harness.stock_nor(), firmware.patch(paths.stock_app()))
-    with harness.Emu("reserve", nor=nor, fixtures=harness.heavy_face_fixtures()) as emu:
-        emu.wait_uart("launcher enter", 60)
-        emu.keep_awake()
-        emu.poke(0x386EF000, MARK * ((0x3871FEC0 - 0x386EF000) // 4))
-        harness.walk(emu, seconds=240)        # маршрут psram_probe.walk: коронка, повороты, тапы, свайпы, смена циферблатов
-        self.assertEqual(emu.peek(0x386EF000, 0x3871FEC0 - 0x386EF000),
-                         MARK * ((0x3871FEC0 - 0x386EF000) // 4))
-        self.assertNotIn("ZEPHYR FATAL ERROR", emu.uart())
+MARK = bytes.fromhex("a55ac33c")
+START, END = firmware.STUB_RAM, firmware.STUB_RAM + firmware.STUB_RAM_SIZE
+
+class ReservationTest(unittest.TestCase):
+    def test_reservation_survives_ui_walk(self):
+        nor = firmware.stage_nor(harness.stock_nor(), firmware.patch(paths.stock_app()))
+        with harness.Emu("reserve", nor=nor, fixtures=harness.heavy_face_fixtures()) as emu:
+            emu.wait_uart("launcher enter", 60)
+            emu.keep_awake()
+            emu.poke(START, MARK * ((END - START) // 4))
+            harness.walk(emu, seconds=240)
+            uart = emu.uart()
+            self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
+            self.assertEqual(emu.peek(START, END - START), MARK * ((END - START) // 4))
+            self.assertNotIn("MllcFailedHook", uart)
+            self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+
+class HeapTest(unittest.TestCase):
+    def test_walk_matches_stock_dump(self):
+        # patched image, default fixtures; до трёх попыток, хотя бы одна совпадает точно:
+        #   emu.call(HEAP_DUMP); (free, biggest) = harness.heap(emu)
+        #   последняя строка UART r"Free:(\d+).*MaxBlock:(\d+)" == (free, biggest)
+
+    def test_alloc_free_roundtrip(self):
+        # free0 = heap(emu)[0]; p = emu.call(UI_MEM_ALIGNED_ALLOC, 2, 8, 0x10000, 0)
+        # p != 0, p % 8 == 0, 0x380A9340 <= p < firmware.STUB_RAM
+        # 0x10000 <= free0 - heap(emu)[0] <= 0x10000 + 8 + 0x100      # граница SLACK из Global Constraints
+        # emu.call(UI_MEM_FREE, 2, p); heap(emu)[0] == free0
 ```
 
-`harness.walk(emu, seconds)` повторяет последовательность ввода `scripts/recon/psram_probe.py:walk`. Её надо переписать в харнесе, а не импортировать. Добавить долгое нажатие на циферблат (`t 1 233 233`, пауза 1,5 с, `t 0 233 233`) и прокрутку карусели циферблатов, чтобы тяжёлый циферблат грузился несколько раз.
+Если строки `MaxBlock` в UART нет (дамп печатает в другой канал), `test_walk_matches_stock_dump` проверяет только, что `biggest ≤ free` и что блок `biggest − 0x200` выделяется и освобождается через `call`. Это записывается в `docs/recon.md`. Фактический оверхед `free0 − free1 − 0x10000` тоже записать в `docs/recon.md`. Если он больше `0x108`, остановиться: `SLACK` в Global Constraints неверен.
 
 - [ ] **Step 8: Run e2e**
 
-Run: `WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.ReservationTest -v'`
-Expected: PASS — маркер в `[0x386EF000, 0x3871FEC0)` цел, фатальных ошибок нет. Если тест падает, план останавливается: значит, резервирование неверно.
+Run (в отдельной панели): `WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.ReservationTest tests.test_e2e.HeapTest -v' 2>&1 | tee runs/e2e/task1.log`
+Expected: PASS. Если `ReservationTest` падает, а контроль стока на том же циферблате проходит, план останавливается: резерв 4 KiB ломает сток.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/wp2apps/firmware.py src/wp2apps/cli.py src/wp2apps/paths.py src/wp2apps/package.py tests/test_firmware.py tests/e2e tests/test_e2e.py docs/recon.md
-git commit -m "feat: firmware patcher with ResFbHeap reservation and e2e harness"
+git add pyproject.toml uv.lock src/wp2apps/firmware.py src/wp2apps/cli.py src/wp2apps/paths.py tests/test_firmware.py tests/e2e tests/test_e2e.py docs/recon.md
+git commit -m "feat: firmware patcher with 4 KiB stub RAM reservation, heap probes and e2e harness"
 ```
 
 ---
 
-### Task 2: Крейт `wp2-core` (общая логика, тесты на хосте)
+### Task 2: Перемещаемые пакеты (упаковщик, SDK, тесты части 1)
+
+**Files:**
+- Modify: `src/wp2apps/package.py`, `src/wp2apps/cli.py` (`pack --elf` обязателен, `--kind {app,loader}`; `info` печатает `relocs` вместо `load_addr`)
+- Modify: `sdk/cmf-wp2-app/app.ld` (`ORIGIN = 0`), `sdk/.cargo/config.toml` (rustflags); `scripts/build-app` уже передаёт `--elf` и не меняется
+- Test: `tests/test_package.py`, `tests/test_sdk.py`
+
+**Interfaces:**
+- Produces (`package.py`):
+  - `HEADER = struct.Struct("<4sHBB24sIIIIII8s")`, `HEADER_CRC_SPAN = 0x34`, `APP_SIZE = 0x20000`, `LOADER_SIZE = 0x10000`; `APP_BASE`, `LOADER_BASE` удалены
+  - `@dataclass(frozen=True) class Package: kind; abi; abi_minor; name; version; entry; image: bytes; relocs: tuple[int, ...]`
+  - `pack(image: bytes, *, name: str, version: int, entry: int = 0, kind: int = KIND_APP, relocs: Sequence[int] = ()) -> bytes`
+  - `parse(data: bytes) -> Package` — проверки из Global Constraints, `ValueError` с причиной
+  - `relocations(elf: bytes) -> list[int]` — смещения `R_ARM_ABS32` по возрастанию
+  - `check_elf(image: bytes, elf: bytes) -> None` — `e_entry == 1`; конец alloc-секций равен `len(image)`
+  - CLI: `wp2apps pack IMAGE --elf ELF --name N --version V [--kind app|loader] --output OUT` (relocs из `relocations(elf)`)
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_package.py`; существующие тесты правятся так)
+
+```python
+def test_round_trip(self):
+    image = bytes(range(256)) * 4
+    pkg = package.parse(package.pack(image, name="Vibration Lab", version=3, relocs=[0, 8]))
+    self.assertEqual((pkg.name, pkg.version, pkg.kind, pkg.abi, pkg.entry, pkg.image, pkg.relocs),
+                     ("Vibration Lab", 3, package.KIND_APP, 1, 0, image, (0, 8)))
+
+def test_size_limits(self):                                  # заменяет test_recon_values
+    self.assertEqual((package.APP_SIZE, package.LOADER_SIZE), (0x20000, 0x10000))
+    package.pack(b"\0" * 16, name="loader", version=1, kind=package.KIND_LOADER)
+    for kind, size in ((package.KIND_APP, 0x20001), (package.KIND_LOADER, 0x10001)):
+        with self.assertRaises(ValueError):
+            package.pack(b"\0" * size, name="x", version=1, kind=kind)
+
+def test_relocs_checked(self):
+    for relocs in ([8, 0], [0, 0], [13]):                    # не по возрастанию, дубль, выход за образ (16 Б)
+        with self.assertRaises(ValueError):
+            package.pack(b"\0" * 16, name="x", version=1, relocs=relocs)
+
+def test_reloc_table_covered_by_crc(self):
+    data = bytearray(package.pack(b"\0" * 16, name="x", version=1, relocs=[4]))
+    data[-1] ^= 1
+    with self.assertRaises(ValueError):
+        package.parse(bytes(data))
+
+def test_relocations_from_elf(self):
+    elf = fake_elf(1, [(0, 0x30)], rels=[(0x10, R_ARM_ABS32, TEXT), (0x04, R_ARM_THM_CALL, TEXT),
+                                         (0x20, R_ARM_ABS32, TEXT)])
+    self.assertEqual(package.relocations(elf), [0x10, 0x20])
+
+def test_relocations_reject_movw_and_absolute_symbols(self):
+    with self.assertRaisesRegex(ValueError, "no-movt"):
+        package.relocations(fake_elf(1, [(0, 0x30)], rels=[(0x10, 47, TEXT)]))      # R_ARM_THM_MOVW_ABS_NC
+    with self.assertRaisesRegex(ValueError, "absolute"):
+        package.relocations(fake_elf(1, [(0, 0x30)], rels=[(0x10, R_ARM_ABS32, SHN_ABS)]))
+
+def test_elf_linked_at_zero(self):                           # заменяет три теста check_elf
+    package.check_elf(b"\0" * 0x30, fake_elf(1, [(0, 0x30)]))
+    with self.assertRaises(ValueError):
+        package.check_elf(b"\0" * 0x30, fake_elf(0x386FF001, [(0x386FF000, 0x30)]))
+    with self.assertRaises(ValueError):
+        package.check_elf(b"\0" * 0x30, fake_elf(1, [(0, 0x30), (0x30, 0x8)]))      # .bss вне образа
+```
+
+`fake_elf(entry, sections, rels=())` расширяется: секция `.symtab` с одним символом на каждую пару `(тип, shndx)` и секция `SHT_REL` (`sh_info` → первая alloc-секция, `sh_link` → `.symtab`). `TEXT = 1` — индекс первой alloc-секции, `SHN_ABS = 0xFFF1`. `test_cli_pack_info` передаёт `--elf` с `fake_elf(1, [(0, 40)])`; `test_entry_size_and_address_bounds` теряет проверку `load_addr`.
+
+`tests/test_sdk.py`:
+
+```python
+pkg = package.parse((ROOT / "target" / f"{name}.wp2app").read_bytes())
+self.assertEqual((pkg.name, pkg.entry), (name, 0))
+self.assertTrue(pkg.relocs)
+for off in pkg.relocs:                                       # каждое исправляемое слово указывает в образ
+    self.assertLess(struct.unpack_from("<I", pkg.image, off)[0] & ~1, len(pkg.image))
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `uv run --locked python -m unittest tests.test_package tests.test_sdk -v`
+Expected: FAIL — `pack() got an unexpected keyword argument 'relocs'`.
+
+- [ ] **Step 3: Implement**
+
+`relocations`: ELF32 LE, обход заголовков секций. Учитываются только `SHT_REL` (9), у которых целевая секция `sh_info` имеет `SHF_ALLOC`; `SHT_RELA` — ошибка. Запись: `r_offset`, `type = r_info & 0xFF`, `sym = r_info >> 8`. `st_shndx` символа берётся из `.symtab` по `sh_link`. Для `ABS32` и для PC-относительных типов из Global Constraints `st_shndx == SHN_ABS` даёт ошибку со словом `absolute`. Неизвестный тип даёт ошибку с `type`, смещением и подсказкой `build with -C target-feature=+no-movt`. `sdk/.cargo/config.toml`: `rustflags = ["-C", "link-arg=-Tapp.ld", "-C", "link-arg=--emit-relocs", "-C", "target-feature=+no-movt"]` в `[target.thumbv7em-none-eabi]`. Предупреждение rustc `unknown and unstable feature … no-movt` ожидаемо и не подавляется.
+
+- [ ] **Step 4: Run to verify pass**
+
+Run: `nix-shell -p llvm --run 'uv run --locked python -m unittest discover -s tests -v' && (cd sdk && cargo test --target aarch64-apple-darwin)`
+Expected: PASS; `test_sdk` собирает `hello` и `vibration-lab`, в каждом есть релокации, все указывают внутрь образа.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/wp2apps/package.py src/wp2apps/cli.py sdk/cmf-wp2-app/app.ld sdk/.cargo/config.toml tests/test_package.py tests/test_sdk.py
+git commit -m "feat: relocatable packages linked at 0 with an ABS32 table"
+```
+
+---
+
+### Task 3: Крейт `wp2-core` (общая логика, тесты на хосте)
 
 **Files:**
 - Create: `fw/Cargo.toml` (workspace: `wp2-core`, `wp2-stub`, `wp2-loader`; профиль release как в `sdk/Cargo.toml`)
-- Create: `fw/.cargo/config.toml` (`[build] target = "thumbv7em-none-eabi"`, `rustflags = ["-C", "link-arg=-Tlink.ld"]`)
-- Create: `fw/wp2-core/{Cargo.toml,src/lib.rs,src/layout.rs,src/pkg.rs,src/pwm.rs,src/gfx.rs,src/font8x8.rs,src/events.rs,src/stock.rs}`
+- Create: `fw/.cargo/config.toml` (`[build] target = "thumbv7em-none-eabi"`; `[target.thumbv7em-none-eabi] rustflags = ["-C", "link-arg=-Tlink.ld", "-C", "link-arg=--emit-relocs", "-C", "target-feature=+no-movt"]` — под `[target…]`, чтобы хост-тесты не получали `-Tlink.ld`)
+- Create: `fw/wp2-core/{Cargo.toml,src/lib.rs,src/layout.rs,src/pkg.rs,src/heap.rs,src/pwm.rs,src/gfx.rs,src/font8x8.rs,src/events.rs,src/stock.rs}`
 - Modify: `AGENTS.md` (Verification: команда `cd fw && cargo test -p wp2-core --target aarch64-apple-darwin`; Layout: строка `fw/`)
 - Modify: `.gitignore` (`fw/target/`)
 
 **Interfaces:**
-- Consumes: формат пакета (Global Constraints), `cmf_wp2_app::{Api, Event}` — только как `dev-dependency` для проверки раскладки.
+- Consumes: формат пакета (Global Constraints, задача 2), `cmf_wp2_app::{Api, Event}` — только как `dev-dependency` для проверки раскладки.
 - Produces:
 
 ```rust
-// layout.rs — константы из Global Constraints и:
+// layout.rs
 pub const VIEW_ID: u16 = 0xF0;
 pub const SLOTS: u8 = 8;
 pub const LOADER_SLOT: u8 = 0xFF;
 pub const LOADER_ABI_MINOR: u16 = 0;
+pub const STUB_RAM: u32 = 0x3871_EEC0; pub const STUB_RAM_SIZE: u32 = 0x1000;
+pub const LOADER_SIZE: u32 = 0x1_0000; pub const APP_SIZE: u32 = 0x2_0000;
+pub const E_BAD: i32 = -2; pub const E_IO: i32 = -5; pub const E_NOMEM: i32 = -12;
 pub fn slot_path(slot: u8, tmp: bool) -> [u8; 24];    // b"/NAND:C/wp2apps/L.pkg\0", b"/NAND:C/wp2apps/3.tmp\0"
 pub const DIR: &[u8] = b"/NAND:C/wp2apps\0";
 #[repr(C)] pub struct StubRam {
     pub magic: u32, pub loader_state: u8, pub loader_active: u8, pub running_slot: u8, pub xfer_state: u8,
     pub xfer_slot: u8, pub _pad: [u8; 3], pub xfer_size: u32, pub xfer_crc: u32, pub xfer_written: u32,
     pub file: [u8; 0x2C], pub trace_head: u32, pub trace: [u32; 32], pub scratch: [u8; 0x200], pub reply: [u8; 0x220],
-}                                                      // const assert: size_of::<StubRam>() <= 0xE00
+    pub loader_block: u32, pub loader_size: u32, pub app_block: u32, pub app_size: u32, pub alloc_limit: u32,
+}   // const assert: size_of <= 0xE00; offset_of!(trace_head) == 0x44, (loader_block) == 0x4E8, (app_block) == 0x4F0, (alloc_limit) == 0x4F8
+// loader_state: 0 нет, 1 загружен, 2 нет файла/битый, 3 нет памяти
+pub fn stub_ram() -> &'static mut StubRam;                // только target
 // pkg.rs
 pub const HEADER_SIZE: usize = 0x40;
 pub struct Header { pub kind: u8, pub abi: u16, pub abi_minor: u8, pub name: [u8; 24], pub version: u32,
-                    pub image_size: u32, pub entry: u32, pub load_addr: u32, pub image_crc: u32 }
-#[derive(Debug, PartialEq)] pub enum PkgError { Magic, HeaderCrc, Abi, Kind, Bounds, Name }
+                    pub image_size: u32, pub entry: u32, pub reloc_count: u32, pub body_crc: u32 }
+#[derive(Debug, PartialEq)] pub enum PkgError { Magic, HeaderCrc, Abi, Kind, Bounds, Name, Reloc }
 pub fn parse_header(raw: &[u8; HEADER_SIZE]) -> Result<Header, PkgError>;
-pub fn check_slot(h: &Header, slot: u8) -> Result<(), PkgError>;   // слот L ⇔ KIND_LOADER@LOADER_BASE≤LOADER_SIZE, иначе KIND_APP@APP_BASE≤APP_SIZE; entry < image_size; abi == 1; abi_minor <= LOADER_ABI_MINOR
-pub fn crc32(init: u32, data: &[u8]) -> u32;                         // совместим с zlib, по частям
+pub fn check_slot(h: &Header, slot: u8) -> Result<(), PkgError>;   // слот L ⇔ KIND_LOADER, image_size ≤ LOADER_SIZE, иначе KIND_APP ≤ APP_SIZE; entry < image_size; reloc_count ≤ image_size / 4; abi == 1; abi_minor ≤ LOADER_ABI_MINOR
+pub fn file_size(h: &Header) -> u32;                               // 0x40 + image_size + 4·reloc_count
+pub fn relocate(image: &mut [u8], base: u32, relocs: &[u8]) -> Result<(), PkgError>;  // relocs: LE u32, кусок таблицы; off + 4 > len → Reloc; слово += base (wrapping, без выравнивания)
+pub fn crc32(init: u32, data: &[u8]) -> u32;                       // совместим с zlib, по частям
+// heap.rs
+pub const HEAP: u32 = 0x3804_3824; pub const SLACK: u32 = 0x100; pub const FB: u32 = 0; pub const RES: u32 = 2;
+pub fn fits(free: u32, blocks: impl IntoIterator<Item = u32>, size: u32, align: u32) -> bool;  // need = size + align + SLACK (переполнение → false); free ≥ need и есть блок ≥ need
+#[cfg(target_os = "none")] pub fn alloc(ty: u32, size: u32, align: u32) -> *mut u8;
+#[cfg(target_os = "none")] pub unsafe fn free(ty: u32, p: *mut u8);
 // pwm.rs
 pub const STOCK_CLOCK: u32 = 0x303;
 pub fn pwm_params(freq_hz: u16) -> Option<(u32, u16)>;              // (значение CMU_PWMCLK, period)
@@ -239,28 +361,49 @@ pub fn map_key(value: u32) -> Option<Event>;                        // 0xFFFF006
     pub fill_rect: extern "C" fn(i16, i16, u16, u16, u16), pub draw_text: extern "C" fn(i16, i16, *const u8, usize, u16),
     pub present: extern "C" fn(), pub next_event: extern "C" fn(*mut Event, u32) -> bool,
     pub motor: extern "C" fn(u16, u16) -> i32, pub millis: extern "C" fn() -> u32, pub exit: extern "C" fn(i32) -> ! }
-// stock.rs — только `pub const NAME: u32 = 0x…;` из таблицы «Находки разведки» (без Thumb-бита у данных, с битом у функций)
+// stock.rs — только `pub const NAME: u32 = 0x…;` из таблицы «Находки разведки» (без Thumb-бита у данных, с битом у функций), в том числе UI_MEM_ALIGNED_ALLOC = 0x101882C5, UI_MEM_FREE = 0x10188381
 ```
+
+`heap::alloc` (target): поднять `BASEPRI` до `0x20` (как JHeap, сохранить старое значение). Если `alloc_limit != 0 && size > alloc_limit`, вернуть NULL — это внедрение отказа для e2e, по умолчанию 0. Затем обойти список от `*(HEAP + 0x60)` (не больше 4096 шагов; превышение — NULL) и вызвать `fits(*(HEAP + 8), …)`. Если не помещается — NULL, иначе `ui_mem_aligned_alloc(ty, align, size, b"wp2\0".as_ptr())`. В конце вернуть `BASEPRI`. `free(ty, p)` ничего не делает при `p == null`.
 
 `pwm_params`: `None` вне `1..=20000`. Если `round(7812.5 / f) ≥ 100` (то есть `f ≤ 78`), результат `(0x303, round(7812.5 / f))`. Иначе `n = ceil(32_000_000 / (f · 65535)) − 1`, результат `(0x200 | n, 32_000_000 / ((n + 1) · f))`. Шрифт — `font8x8_basic` Daniel Hepper (public domain, источник и лицензия указаны в комментарии-заголовке `font8x8.rs`).
 
 - [ ] **Step 1: Write the failing tests** (`#[cfg(test)]` в модулях)
 
 ```rust
-#[test] fn golden_header_from_python() {   // GOLDEN — 0x40 байт из `wp2apps pack` (шаг 2)
-    let h = parse_header(&GOLDEN).unwrap();
-    assert_eq!((h.kind, h.abi, h.abi_minor, h.version, h.image_size, h.load_addr), (0, 1, 0, 7, 16, 0x386F_F000));
-    assert_eq!(h.image_crc, crc32(0, &[1u8; 16]));
+#[test] fn golden_package_from_python() {   // GOLDEN — пакет из `wp2apps` (шаг 2), 0x40 + 16 + 8 байт
+    let h = parse_header(GOLDEN[..0x40].try_into().unwrap()).unwrap();
+    assert_eq!((h.kind, h.abi, h.abi_minor, h.version, h.image_size, h.reloc_count), (0, 1, 0, 7, 16, 2));
+    assert_eq!(file_size(&h) as usize, GOLDEN.len());
+    assert_eq!(h.body_crc, crc32(0, &GOLDEN[0x40..]));
+}
+#[test] fn relocate_adds_base() {
+    let mut image = GOLDEN[0x40..0x50].to_vec();
+    relocate(&mut image, 0x3810_0000, &GOLDEN[0x50..]).unwrap();
+    assert_eq!(image, [0u32, 0x3810_0010, 1, 0x3810_0008].iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<_>>());
+    assert_eq!(relocate(&mut image, 0, &13u32.to_le_bytes()), Err(PkgError::Reloc));
 }
 #[test] fn header_crc_and_reserved_checked() {
-    let mut raw = GOLDEN; raw[0x28] ^= 1; assert_eq!(parse_header(&raw), Err(PkgError::HeaderCrc));
-    let mut raw = GOLDEN; raw[0x3A] = 1; assert!(parse_header(&raw).is_err());
+    let mut raw: [u8; 0x40] = GOLDEN[..0x40].try_into().unwrap(); raw[0x28] ^= 1; assert_eq!(parse_header(&raw), Err(PkgError::HeaderCrc));
+    let mut raw: [u8; 0x40] = GOLDEN[..0x40].try_into().unwrap(); raw[0x3A] = 1; assert!(parse_header(&raw).is_err());
 }
 #[test] fn slot_rules() {
-    let h = parse_header(&GOLDEN).unwrap();
+    let h = parse_header(GOLDEN[..0x40].try_into().unwrap()).unwrap();
     assert!(check_slot(&h, 0).is_ok());
     assert_eq!(check_slot(&h, LOADER_SLOT), Err(PkgError::Kind));
     let mut newer = h; newer.abi_minor = 1; assert_eq!(check_slot(&newer, 0), Err(PkgError::Abi));
+    let mut big = h; big.image_size = APP_SIZE + 1; assert_eq!(check_slot(&big, 0), Err(PkgError::Bounds));
+    let mut many = h; many.reloc_count = 5; assert_eq!(check_slot(&many, 0), Err(PkgError::Bounds));
+}
+#[test] fn heap_fit() {
+    assert!(fits(0x2_0000, [0x100, 0x1_0000 + 8 + SLACK], 0x1_0000, 8));
+    assert!(!fits(0x2_0000, [0x1_0000 + 8 + SLACK - 1], 0x1_0000, 8));
+    assert!(!fits(0x1_0000, [0x2_0000], 0x1_0000, 8));            // счётчик свободного меньше need
+    assert!(!fits(u32::MAX, [u32::MAX], u32::MAX - 4, 8));          // переполнение need
+}
+#[test] fn stub_ram_offsets() {
+    assert_eq!(offset_of!(StubRam, trace_head), 0x44); assert_eq!(offset_of!(StubRam, loader_block), 0x4E8);
+    assert_eq!(offset_of!(StubRam, app_block), 0x4F0); assert_eq!(offset_of!(StubRam, alloc_limit), 0x4F8);
 }
 #[test] fn pwm_table() {
     assert_eq!(pwm_params(31), Some((0x303, 252)));
@@ -297,7 +440,7 @@ pub fn map_key(value: u32) -> Option<Event>;                        // 0xFFFF006
 
 - [ ] **Step 2: Сгенерировать `GOLDEN`**
 
-Run: `uv run --locked python -c "from wp2apps import package; print(package.pack(b'\x01'*16, name='golden', version=7)[:0x40].hex())"`. Вставить вывод константой `GOLDEN: [u8; 0x40]` в `pkg.rs`. Формат должен быть уже исправленным владельцем: CRC заголовка, `abi_minor`.
+Run: `uv run --locked python -c "import struct; from wp2apps import package; print(package.pack(struct.pack('<4I', 0, 16, 1, 8), name='golden', version=7, relocs=[4, 12]).hex())"`. Вставить вывод константой `GOLDEN: [u8; 88]` в `pkg.rs`.
 
 - [ ] **Step 3: Run to verify failure**
 
@@ -308,38 +451,41 @@ Expected: FAIL — не компилируется (`parse_header` не опре
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `cd fw && cargo test -p wp2-core --target aarch64-apple-darwin`
-Expected: PASS.
+Run: `cd fw && cargo test -p wp2-core --target aarch64-apple-darwin && cargo build -p wp2-core --release`
+Expected: PASS, сборка под `thumbv7em-none-eabi` без ошибок (проверяет target-only `heap::alloc`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add fw/Cargo.toml fw/Cargo.lock fw/.cargo fw/wp2-core AGENTS.md .gitignore
-git commit -m "feat(fw): wp2-core with package checks, PWM params, canvas, event queue"
+git commit -m "feat(fw): wp2-core with package checks, relocation, heap fit, PWM params, canvas, event queue"
 ```
 
 ---
 
-### Task 3: Заглушка: загрузка, view `0xF0`, запуск загрузчика с NAND
+### Task 4: Заглушка: загрузка, view `0xF0`, загрузчик в блоке кучи
 
 **Files:**
-- Create: `fw/wp2-stub/{Cargo.toml,build.rs,link.ld,src/main.rs,src/fs.rs,src/view.rs}`
+- Create: `fw/wp2-stub/{Cargo.toml,build.rs,link.ld,src/main.rs,src/view.rs}`
+- Create: `fw/wp2-core/src/{fs.rs,load.rs}` (только target; ими пользуются и заглушка, и загрузчик)
 - Create: `scripts/build-fw` (сборка заглушки, загрузчика, пропатченного образа)
 - Modify: `src/wp2apps/firmware.py` (точки P2, P4; дописывание заглушки и таблицы view)
+- Modify: `tests/e2e/harness.py` (`patched_nor`, `OPEN_VIEW`, `TRACE_OFF`, `LOADER_BLOCK_OFF`, `APP_BLOCK_OFF`, `ALLOC_LIMIT_OFF`)
 - Test: `tests/test_firmware.py`, `tests/test_e2e.py` (класс `StubTest`)
 
 **Interfaces:**
-- Consumes: `wp2_core::{layout, pkg, stock}`; `firmware.patch`, `harness.Emu` (задача 1).
+- Consumes: `wp2_core::{layout, pkg, heap, stock}`; `firmware.patch`, `harness.Emu`, `harness.heap` (задача 1).
 - Produces:
   - Заголовок заглушки по `STUB_BASE` (секция `.header`, первая): `#[repr(C)] struct StubHeader { magic: [u8; 4] = *b"WP2S", version: u32 = 1, boot: u32, ble: u32, view_proc: u32, view_name: u32, _r: [u32; 2] }`; адреса функций с битом Thumb.
   - `wp2_boot` (naked): `push {r0-r3, r4, lr}` → `bl wp2_boot_c` (обнуляет `StubRam`, `magic = 0x57503253`, `running_slot = 0xFF`) → `pop {r0-r3, r4, lr}` → `b.w 0x10146AA4`. Стековые аргументы исходного вызова не трогает.
-  - `extern "C" fn wp2_view_proc(view_id: u32, msg: u32, data: *mut c_void) -> i32`. Пишет `(msg << 16) | view_id` в кольцо `trace`. На `msg == 2` (preload) загружает загрузчик: `L.pkg` → заголовок, `parse_header` + `check_slot(LOADER_SLOT)`, образ читается кусками прямо в `LOADER_BASE` с потоковым `crc32`. Удача — `loader_state = 1`, неудача — `2`. При `loader_state != 1` возвращает `-2` на любое сообщение. Иначе `loader_active = 1` и вызов `(LOADER_BASE + entry | 1)(view_id, msg, data)`; на `msg == 4` после вызова `loader_active = 0`.
-  - `fs.rs`: `open(file: &mut [u8; 0x2C], path: &[u8], flags: u8) -> i32`, `read`, `write`, `close`, `unlink`, `rename`, `mkdir(path)` (через `0x10106FA0` и vtable `+0x3C`, `-134`, если указатель 0).
+  - `wp2_core::fs`: `open(file: &mut [u8; 0x2C], path: &[u8], flags: u8) -> i32`, `read`, `write`, `close`, `unlink`, `rename`, `mkdir(path)` (через `0x10106FA0` и vtable `+0x3C`; `-134`, если указатель 0).
+  - `wp2_core::load::load(slot: u8, file: &mut [u8; 0x2C], scratch: &mut [u8]) -> Result<(*mut u8, Header), i32>`: открыть `slot_path(slot)`, прочитать заголовок, `parse_header` + `check_slot`. Затем `heap::alloc(RES, image_size, 8)`; NULL → `E_NOMEM`. Образ читается прямо в блок с потоковым `crc32`. Таблица релокаций читается кусками по `scratch.len()` (кратно 4): CRC считается дальше, к каждому куску применяется `relocate(block, block as u32, chunk)`. Если CRC не сошёлся, есть ошибка релокации или ошибка чтения, блок освобождается и возвращается `E_BAD`/`E_IO`. Файл закрывается на всех путях.
+  - `extern "C" fn wp2_view_proc(view_id: u32, msg: u32, data: *mut c_void) -> i32`. Пишет `(msg << 16) | view_id` в кольцо `trace`. На `msg == 2` (preload): если `loader_block != 0`, сначала освободить его. Затем `load(LOADER_SLOT, …, &mut scratch)`. Удача: `loader_block`, `loader_size`, `loader_state = 1`. `E_NOMEM` — `loader_state = 3`, остальное — `2`. При `loader_state != 1` на любое сообщение возвращается `-2`. Иначе `loader_active = 1` и вызов `(loader_block + entry | 1)(view_id, msg, data)`. Если на `msg == 2` загрузчик вернул отрицательное значение (не хватило буфера кадра), заглушка освобождает блок, ставит `loader_state = 3`, `loader_active = 0` и возвращает `-2`. На `msg == 4` после вызова: `heap::free(RES, loader_block)`, `loader_block = 0`, `loader_active = 0`, `loader_state = 0`.
   - Патчер: `firmware.patch(app, stub)` дописывает `stub` (≤ `STUB_MAX` − таблица) по `0x25A080`, выравнивает до 8 и кладёт следом таблицу view: 162 стоковые записи плюс `{view_name, view_proc, 0, 0, 0xF0, 0x0102, 0x1D2, 0x1D2}`. Литералы начала (`0x101461AC`, `0x1018BC24`, `0x1018DF3C`) меняются на адрес новой таблицы, литералы конца (`0x10055458`, `0x1018BC28`, `0x1018DF40`) — на её конец. **P2:** `0x101884FA` `bl 0x10146AA4` → `bl header.boot`.
-  - `harness.patched_nor() -> bytes` = `stage_nor(stock_nor(), target/app-wp2.bin)`.
-  - `scripts/build-fw`: `cargo build --release -p wp2-stub -p wp2-loader` в `fw/`; `llvm-objcopy -O binary` (у загрузчика с `--set-section-flags .data=alloc,load,contents`); `wp2apps pack … --kind loader`; `wp2apps firmware --stub target/wp2-stub.bin --output target/app-wp2.bin`. Пишет `target/wp2-stub.bin`, `target/loader.wp2app`, `target/app-wp2.bin`.
+  - Харнес (решение журнала: константы определяет эта задача): `patched_nor() -> bytes` = `stage_nor(stock_nor(), target/app-wp2.bin)`; `OPEN_VIEW = 0x101898BD`; `TRACE_OFF = 0x44`; `LOADER_BLOCK_OFF = 0x4E8`; `APP_BLOCK_OFF = 0x4F0`; `ALLOC_LIMIT_OFF = 0x4F8`.
+  - `scripts/build-fw`: `cargo build --release -p wp2-stub -p wp2-loader` в `fw/`. Затем `llvm-objcopy -O binary` (у загрузчика с `--set-section-flags .data=alloc,load,contents`) и `wp2apps pack target/loader.bin --elf … --kind loader --name loader --version ${WP2_LOADER_VERSION:-1}`. В конце `wp2apps firmware --stub target/wp2-stub.bin --output target/app-wp2.bin`. Пишет `target/wp2-stub.bin`, `target/loader.wp2app`, `target/app-wp2.bin`.
 
-`link.ld` заглушки: `MEMORY { FLASH (rx) : ORIGIN = 0x1025A080, LENGTH = 0x3000 }`, `.header` первой, `ASSERT(SIZEOF(.data) + SIZEOF(.bss) == 0, "stub must not have writable statics")`, `PROVIDE(stock_heap_init = 0x10146AA5)`. Состояние хранится только в `StubRam` по `STUB_RAM`.
+`link.ld` заглушки: `MEMORY { FLASH (rx) : ORIGIN = 0x1025A080, LENGTH = 0x3000 }`, `.header` первой, `ASSERT(SIZEOF(.data) + SIZEOF(.bss) == 0, "stub must not have writable statics")`, `PROVIDE(stock_heap_init = 0x10146AA5)`. Заглушка не перемещается. Состояние хранится только в `StubRam` по `STUB_RAM`.
 
 - [ ] **Step 1: Разведка перед кодом (только чтение).** Дизассемблировать функции, которые читают литералы `0x101461AC`, `0x10055458`, `0x1018DF3C/40`. Подтвердить, что значения используются как границы таблицы с шагом `0x18`, и что нигде нет числа записей константой (`0xA2`) или размера (`0xF30`). Проверить, что view-менеджер не индексирует массивы по `view_id` с границей `< 0xF1`: найти `cmp rN, #imm` с `imm ∈ [0xEE, 0xF0]` рядом с вызовами `FUN_1018bc04`. Результат — абзац в `docs/recon.md`. Если число записей зашито, добавить его подмену в P4 и тест на неё.
 
@@ -369,7 +515,7 @@ def test_stub_too_big_rejected(self):
 Run: `uv run --locked python -m unittest tests.test_firmware -v`
 Expected: FAIL — `patch()` не принимает заглушку.
 
-- [ ] **Step 4: Implement the stub, `link.ld`, patch points P2/P4, `scripts/build-fw`**
+- [ ] **Step 4: Implement the stub, `fs`, `load`, `link.ld`, patch points P2/P4, `scripts/build-fw`**
 
 Загрузчика ещё нет. Для этой задачи `scripts/build-fw` собирает только заглушку и образ, если в `fw/wp2-loader` пусто.
 
@@ -382,16 +528,16 @@ Expected: PASS.
 
 ```python
 def test_patched_boots_and_view_without_loader_fails_cleanly(self):
-    with harness.Emu("stub", nor=harness.patched_nor()) as emu:          # patched_nor = stage_nor(stock_nor, target/app-wp2.bin)
+    with harness.Emu("stub", nor=harness.patched_nor()) as emu:
         emu.wait_uart("launcher enter", 60); emu.keep_awake()
-        ram = emu.peek(STUB_RAM, 8)
-        self.assertEqual(ram[:4], struct.pack("<I", 0x57503253))
+        self.assertEqual(emu.peek(STUB_RAM, 4), struct.pack("<I", 0x57503253))
         before = emu.frame()
         emu.call(OPEN_VIEW, 0xF0, 0)
         time.sleep(3)
         trace = emu.peek(STUB_RAM + TRACE_OFF, 4 + 32 * 4)
         self.assertIn((2 << 16) | 0xF0, struct.unpack_from("<32I", trace, 4))
         self.assertEqual(emu.peek(STUB_RAM + 4, 1), b"\x02")               # loader_state = bad/missing
+        self.assertEqual(harness.u32(emu, STUB_RAM + LOADER_BLOCK_OFF), 0)   # ничего не выделено
         self.assertNotIn("ZEPHYR FATAL ERROR", emu.uart())
         self.assertEqual(emu.frame(), before)                               # сток остался на своём экране
 
@@ -399,23 +545,23 @@ def test_mkdir_vtable_present(self):
     # gdb: найти mp для "/NAND:C" через call(0x10106FA1, &mp, path, 0), прочитать *(*(mp+0x1C)+0x3C) != 0
 ```
 
-Если view-менеджер на `-2` в preload ведёт себя иначе (пустой экран, зависание), записать это в `docs/recon.md`. Тогда в заглушке на preload возвращать `0`, на layout рисовать пустой экран и закрывать view через `FUN_101898bc` предыдущего id. Это поведение закрепить тестом.
+Если view-менеджер на `-2` в preload ведёт себя иначе (пустой экран, зависание), записать это в `docs/recon.md`. Тогда в заглушке на preload возвращать `0`, на layout рисовать пустой экран и закрывать view через `FUN_101898bc` предыдущего id. Это поведение закрепить тестом; оно же действует для `loader_state = 3`.
 
 - [ ] **Step 7: Run e2e**
 
-Run: `nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.StubTest tests.test_e2e.ReservationTest -v'`
+Run (в отдельной панели): `nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.StubTest tests.test_e2e.ReservationTest -v'`
 Expected: PASS. `ReservationTest` повторяется на образе с заглушкой: `harness.patched_nor()` вместо `patch(stock)`.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add fw/wp2-stub scripts/build-fw src/wp2apps/firmware.py tests/test_firmware.py tests/test_e2e.py tests/e2e docs/recon.md
-git commit -m "feat(fw): stub with boot hook, view 0xF0 and NAND loader launch"
+git add fw/wp2-stub fw/wp2-core scripts/build-fw src/wp2apps/firmware.py tests/test_firmware.py tests/test_e2e.py tests/e2e docs/recon.md
+git commit -m "feat(fw): stub with boot hook, view 0xF0 and the NAND loader in a heap block"
 ```
 
 ---
 
-### Task 4: Свой BLE-канал установки (`wp2apps install/remove/list`)
+### Task 5: Свой BLE-канал установки (`wp2apps install/remove/list`)
 
 **Files:**
 - Create: `fw/wp2-core/src/proto.rs`; `fw/wp2-stub/src/ble.rs`
@@ -426,7 +572,7 @@ git commit -m "feat(fw): stub with boot hook, view 0xF0 and NAND loader launch"
 - Test: `tests/test_link.py`, `tests/test_install.py`, `#[cfg(test)]` в `proto.rs`, `tests/test_e2e.py` (класс `InstallTest`)
 
 **Interfaces:**
-- Consumes: `StubRam`, `fs.rs`, `pkg` (задачи 2–3).
+- Consumes: `StubRam`, `wp2_core::{fs, pkg}` (задачи 3–4).
 - Produces — протокол: системные команды `c1 = 0xFFFF`. Payload зашифрован ключом сессии (CRC32 LE + PKCS#7, AES-CBC, IV `5051525354555657606162636465665A`). Ответ — `c2 | 0xA000` (`0x90A0` → `0xB0A0`), первый байт ответа — `Status`.
 
   | c2 | Запрос | Ответ |
@@ -437,7 +583,7 @@ git commit -m "feat(fw): stub with boot hook, view 0xF0 and NAND loader launch"
   | `0x90A3` END | — | `status` |
   | `0x90A4` DELETE | `u8 slot` | `status` |
 
-  `Status`: `Ok 0, BadRequest 1, Io 2, Sequence 3, Crc 4, Busy 5, Invalid 6`. `slot`: `0..=7` или `0xFF` (загрузчик). `Busy` — если слот совпадает с `running_slot` или это загрузчик при `loader_active`. `BEGIN` при незавершённой передаче отменяет старую (удаляет `.tmp`). `END` закрывает файл и перечитывает его: потоковый CRC, `parse_header`, `check_slot`, размер `= 0x40 + image_size`. Затем `unlink` старого и `rename(.tmp, .pkg)`; при ошибке `.tmp` удаляется.
+  `Status`: `Ok 0, BadRequest 1, Io 2, Sequence 3, Crc 4, Busy 5, Invalid 6`. `slot`: `0..=7` или `0xFF` (загрузчик). `Busy` — если слот совпадает с `running_slot` или это загрузчик при `loader_active`. `BEGIN` при незавершённой передаче отменяет старую (удаляет `.tmp`). `END` закрывает файл и перечитывает его: потоковый CRC всего файла, `parse_header`, `check_slot`, размер `= file_size(h)` (`0x40 + image_size + 4·reloc_count`), CRC `image ‖ relocs` = `body_crc`. Затем `unlink` старого и `rename(.tmp, .pkg)`; при ошибке `.tmp` удаляется. В кучу `END` ничего не грузит.
 - `wp2_core::proto`: `pub enum Request<'a> { Info(u8), Begin { slot: u8, size: u32, crc: u32 }, Data { offset: u32, bytes: &'a [u8] }, End, Delete(u8) }`, `pub fn parse(c2: u16, payload: &[u8]) -> Result<Request<'_>, Status>`, `pub const MAX_DATA: usize = 128`.
 - Заглушка (**P3**): `0x100D34F0` `bl 0x100CC284` → `bl header.ble`. `wp2_ble_default` (naked) делает `mov r2, r5; b.w wp2_ble_c`. Сигнатура `extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32`: сначала вызывает стоковый `0x100CC285(buf, len)`; если `frame.c1 == 0xFFFF` и `c2 ∈ 0x90A0..=0x90A4` — расшифровывает (`0x101B608D`), обрабатывает и отвечает. Ответ: `0x101B605B(&n, plain, len, c2 | 0xA000)`, затем кадр в `StubRam.reply` (заголовок big-endian, как в ветке `0x9052`), затем `0x100CC2D5(reply, 11 + n)`. Возвращает результат стоковой функции.
 - Python:
@@ -450,8 +596,7 @@ git commit -m "feat(fw): stub with boot hook, view 0xF0 and NAND loader launch"
 - `tests/e2e/netsim.py`: контекст `netsim() -> int` (порт) — `netsimd --instance 71 --hci-port <free> --no-cli-ui --no-web-ui`. Функция `paired_nor() -> bytes`: один раз запускает сток с `--hci-port` и `--qmp-port` и вызывает внешнюю `cmf-watch-utils emu pair-fixture --output runs/e2e/paired-nor.bin`. Харнесу добавляются:
   - `patched_paired_nor() = stage_nor(paired_nor(), target/app-wp2.bin)`;
   - `cli(args) -> int` (`wp2apps.cli.main`) и `cli_out(args) -> str` (то же со stdout);
-  - `installed(names) -> ContextManager[tuple[Emu, int]]` — Netsim + `Emu` + `wait_uart("launcher enter")` + `keep_awake()` + `install target/<name>.wp2app` для каждого имени;
-  - константы `OPEN_VIEW = 0x101898BD` и `TRACE_OFF = 0x44` (смещение `trace_head` в `StubRam`).
+  - `installed(names) -> ContextManager[tuple[Emu, int]]` — Netsim + `Emu` + `wait_uart("launcher enter")` + `keep_awake()` + `install target/<name>.wp2app` для каждого имени.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -495,7 +640,7 @@ Expected: FAIL — нет `link`, нет `proto`.
 
 - [ ] **Step 3: Implement `proto.rs`, `ble.rs`, P3, `link.py`, `h4.py`, `install.py`, CLI**
 
-При первом `BEGIN` заглушка создаёт каталог через `fs::mkdir(DIR)`, `-17` (EEXIST) не считается ошибкой. Если в задаче 3 указатель mkdir оказался нулевым, вместо каталога используются имена `/NAND:C/wp2apps-<slot>.pkg` в корне `/NAND:C`: `slot_path` меняется в одном месте и попадает в Rulings.
+При первом `BEGIN` заглушка создаёт каталог через `fs::mkdir(DIR)`, `-17` (EEXIST) не считается ошибкой. Если в задаче 4 указатель mkdir оказался нулевым, вместо каталога используются имена `/NAND:C/wp2apps-<slot>.pkg` в корне `/NAND:C`: `slot_path` меняется в одном месте и попадает в Rulings.
 
 - [ ] **Step 4: Run unit tests**
 
@@ -508,7 +653,6 @@ Expected: PASS.
 def test_install_list_remove(self):
     with netsim() as port, harness.Emu("install", nor=harness.patched_paired_nor(), hci_port=port) as emu:
         emu.wait_uart("launcher enter", 60); emu.keep_awake()
-        hello = (ROOT / "target/hello.wp2app").read_bytes()
         self.assertEqual(cli(["install", "target/hello.wp2app", "--hci-port", str(port)]), 0)
         listed = json.loads(cli_out(["list", "--hci-port", str(port)]))
         self.assertEqual(listed["slots"]["0"]["name"], "hello")
@@ -517,6 +661,7 @@ def test_install_list_remove(self):
 
 def test_install_rejects_corrupt(self):
     # пакет с испорченным байтом образа (CRC файла пересчитан хостом под испорченные байты): END → Status.Invalid, слот пуст
+    # пакет с испорченным байтом таблицы релокаций (то же): END → Status.Invalid
     # пакет с abi_minor = 1 (заголовочный CRC пересчитан): END → Status.Invalid
 
 def test_install_interrupted_keeps_old(self):
@@ -530,7 +675,7 @@ def test_unauthenticated_frame_ignored(self):
 
 - [ ] **Step 6: Run e2e**
 
-Run: `nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app hello 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.InstallTest -v'`
+Run (в отдельной панели): `nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app hello 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.InstallTest -v'`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -542,27 +687,30 @@ git commit -m "feat: own BLE install channel in the stub with wp2apps install/re
 
 ---
 
-### Task 5: Загрузчик: view, буфер кадра, меню установленных приложений
+### Task 6: Загрузчик: view, буфер кадра, меню установленных приложений
 
 **Files:**
-- Create: `fw/wp2-loader/{Cargo.toml,build.rs,link.ld,src/main.rs,src/ui.rs,src/menu.rs,src/stock.rs}`
+- Create: `fw/wp2-loader/{Cargo.toml,build.rs,link.ld,src/main.rs,src/ui.rs,src/menu.rs}`
 - Modify: `scripts/build-fw` (упаковка `loader.wp2app`)
+- Modify: `tests/e2e/harness.py` (`hog`, `unhog`)
 - Test: `tests/test_e2e.py` (класс `LoaderTest`)
 
 **Interfaces:**
-- Consumes: `wp2_core::{gfx, pkg, layout, stock, events}`, заглушка (задача 3), установка (задача 4).
+- Consumes: `wp2_core::{gfx, pkg, layout, heap, fs, stock, events}`, заглушка (задача 4), установка (задача 5).
 - Produces:
-  - `#[unsafe(no_mangle)] #[unsafe(link_section = ".entry")] extern "C" fn loader_main(view_id: u32, msg: u32, data: *mut c_void) -> i32` — первая функция образа (`entry = 0`). `link.ld`: `ORIGIN = 0x386EF000, LENGTH = 0x10000`, `.entry`, `.text`, `.rodata`, `.data` + `.bss` внутри образа (как `sdk/cmf-wp2-app/app.ld`).
-  - `ui.rs`: `fn layout(data: *mut c_void) -> i32` (msg 3). Получает `scr = lv_disp_get_scr_act(*(data as *const *mut c_void))` и выделяет буфер `W*H*2` через `ui_mem_aligned_alloc(FB_MEM_TYPE, 4, size, 0)`; при неудаче возвращает `-12`. Создаёт `img = lv_img_create(scr)`, `lv_img_set_src(img, &DSC)`, где `DSC: lv_img_dsc_t` с `header = cf | (466 << 10) | (466 << 21)` и `cf = LV_IMG_CF_TRUE_COLOR (4)`. Вешает `lv_obj_add_event_cb(scr, touch_cb, 0, null)` и `TIMER = lv_timer_create(tick, 20, null)`. Также `fn delete()` (msg 4; освобождает таймер и буфер, объекты LVGL не удаляет — так делает `goodbye_view`), `fn invalidate()` (`lv_obj_invalidate(img)`), `fn canvas() -> Canvas<'static>`.
+  - `#[unsafe(no_mangle)] #[unsafe(link_section = ".entry")] extern "C" fn loader_main(view_id: u32, msg: u32, data: *mut c_void) -> i32` — первая функция образа (`entry = 0`). `link.ld`: `ORIGIN = 0, LENGTH = 0x10000`, `.entry`, `.text`, `.rodata`, `.data` + `.bss` внутри образа (как `sdk/cmf-wp2-app/app.ld`). Стоковые функции — только через константы `stock.rs`, приведённые к указателям (`PROVIDE`-символы запрещены, их отвергает упаковщик). Статики загрузчика живут в блоке и при каждом открытии view начинаются с нулей.
+  - `ui.rs`: `fn preload() -> i32` (msg 2): `FB = heap::alloc(heap::FB, FB_BYTES, 0x40)`; NULL → `E_NOMEM` (заглушка тогда освобождает блок загрузчика). `fn layout(data: *mut c_void) -> i32` (msg 3): `scr = lv_disp_get_scr_act(*(data as *const *mut c_void))`, `img = lv_img_create(scr)`, `lv_img_set_src(img, &DSC)`, `DSC: lv_img_dsc_t` с `header = cf | (466 << 10) | (466 << 21)`, `cf = LV_IMG_CF_TRUE_COLOR (4)`, данные = `FB`. `lv_obj_add_flag(img, LV_OBJ_FLAG_CLICKABLE)` и `lv_obj_add_event_cb(img, touch_cb, 0, null)` — обработчик висит на своём объекте, не на экране. `TIMER = lv_timer_create(tick, 20, null)`. `fn delete()` (msg 4): `lv_timer_del(TIMER)`, `lv_obj_del(img)`, затем `heap::free(heap::FB, FB)`. После возврата блок загрузчика освобождается, поэтому в LVGL не должно остаться ни одного указателя в него: ни таймера, ни обработчика, ни `DSC`. Также `fn invalidate()` (`lv_obj_invalidate(img)`), `fn canvas() -> Canvas<'static>`.
   - `menu.rs`: `fn scan() -> [Option<Entry>; 8]` (`Entry { slot: u8, name: [u8; 24], len: u8 }`, заголовок из `n.pkg`, только прошедшие `parse_header` + `check_slot`), `fn draw(c: &mut Canvas, entries, selected: usize)` (заголовок `Apps` по `y = 60`, строки высотой 60 с `y = 120`, слева отступ `x = 90`; без приложений — `No apps`), `fn hit(y: i16) -> Option<usize>`.
-  - Сообщения: 2 → `0`; 3 → `layout` + `menu::draw`; 0xD → поворот коронки двигает выделение (событие помечается обработанным), остальное не трогается (стоковая кнопка выходит из view); `touch_cb` с `PRESSED`/`RELEASED` в меню при `hit` запоминает выбор (запуск — задача 6); 4 → `delete`.
-  - Глобальные `FB_MEM_TYPE`, `LV_COLOR_DEPTH` берутся из шага 1.
+  - Сообщения: 2 → `preload`; 3 → `layout` + `menu::draw`; 0xD → поворот коронки двигает выделение (событие помечается обработанным), остальное не трогается (стоковая кнопка выходит из view); `touch_cb` с `PRESSED`/`RELEASED` в меню при `hit` запоминает выбор (запуск — задача 7); 4 → `delete`.
+  - `FB_BYTES = W * H * bytes_per_pixel` и `LV_COLOR_DEPTH` берутся из шага 1.
+  - Харнес: `hog(emu, keep: int) -> list[int]` — пока `heap(emu)[1] > keep`, `p = emu.call(UI_MEM_ALIGNED_ALLOC, 2, 8, max_block − keep − 0x200, 0)`, не больше 64 раз; размер всегда меньше наибольшего блока, поэтому JHeap не падает. `unhog(emu, ptrs)` — `UI_MEM_FREE` для каждого.
 
-- [ ] **Step 1: Разведка формата цвета и памяти (только чтение).**
-  - `LV_COLOR_DEPTH` и `LV_COLOR_16_SWAP`: декомпилировать `lv_canvas_fill_bg` (`0x1013E9AC`) и `lv_img_buf_get_img_size` (вызывается из `lv_canvas_set_buffer` `0x1013E52C`), найти множитель байт на пиксель для `TRUE_COLOR`. Если 32 бита, `Canvas` из задачи 2 хранит `u32` ARGB8888 с переводом из RGB565 на записи; тесты задачи 2 правятся под это в этом же коммите.
-  - Тип памяти для буфера кадра: в `ui_mem.c` (`0x101882C4`, таблица `*0x1018837C`, по `0x24` Б на тип) найти имена типов. Взять тип, который сток использует для `lv_img`/canvas-буферов, и парную функцию освобождения. Записать в `docs/recon.md`.
+- [ ] **Step 1: Разведка формата цвета и LVGL (только чтение).**
+  - `LV_COLOR_DEPTH` и `LV_COLOR_16_SWAP`: декомпилировать `lv_canvas_fill_bg` (`0x1013E9AC`) и `lv_img_buf_get_img_size` (вызывается из `lv_canvas_set_buffer` `0x1013E52C`), найти множитель байт на пиксель для `TRUE_COLOR`. Если 32 бита, `Canvas` из задачи 3 хранит `u32` ARGB8888 с переводом из RGB565 на записи, `FB_BYTES = 0xD4110`; тесты задачи 3 правятся под это в этом же коммите.
+  - Тип памяти для буфера кадра решён разведкой аллокатора: `FB` (0), выравнивание `0x40`. Буфер ровно `0x6A088` Б JHeap берёт из последнего подходящего блока; `heap::fits` это покрывает.
+  - `lv_obj_add_flag(obj, flag)`: найти по вызовам с константой `2` (`LV_OBJ_FLAG_CLICKABLE`) рядом с `lv_obj_add_event_cb` в стоковых view. Записать адрес в `stock.rs` и `docs/recon.md`.
   - `lv_indev_get_point`: в вызывающих `0x10125BD4` найти следующий вызов вида `(indev, lv_point_t*)`. Проверить, что `0x10125BD4` действительно `lv_event_get_indev`.
-- [ ] **Step 2: Write the e2e test** (`LoaderTest`)
+- [ ] **Step 2: Write the e2e tests** (`LoaderTest`)
 
 ```python
 def test_menu_lists_installed_apps(self):
@@ -572,12 +720,32 @@ def test_menu_lists_installed_apps(self):
             self.assertEqual(cli(["install", pkg, "--hci-port", str(port)]), 0)
         emu.call(OPEN_VIEW, 0xF0, 0); time.sleep(3)
         self.assertEqual(emu.peek(STUB_RAM + 4, 2), b"\x01\x01")          # loader loaded, active
+        block = harness.u32(emu, STUB_RAM + LOADER_BLOCK_OFF)
+        self.assertTrue(0x380A9340 <= block < STUB_RAM)                     # загрузчик живёт в ResFbHeap
         w, h, rgb = emu.frame()
         self.assertTrue(bright_pixels(rgb, w, box=(90, 120, 300, 40)) > 50)    # строка "hello"
         self.assertTrue(bright_pixels(rgb, w, box=(90, 180, 300, 40)) > 50)    # строка "vibration-lab"
         emu.send("c 1", "c 0", pause=2)                                     # кнопка → сток закрывает view
-        self.assertEqual(emu.peek(STUB_RAM + 5, 1), b"\x00")
+        self.assertEqual(emu.peek(STUB_RAM + 4, 2), b"\x00\x00")
+        self.assertEqual(harness.u32(emu, STUB_RAM + LOADER_BLOCK_OFF), 0)
+
+def test_loader_no_memory_keeps_stock(self):
+    with harness.installed(["loader"]) as (emu, port):
+        before = emu.frame()
+        for limit in (0x100, 0x60000):                 # 1) нет блока под загрузчик; 2) загрузчик есть, буфера кадра нет
+            emu.poke(STUB_RAM + ALLOC_LIMIT_OFF, struct.pack("<I", limit))
+            emu.call(OPEN_VIEW, 0xF0, 0); time.sleep(3)
+            self.assertEqual(emu.peek(STUB_RAM + 4, 2), b"\x03\x00")    # no memory, not active
+            self.assertEqual(harness.u32(emu, STUB_RAM + LOADER_BLOCK_OFF), 0)
+            self.assertEqual(emu.frame(), before)
+        emu.poke(STUB_RAM + ALLOC_LIMIT_OFF, bytes(4))
+        emu.call(OPEN_VIEW, 0xF0, 0); time.sleep(3)
+        self.assertEqual(emu.peek(STUB_RAM + 4, 2), b"\x01\x01")
+        uart = emu.uart()
+        self.assertNotIn("MllcFailedHook", uart); self.assertEqual(uart.count("*** Booting Zephyr"), 1)
 ```
+
+Лимит `0x60000` больше образа загрузчика (≤ `0x10000`) и меньше буфера кадра (≥ `0x6A088`), поэтому срабатывает второй путь: отказ в `preload` загрузчика. Если закрытый на preload view оставляет пустой экран (см. задачу 4, шаг 6), `emu.frame() == before` заменяется поведением, закреплённым там.
 
 - [ ] **Step 3: Run to verify failure**
 
@@ -588,29 +756,30 @@ Expected: FAIL — `target/loader.wp2app` нет.
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app hello 1 && scripts/build-app vibration-lab 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.LoaderTest -v'`
+Run (в отдельной панели): `nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app hello 1 && scripts/build-app vibration-lab 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.LoaderTest -v'`
 Expected: PASS. Кадр меню сохранить в `runs/e2e/loader-*/menu.ppm` для ревью.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add fw/wp2-loader scripts/build-fw tests/test_e2e.py tests/e2e docs/recon.md
-git commit -m "feat(fw): NAND loader with framebuffer view and installed-apps menu"
+git commit -m "feat(fw): relocatable NAND loader with framebuffer view and installed-apps menu"
 ```
 
 ---
 
-### Task 6: Запуск приложения и ABI 1 `Api` (экран, ввод, время, выход)
+### Task 7: Запуск приложения и ABI 1 `Api` (экран, ввод, время, выход)
 
 **Files:**
 - Create: `fw/wp2-loader/src/app.rs`
 - Modify: `fw/wp2-loader/src/{main.rs,ui.rs,menu.rs}`
+- Modify: `tests/e2e/harness.py` (`padded(name, size, new_name) -> bytes`)
 - Test: `tests/test_e2e.py` (класс `HelloTest`)
 
 **Interfaces:**
-- Consumes: `wp2_core::{events::{Queue, map_key, Event}, Api, pkg, layout}`; `StubRam.running_slot`.
+- Consumes: `wp2_core::{events::{Queue, map_key, Event}, Api, pkg, layout, heap, load}`; `StubRam.{running_slot, app_block, app_size}`.
 - Produces:
-  - `fn launch(slot: u8) -> Result<(), i32>` (UI-поток). Читает `n.pkg`, проверяет (`parse_header`, `check_slot`, потоковый CRC), копирует образ в `APP_BASE`, ставит `running_slot = slot`, очищает очередь и кадр. Вызывает `os_thread_create(&mut THREAD_BUF, THREAD_BUF.len(), app_thread, entry, &API, 0, APP_PRIO, 0, 0)`; буфер `THREAD_BUF: [u8; 0x118 + 0x2000]` (выровнен на 8) лежит в `.bss` загрузчика.
+  - `fn launch(slot: u8) -> Result<(), i32>` (UI-поток): `load::load(slot, …)` даёт блок с перемещённым образом или `E_NOMEM`/`E_BAD`/`E_IO`. Затем `app_block = block`, `app_size = image_size`, `running_slot = slot`, очистить очередь и кадр. Вызывает `os_thread_create(&mut THREAD_BUF, THREAD_BUF.len(), app_thread, block + entry | 1, &API, 0, APP_PRIO, 0, 0)`; буфер `THREAD_BUF: [u8; 0x118 + 0x2000]` (выровнен на 8) лежит в `.bss` загрузчика, то есть в его блоке.
   - `extern "C" fn app_thread(entry: u32, api: *const Api, _: u32)`: `let code = entry(api); EXITED.store(code | FLAG)`; дальше поток засыпает в `loop { os_sleep(1000) }`, чтобы UI-поток мог его остановить.
   - `static API: Api = Api { abi: 1, abi_minor: 0, width: 466, height: 466, … }`. Функции:
     - `fill_rect`, `draw_text`: рисуют в `Canvas`, без LVGL; длина текста ограничена 64 байтами.
@@ -618,24 +787,26 @@ git commit -m "feat(fw): NAND loader with framebuffer view and installed-apps me
     - `next_event(ev, timeout_ms)`: `pop`, иначе `os_sleep(5)` до таймаута; `u32::MAX` — ждать бесконечно; возвращает только `0`/`1`.
     - `millis`: из шага 1.
     - `exit(code)`: `EXITED.store`, затем тот же сон.
-  - `tick` (UI-поток, 20 мс): если `EXITED`, то `stop_app()` и меню. `stop_app()`: мотор выкл (задача 7), `k_thread_abort(&THREAD_BUF)`, `running_slot = 0xFF`.
+  - `tick` (UI-поток, 20 мс): если `EXITED`, то `stop_app()` и меню. `stop_app()`: мотор выкл (задача 8), `k_thread_abort(&THREAD_BUF)`, `heap::free(RES, app_block)`, `app_block = 0`, `app_size = 0`, `running_slot = 0xFF`. Блок освобождается только после `abort`.
   - Ввод в режиме приложения: `touch_cb` → `TOUCH_DOWN`/`TOUCH_UP` с координатами `lv_indev_get_point`. Сообщение 0xD → `map_key`: на `Some` событие ставится в очередь и помечается обработанным (`*(data as *mut u8).add(4) = 1`).
-  - Сообщение 4 (delete) с работающим приложением: `push(BUTTON)`, затем `stop_app()` сразу, без ожидания (UI-поток нельзя блокировать).
-  - Меню: тап по строке → `launch(slot)`. Ошибка → строка `Error <code>` на 2 с.
+  - Сообщение 4 (delete) с работающим приложением: `push(BUTTON)`, затем `stop_app()` сразу, без ожидания (UI-поток нельзя блокировать), затем `ui::delete()`.
+  - Меню: тап по строке → `launch(slot)`. Ошибка → строка `Error <code>` (например `Error -12`) на 2 с в строке приложения.
+  - Харнес: `padded(name, size, new_name)` — образ из `target/<name>.wp2app`, дополненный нулями до `size`, перепакованный `package.pack(…, relocs=pkg.relocs)` под именем `new_name`.
 
 - [ ] **Step 1: Разведка времени, приоритета, abort (только чтение).**
   - `millis`: найти `k_uptime_get_32`/`k_uptime_ticks` — например, в функции, которая ставит метку времени в стоковый лог (`[8460][os]…`), или по syscall-обёртке рядом с `0x1019B268` (`k_sleep`). Записать адрес и единицы (мс или тики, `CONFIG_SYS_CLOCK_TICKS_PER_SEC`).
   - `k_thread_abort`: выбрать из `0x10105C90` и `0x1019B2D8` (сигнатура `(k_tid_t)`, вызов из `z_thread_abort`).
   - `APP_PRIO`: приоритет UI-потока (`lvglworkq` / `ui_service`) — по вызову `os_thread_create` или `k_work_queue_start` с этим именем. `APP_PRIO` = на 1 ниже (численно больше), чтобы зависшее приложение не останавливало UI.
-  - Направление поворота: задача 2 приняла `0x…6F = +1`. Подтвердить по `view_key:` в UART при `r 80` и `r -80`; если наоборот — поправить `map_key` и тест.
+  - Направление поворота: задача 3 приняла `0x…6F = +1`. Подтвердить по `view_key:` в UART при `r 80` и `r -80`; если наоборот — поправить `map_key` и тест.
 - [ ] **Step 2: Write the e2e tests** (`HelloTest`)
 
 ```python
 def test_hello_draws_reacts_and_exits(self):
-    with installed(["loader", "hello"]) as (emu, port):          # фикстура: netsim + Emu + install
+    with installed(["loader", "hello"]) as (emu, port):
         emu.call(OPEN_VIEW, 0xF0, 0); time.sleep(2)
         emu.send("t 1 200 140", "t 0 200 140", pause=2)              # строка 0 → hello
         self.assertEqual(emu.peek(STUB_RAM + 6, 1), b"\x00")         # running_slot = 0
+        self.assertNotEqual(harness.u32(emu, STUB_RAM + APP_BLOCK_OFF), 0)
         w, h, rgb = emu.frame()
         self.assertEqual(pixel(rgb, w, 233, 100), (0, 0, 0))          # чёрный фон
         self.assertTrue(bright_pixels(rgb, w, box=(213, 225, 60, 20)) > 20)  # "hello" у центра
@@ -644,14 +815,30 @@ def test_hello_draws_reacts_and_exits(self):
         self.assertTrue(r < 16 and g < 16 and b > 200)                # 0x001F → синий
         emu.send("c 1", "c 0", pause=2)                               # BUTTON → main возвращает 0
         self.assertEqual(emu.peek(STUB_RAM + 6, 1), b"\xff")
+        self.assertEqual(harness.u32(emu, STUB_RAM + APP_BLOCK_OFF), 0)
         self.assertTrue(bright_pixels(emu.frame()[2], w, box=(90, 120, 300, 40)) > 50)  # снова меню
 
 def test_view_delete_stops_app(self):
     # запустить hello; закрыть view свайпом вправо (t 1 30 233 … t 0 400 233) или call(OPEN_VIEW, 0x10, 0);
-    # running_slot == 0xFF, loader_active == 0, нет FATAL; снова OPEN_VIEW 0xF0 → меню рисуется, hello запускается
+    # running_slot == 0xFF, loader_active == 0, app_block == 0, loader_block == 0, нет FATAL;
+    # снова OPEN_VIEW 0xF0 → меню рисуется, hello запускается
 
-def test_millis_matches_virtual_time(self):
-    # gdb: call(API.millis) дважды с паузой 2 с хост-времени; разница в пределах [1500, 2500] при icount shift=3
+def test_blocks_freed_and_relocated(self):
+    # 5 циклов: OPEN_VIEW 0xF0 → тап hello → кадр hello (как выше) → "c 1","c 0" → кнопка ещё раз (view закрыт);
+    #   после каждого цикла free = harness.heap(emu)[0], loader_block == app_block == 0
+    # перед циклом 2 держать hog = emu.call(UI_MEM_ALIGNED_ALLOC, 2, 8, 0x1000, 0) (освободить после цикла 2):
+    #   app_block и loader_block в цикле 2 отличаются от цикла 1, hello рисует так же
+    # max(free) − min(free) < 0x1000 по циклам 1, 3, 4, 5
+
+def test_app_no_memory_shows_error(self):
+    # OPEN_VIEW; poke alloc_limit = 1; тап hello → running_slot 0xFF, app_block 0,
+    #   bright_pixels в строке 0 (текст "Error -12"), через 2,5 с строка снова "hello"; poke alloc_limit = 0; тап → hello работает
+    # нет MllcFailedHook, одна загрузка Zephyr
+
+def test_big_app_starved_heap(self):
+    # установить harness.padded("hello", 0x18000, "big"); OPEN_VIEW; hogs = harness.hog(emu, keep=0x10000)
+    # тап по строке "big" → "Error -12", running_slot 0xFF; нет MllcFailedHook, одна загрузка Zephyr
+    # harness.unhog(emu, hogs); тап → big работает (кадр hello), выход кнопкой
 ```
 
 - [ ] **Step 3: Run to verify failure**
@@ -663,23 +850,23 @@ Expected: FAIL — тап по строке ничего не запускает
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.HelloTest tests.test_e2e.LoaderTest -v'`
+Run (в отдельной панели): `nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.HelloTest tests.test_e2e.LoaderTest -v'`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add fw/wp2-loader tests/test_e2e.py tests/e2e docs/recon.md
-git commit -m "feat(fw): run apps on their own thread with ABI 1 display, input, time and exit"
+git commit -m "feat(fw): run relocated apps from heap blocks with ABI 1 display, input, time and exit"
 ```
 
 ---
 
-### Task 7: Мотор: `Api.motor`, частота, сторож 2000 мс
+### Task 8: Мотор: `Api.motor`, частота, сторож 2000 мс
 
 **Files:**
 - Create: `fw/wp2-loader/src/motor.rs`; `sdk/examples/motor-hog/{Cargo.toml,src/main.rs}`
-- Modify: `fw/wp2-loader/src/{app.rs,ui.rs}`, `sdk/Cargo.toml` (member `examples/motor-hog`)
+- Modify: `fw/wp2-loader/src/{app.rs,ui.rs}`, `sdk/Cargo.toml` (member `examples/motor-hog`), `tests/e2e/harness.py` (`symbol`, `installed`-помощники `open_app`, `lab_play`)
 - Test: `tests/test_e2e.py` (класс `MotorTest`)
 
 **Interfaces:**
@@ -691,9 +878,10 @@ git commit -m "feat(fw): run apps on their own thread with ABI 1 display, input,
     - `PAUSED` → `-3`.
     - `duty == 0` → `off()`, `0`.
     - Иначе: записать `clk` в `CMU_PWMCLK0`, вызвать `api[0](dev, 0, period, pulse(period, duty), 1)`, `ON_SINCE.store(millis() | 1)`, вернуть `0`. Отрицательный код драйвера возвращается как есть.
-  - `pub fn off()`: `api[4](dev, 0)`, `CMU_PWMCLK0 = 0x303`, `ON_SINCE.store(0)`. Вызывается из `stop_app`, паузы (задача 8) и сторожа.
+  - `pub fn off()`: `api[4](dev, 0)`, `CMU_PWMCLK0 = 0x303`, `ON_SINCE.store(0)`. Вызывается из `stop_app`, паузы (задача 9) и сторожа.
   - Сторож в `tick`: `ON_SINCE != 0 && millis() − ON_SINCE ≥ 2000` → `off()`. Гонку с записью из потока приложения принимаем: обе стороны приводят мотор в определённое состояние.
   - `motor-hog`: `main` вызывает `api.vibrate(1000, 31)` и крутится в `loop { core::hint::spin_loop() }`, не вызывая `event`.
+  - Харнес: `symbol(elf: Path, name: str) -> int` — значение символа из `llvm-nm`. Образы слинкованы с базой 0, поэтому это смещение в образе; адрес в эмуляторе = блок + смещение.
 
 - [ ] **Step 1: Write the e2e tests** (`MotorTest`)
 
@@ -722,9 +910,10 @@ def test_motor_cap_without_event_loop(self):
 
 def test_motor_rejects_out_of_range(self):
     # gdb: call(API.motor, 1001, 31) == -1; call(API.motor, 500, 0) == -1; call(API.motor, 500, 20001) == -1; motor.log без новых строк
+    # указатель на motor: u32(loader_block + symbol(fw/target/thumbv7em-none-eabi/release/wp2-loader, "API") + 0x18)
 ```
 
-`installed(…)`, `open_app(emu, row)`, `lab_play(emu)` — помощники в `tests/e2e/harness.py`. `open_app` открывает view `0xF0` (до задачи 9 через `call`) и тапает по строке `row`.
+`installed(…)`, `open_app(emu, row)`, `lab_play(emu)` — помощники в `tests/e2e/harness.py`. `open_app` открывает view `0xF0` (до задачи 10 через `call`) и тапает по строке `row`.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -735,7 +924,7 @@ Expected: FAIL — `motor` загрузчика пока заглушка `-1`, 
 
 - [ ] **Step 4: Run to verify pass**
 
-Run: `nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.MotorTest -v'`
+Run (в отдельной панели): `nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.MotorTest -v'`
 Expected: PASS. QEMU должен быть собран с исправленной расшифровкой делителя (`motor.log` для стока даёт ≈30–31 Гц). Если в `motor.log` 482 Гц, PR лога мотора ещё не исправлен: остановиться и сообщить владельцу.
 
 - [ ] **Step 5: Commit**
@@ -747,20 +936,22 @@ git commit -m "feat(fw): motor API with PWM clock handling and 2 s continuous-ru
 
 ---
 
-### Task 8: Пауза и продолжение под стоковым всплывающим окном
+### Task 9: Пауза и продолжение под стоковым всплывающим окном
 
 **Files:**
 - Modify: `fw/wp2-loader/src/{ui.rs,app.rs,motor.rs}`, `sdk/Cargo.toml` (member `examples/motor-hold`)
 - Create: `sdk/examples/motor-hold/{Cargo.toml,src/main.rs}`
+- Modify: `tests/e2e/harness.py` (`read_marker`, `popup`, `close_popup`)
 - Test: `tests/test_e2e.py` (класс `PauseTest`)
 
 **Interfaces:**
-- Consumes: сообщения view 7/8, флаги окна `*(u8*)0x3800FAF4 & 3`.
+- Consumes: сообщения view 7/8, флаги окна `*(u8*)0x3800FAF4 & 3`, `StubRam.app_block`.
 - Produces: `fn overlay() -> bool = DEFOCUSED || (*(0x3800FAF4 as *const u8) & 3) != 0`. В `tick`:
   - переход `false → true`: `PAUSED = true`, `motor::off()`, очистить очередь, `push(PAUSE)`;
   - переход `true → false`: `PAUSED = false`, `push(RESUME)`, `invalidate()`.
-  
-  На паузе `motor` возвращает `-3`; рисовать в буфер можно, `present` ничего не делает до `RESUME`.
+
+  На паузе `motor` возвращает `-3`; рисовать в буфер можно, `present` ничего не делает до `RESUME`. Блок приложения на паузе остаётся выделенным.
+- Харнес: `read_marker(emu) -> list[int]` (через `symbol` из задачи 8) — `u32(app_block)` + `symbol(sdk/target/thumbv7em-none-eabi/release/motor-hold, "JOURNAL")`, затем `peek` 20 байт `[count: u32, kinds: [u8; 16]]`.
 
 - [ ] **Step 1: Разведка (эмулятор): что показывает окно.** На стоковом образе: открыть любое приложение из списка, отправить `p 4000 1 60`, через 5 с `p 4000 0 60`. Записать в `docs/recon.md`:
   - есть ли в `uart0.log` `msgbox_cache popup` и `set_popup_msgbox` и с каким `mid`;
@@ -772,13 +963,14 @@ git commit -m "feat(fw): motor API with PWM clock handling and 2 s continuous-ru
 
 ```python
 def test_popup_pauses_and_releases_motor(self):
-    with installed(["loader", "motor-hold"]) as (emu, port):   # см. ниже
+    with installed(["loader", "motor-hold"]) as (emu, port):
         open_app(emu, row=0); time.sleep(0.5)
         self.assertGreater(emu.motor()[-1][1], 0)
         emu.popup(); time.sleep(1)
         self.assertEqual(emu.motor()[-1][1], 0)
         self.assertEqual(struct.unpack("<I", emu.peek(0x40001068, 4))[0], 0x303)
         self.assertEqual(emu.peek(STUB_RAM + 6, 1), b"\x00")          # приложение живо
+        self.assertNotEqual(harness.u32(emu, STUB_RAM + APP_BLOCK_OFF), 0)
         emu.close_popup(); time.sleep(1.5)
         self.assertEqual(read_marker(emu), [PAUSE, RESUME])            # приложение записало, что получило
         self.assertTrue(bright_pixels(emu.frame()[2], 466, box=(150, 200, 166, 60)) > 20)  # кадр приложения вернулся
@@ -787,7 +979,7 @@ def test_lab_stops_measurement_on_pause(self):
     # vibration-lab: PLAY с Pattern=Long; popup → в motor.log сразу duty 0; после close_popup мотор не включается сам
 ```
 
-`motor-hold` — пример `sdk/examples/motor-hold`. Он вызывает `vibrate(1000, 31)` и затем в цикле `event(1000)`, а каждый полученный `kind` дописывает по фиксированному адресу `APP_BASE + 0x1F000` (`[count: u32, kinds: [u8; 16]]`). После `RESUME` мотор сам не включает. `read_marker` читает этот журнал через `peek`.
+`motor-hold` — пример `sdk/examples/motor-hold`. Он вызывает `vibrate(1000, 31)` и затем в цикле `event(1000)`. Каждый полученный `kind` он дописывает в `#[unsafe(no_mangle)] static mut JOURNAL: [u8; 20]` (`[count: u32, kinds: [u8; 16]]`, внутри своего образа). После `RESUME` мотор сам не включает. `read_marker` находит журнал как `app_block + symbol("JOURNAL")`.
 
 - [ ] **Step 3: Run to verify failure**
 
@@ -798,7 +990,7 @@ Expected: FAIL — мотор не выключается при показе о
 
 - [ ] **Step 5: Run to verify pass**
 
-Run: `nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app motor-hold 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.PauseTest tests.test_e2e.MotorTest -v'`
+Run (в отдельной панели): `nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app motor-hold 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.PauseTest tests.test_e2e.MotorTest -v'`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -810,14 +1002,14 @@ git commit -m "feat(fw): pause apps under stock popups and hand the motor back t
 
 ---
 
-### Task 9: Пункт «Apps» в стоковом списке приложений
+### Task 10: Пункт «Apps» в стоковом списке приложений
 
 **Files:**
 - Modify: `src/wp2apps/firmware.py` (точка P5), `fw/wp2-stub/src/main.rs` (если нужен код), `docs/recon.md`
 - Test: `tests/test_firmware.py`, `tests/test_e2e.py` (класс `AppListTest`), `tests/e2e/harness.py` (`open_apps` через UI)
 
 **Interfaces:**
-- Consumes: view `0xF0` (задача 3).
+- Consumes: view `0xF0` (задача 4).
 - Produces: в стоковом списке (все три вида: list, grid, waterfall, или хотя бы активный по умолчанию) появляется пункт, который открывает view `0xF0` через `FUN_101898bc(0xF0, 0)`. `harness.open_apps(emu)` теперь ходит через UI, а не через `call`.
 
 - [ ] **Step 1: Разведка источника пунктов (только чтение, затем эмулятор).** От построителя `FUN_1005e9d8` и процедур `0x1005EEC9`/`0x1005EBC5`/`0x1005F101` найти:
@@ -847,7 +1039,7 @@ def test_apps_entry_opens_menu(self):          # AppListTest
 
 - [ ] **Step 4: Run to verify failure**, **Step 5: Implement P5**, **Step 6: Run to verify pass**
 
-Run: `uv run --locked python -m unittest tests.test_firmware -v && nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.AppListTest -v'`
+Run (в отдельной панели): `uv run --locked python -m unittest tests.test_firmware -v && nix-shell -p llvm --run scripts/build-fw && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e.AppListTest -v'`
 Expected: PASS; кадр списка с новым пунктом сохранить в `runs/e2e/applist-*/list.ppm`.
 
 - [ ] **Step 7: Commit**
@@ -859,7 +1051,7 @@ git commit -m "feat: Apps entry in the stock app list"
 
 ---
 
-### Task 10: Приёмка этапов 2–4 в эмуляторе
+### Task 11: Приёмка этапов 2–4 в эмуляторе
 
 **Files:**
 - Test: `tests/test_e2e.py` (класс `AcceptanceTest`)
@@ -874,15 +1066,17 @@ git commit -m "feat: Apps entry in the stock app list"
 def test_broken_loader_boots_stock(self):
     # установить loader; подменить его на NAND пакетом с правильным CRC файла, но испорченным CRC заголовка — через
     # заглушку это невозможно (END отвергает), поэтому порча идёт gdb-вызовом fs write по L.pkg (байт 0x28);
-    # AT REBOOT по shell; после загрузки: "launcher enter", нет FATAL; Apps → view не открылся (loader_state == 2),
-    # стоковые экраны (часы, список, настройки) открываются; `wp2apps install target/loader.wp2app` чинит, Apps работает
+    # AT REBOOT по shell; после загрузки: "launcher enter", нет FATAL; Apps → view не открылся (loader_state == 2,
+    # loader_block == 0), стоковые экраны (часы, список, настройки) открываются;
+    # то же с испорченным последним байтом таблицы релокаций (CRC тела) → loader_state == 2;
+    # `wp2apps install target/loader.wp2app` чинит, Apps работает
 
 def test_install_survives_reboot(self):
     # install loader + hello; AT REBOOT; open_apps → "hello" в меню и запускается
 
 def test_loader_update_over_ble(self):
-    # install loader v1; install loader v2 (version в заголовке 2); list → slot L версия 2; Apps открывается;
-    # install loader при открытом Apps → Status.Busy
+    # install loader v1; install loader v2 (WP2_LOADER_VERSION=2 scripts/build-fw); list → slot L версия 2;
+    # Apps открывается и грузит v2 из NAND (новый блок при каждом открытии); install loader при открытом Apps → Status.Busy
 
 def test_vibration_lab_all_knobs(self):
     # Strength: 3 щелчка коронки вверх → duty 350‰ в motor.log при PLAY
@@ -891,11 +1085,15 @@ def test_vibration_lab_all_knobs(self):
     # Pattern Tick / Double / Long: длительности включений в motor.log = pulse_ms, pulse/80/pulse, 1000 мс (±20 мс)
     # Pulse: 5 мс и 100 мс на краях
     # кадр лаборатории сохранить в runs/e2e/acceptance-*/lab.ppm
+
+def test_heavy_face_with_apps(self):
+    # фикстуры heavy_face_fixtures(); install loader + vibration-lab; open_apps → лаборатория → выход → закрыть;
+    # затем harness.walk(emu, 120): одна загрузка Zephyr, нет MllcFailedHook, loader_block == app_block == 0
 ```
 
 - [ ] **Step 2: Run the whole suite**
 
-Run: `uv run --locked python -m unittest discover -s tests -v && (cd sdk && cargo test --target aarch64-apple-darwin) && (cd fw && cargo test -p wp2-core --target aarch64-apple-darwin) && nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app hello 1 && scripts/build-app vibration-lab 1 && scripts/build-app motor-hog 1 && scripts/build-app motor-hold 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e -v'`
+Run (в отдельной панели): `uv run --locked python -m unittest discover -s tests -v && (cd sdk && cargo test --target aarch64-apple-darwin) && (cd fw && cargo test -p wp2-core --target aarch64-apple-darwin) && nix-shell -p llvm --run 'scripts/build-fw && scripts/build-app hello 1 && scripts/build-app vibration-lab 1 && scripts/build-app motor-hog 1 && scripts/build-app motor-hold 1' && WP2_E2E=1 nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.test_e2e -v'`
 Expected: всё PASS.
 
 - [ ] **Step 3: Ручная проверка в окне (владелец или исполнитель).** Запустить `scripts/emu --nor runs/e2e/<run>/in-nor.bin --hci-port <netsim>`, установить загрузчик и лабораторию, пройти «Apps → vibration-lab». Убедиться, что строка `Motor: …` в окне viewer'а меняется вместе с ручками.
@@ -904,16 +1102,22 @@ Expected: всё PASS.
 
 ```bash
 git add tests/test_e2e.py tests/e2e README.md
-git commit -m "test: emulator acceptance for loader, install, pause and vibration lab"
+git commit -m "test: emulator acceptance for loader, install, pause, heap use and vibration lab"
 ```
 
 ---
 
-### Task 11: Этап 5 — физические часы (только с явного разрешения владельца)
+### Task 12: Этап 5 — физические часы (только с явного разрешения владельца)
 
 - [ ] **Получить явное «да» владельца на каждое действие этого пункта.** Без него ничего из списка ниже не выполнять.
   - До разрешения допустимы только чтения с Mac: `scan` и `info`. Цель — убедиться, что BLE на macOS работает. Это отдельная задача: нужен физический транспорт (`bleak`) в `wp2apps`.
-  - Аппаратные риски, которые эмулятор не проверяет. Исполнение из PSRAM `0x386F_F000`: MPU с `PRIVDEFENA` и кеши — после копирования образа нужна чистка D-cache и инвалидация I-cache; функцию для этого в стоке ещё надо найти. Реальный такт PWM: замерить, что сток — около 30 Гц. Сторож Zephyr при зависшем приложении. Как восстановить часы, если пропатченный `app.bin` не загрузится: процедура не доказана.
+  - Аппаратные риски, которые эмулятор не проверяет:
+    - **Кеш.** Код исполняется из блока `ResFbHeap` в PSRAM (`0x380A9340…0x3871EEC0`, адрес каждый раз новый). После копирования и релокации нужна чистка D-cache и инвалидация I-cache. Функцию стока для этого ещё надо найти (кандидат на старт поиска — окрестности `lv_gpu_acts_flush_dcache` `0x10142C80`, Zephyr `sys_cache_*`). Загрузчик перемещает заглушка, а заглушка шьётся один раз, поэтому вызов кеша должен попасть в `wp2_core::load::load` **до** первой прошивки.
+    - **MPU** с `PRIVDEFENA`: исполнение из `0x38…` разрешено картой по умолчанию; проверить, что сток не ставит регион XN на `ResFbHeap`.
+    - **Реальный такт PWM:** замерить, что сток — около 30 Гц.
+    - **Сторож Zephyr** при зависшем приложении.
+    - **Нехватка памяти:** JHeap перезагружает часы так же, как в эмуляторе.
+    - **Восстановление:** как вернуть часы, если пропатченный `app.bin` не загрузится, — процедура не доказана.
   - Пропатченный `app.bin` упаковывается в AOTA и проходит `cmf-watch-utils emu preflight`; стоковая OTA-последовательность (INIT2 в `ff01`, обязательный end-ack `0x9041 A5`) не меняется.
 
 ---
@@ -922,4 +1126,5 @@ git commit -m "test: emulator acceptance for loader, install, pause and vibratio
 
 - Владелец может вернуть кириллицу в подписи — потребуется шрифт с кириллицей вместо `font8x8_basic`.
 - Минорные версии ABI добавляют функции (датчики, хранилище) в конец `Api` и поднимают `LOADER_ABI_MINOR`. Прошивку при этом менять не нужно.
+- Если rustc сделает `target-feature=+no-movt` ошибкой, упаковщик и `relocate` получают парные релокации `R_ARM_THM_MOVW_ABS_NC`/`R_ARM_THM_MOVT_ABS`. Пара обрабатывается вместе: перенос из младшей половины нельзя применить к одной инструкции.
 - Постоянные мягкие уровни вибрации в стоковом меню делаются отдельным дизайном после выбора параметров в лаборатории.
