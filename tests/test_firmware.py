@@ -50,6 +50,20 @@ class FirmwareTest(unittest.TestCase):
         firmware.fix_acth(app)
         self.assertEqual(bytes(app), STOCK[:0x200 + size])
 
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_patch_keeps_stock_acth_semantics(self):
+        firmware.check_acth(STOCK)
+        plain = firmware.patch(STOCK)
+        self.assertEqual(plain[:0x1C], STOCK[:0x1C])
+        self.assertEqual(plain[0x24:0x200], STOCK[0x24:0x200])
+        with_stub = firmware.patch(STOCK, fake_stub())
+        firmware.check_acth(with_stub)
+        self.assertEqual(struct.unpack_from("<I", with_stub, 0x18)[0], len(with_stub) - 0x200)
+        broken = bytearray(with_stub)
+        broken[-1] ^= 1
+        with self.assertRaises(ValueError):
+            firmware.check_acth(broken)
+
     def test_put_checks_old_bytes(self):
         app = bytearray(b"abcd")
         firmware.put(app, 0x10000000, b"ab", b"xy")
