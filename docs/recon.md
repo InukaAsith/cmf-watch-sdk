@@ -16,7 +16,7 @@ code only; **low** = inferred.
 | MPU | enabled with `PRIVDEFENA` (`MPU_CTRL = 5`) at boot with three fixed regions, none on `ResFbHeap`; default map keeps `0x2000_0000–0x3FFF_FFFF` executable (see "Hardware: caches and MPU") | high | `FUN_100f6708`, `FUN_100f67cc` |
 | PSRAM | 8 MiB at `0x38000000` (aliases `0x18000000`, `0x34000000` write-through, `0x3C000000` uncached) | high | emulator machine model + literal survey |
 | Resource heap | `ResFbHeap` (JHeap): base `0x380A9340`, size `0x676B80`, end `0x3871FEC0`; init `FUN_101884e4` → `FUN_10146aa4`. The size literal occurs **three times**: `0x10188508` (init), `0x10188588` (getter `FUN_10188584`, `ldr r0,=0x676B80; bx lr`, no direct callers — likely reached through an ops table) and `0x101885F4` (second getter at `0x101885F0`) | high | decompile + literal search |
-| `APP_BASE` | `0x386FF000` | decision | top of `ResFbHeap` |
+| `APP_BASE` | `0x386FF000` | **superseded**: no fixed app or loader address; both run from `ui_mem` RES blocks (plan 2 memory map) | — |
 | `APP_SIZE` | `0x20000` (128 KiB) | decision | see below |
 | Reservation | plan 2's stub patches **all three** `ResFbHeap` size literals `0x676B80` → `0x655CC0`, so the heap ends at `0x386FF000` and `[APP_BASE, APP_BASE + APP_SIZE)` is never handed out. Not yet applied or verified: plan 2 patches, fills the region with a marker and walks the UI with a heavy face first | decision, unverified; **superseded by plan 2 revision: 4 KiB stub RAM only** | — |
 | Display | 466×466 round AMOLED; UI is LVGL (`lv_obj_set_width(…, 0x1D2)` in `FUN_100bb954`) on the Actions view manager (`ui_view`, `view_create`) | high | decompile + emulator frame size |
@@ -78,7 +78,7 @@ as good as the decoder, which now follows the SDK. `motor.log` (virtual ms, duty
 | Input | crown: `_knob_event_handler` (`0x1021B3E0`), keys: `*_key_event_handler`, touch: LVGL pointer indev (`INPUT_DEV_TYPE_POINTER`, `0x101FE090`) | low |
 | Drawing | LVGL objects/canvas on the Actions view manager; colour depth and canvas API not yet read | low |
 | Cyrillic | no Cyrillic UI strings in `app.bin`; fonts live in `/NAND:A/*.font` and are not inspected. The lab uses ASCII labels | medium |
-| Storage | Zephyr FS mounts `/NAND:A` (UI), `/NAND:B`, `/NAND:C` (user dials, fonts), `/NAND:E` (animations), `/NAND:K` (boot) at `0x1020185B…`; apps go to a new directory on `/NAND:C` | medium |
+| Storage | Zephyr FS mounts `/NAND:A` (UI), `/NAND:B`, `/NAND:C` (user dials, fonts), `/NAND:E` (animations), `/NAND:K` (boot) at `0x1020185B…`; these are read-only, so packages go to `/NAND:/wp2apps` on the writable FAT (plan 2, task 4) | medium |
 | BLE command dispatch | handler table and AT group dispatcher `0x101F4D70` are documented in cmf-watch-utils `protocol/ble.md`; a free opcode is chosen in plan 2 | low |
 | Stub location | NOR app partition `0x24000`, size `0x34B000`; `app.bin` uses `0x25A080`, leaving ≈ 964 KiB to append the stub. ACTH payload and header `sum32` must be recomputed (the emulator checks them, `emu/image.py`) | high |
 | Zero runs inside `app.bin` | `0x101E5BB2` (10,830 B) etc. are initialised-data images, not free space | medium |
@@ -121,13 +121,13 @@ only while running). Sources: `scripts/recon/decomp` on `0x10188200–0x10188700
 |---|---|---|
 | `ui_mem` type table | `*0x1018837C = 0x101FD7F0`, 3 entries × 0x24 B: `{name, init, alloc, aligned_alloc, realloc, free, +0x18 dump, +0x1C, +0x20 total}`. Type 0 `FB`, 1 `GUI` (LVGL heap, 0x18000 B), 2 `RES`. `uimem dump [0\|1\|2], where 0-FB, 1-LVGL, 2-RES` | high |
 | `ui_mem` API | `ui_mem_alloc(type, size, caller)` `0x10188234`; `ui_mem_aligned_alloc(type, align, size, caller)` `0x101882C4` (align must be a power of two, asserts otherwise); `ui_mem_realloc` `0x101883C4`; `ui_mem_free(type, ptr)` `0x10188380`. `caller` is a C string used only in the failure log | high |
-| `FB` and `RES` share `ResFbHeap` | RES: init `0x101884E4` (the `ResFbHeap` init), alloc `0x10188518`, aligned_alloc `0x1018854C`, free `0x10188578`, dump `0x1018858C`, total `0x10188584`. FB: aligned_alloc `0x101D78DC` (align ≤ 0x40, else returns 0) → `0x101885A8` (align 0x40, retries 15× with `os_sleep(2)`), free `0x101D78EA` → `0x10188578`, total `0x101885F0`. Both end in JHeap alloc `0x10147124` on the heap struct `0x38043824` | high |
+| `FB` and `RES` share `ResFbHeap` | RES: init `0x101884E4` (the `ResFbHeap` init), alloc `0x10188518`, aligned_alloc `0x1018854C`, free `0x10188578`, `+0x18` `0x1018858C` (not a dump: the failure path, see below), total `0x10188584`. FB: aligned_alloc `0x101D78DC` (align ≤ 0x40, else returns 0) → `0x101885A8` (align 0x40, retries 15× with `os_sleep(2)`), free `0x101D78EA` → `0x10188578`, total `0x101885F0`. Both end in JHeap alloc `0x10147124` on the heap struct `0x38043824` | high |
 | JHeap struct `ResFbHeap` (`0x38043824`) | `+0` name, `+4` total, `+8` free bytes (alloc subtracts, free adds), `+0xC` minimum free ever, `+0x14` flags/alignment bits, `+0x60` free-list head, `+0x68` end marker. Free block: `{next: u32, size: u32 & 0xFFFFFF}` (size includes the header) | medium |
 | JHeap allocation policy | first fit from `+0x60`; a request of exactly `0x6A088` B (466·466·2, a full RGB565 frame) takes the last fitting block instead (best-from-end) | medium |
 | **JHeap never returns NULL** | when `free < need` or no free block fits, `0x10147124` calls `MllcFailedHook` `0x101470C0`, which prints the heap dump, calls `0x100F6D84(0)` and spins forever → the watch resets. This is the `MllcFailedHook at line: 353` reboot seen with the heavy face. So loader, app and framebuffer allocations must be checked against the free list **before** calling `ui_mem_*` | high |
 | Allocation size overhead | `need = size + hdr(type) + (flags & 0x3F) [+ 4 debug guard] [+ align − heap_align]`, rounded up to the heap alignment (4). Plan 2 uses the conservative bound `size + align + 0x100`; plan 2 task 1 measures the real overhead in the emulator | medium |
 | Lock | JHeap alloc/free raise `BASEPRI` to `0x20` around list updates (no mutex). Walking the free list and allocating under the same `BASEPRI` makes check-then-alloc atomic against other threads | medium |
-| Heap statistics | dump `FUN_10146BA4(heap, 1, 0)` (RES `+0x18` = `0x1018858C`) prints `Total:%u, Free:%u (%u%%), Water:%u (%u%%), UsedMax:%u (%u%%), MaxBlock:%u` | high |
+| Heap statistics | dump `FUN_10146BA4(heap, 1, 0)` prints `Total:%u, Free:%u (%u%%), Water:%u (%u%%), UsedMax:%u (%u%%), MaxBlock:%u`. Do not call RES `+0x18` (`0x1018858C`) for it: that one dumps, saves and panics (the watch reboots) | high |
 | Rust codegen for relocatable images | with `ORIGIN = 0` and `-C link-arg=--emit-relocs`, rustc 1.97 emits `R_ARM_THM_MOVW_ABS_NC`/`R_ARM_THM_MOVT_ABS` pairs for addresses (hello: 4 + 4, vibration-lab: 20 + 20, plus 6 `R_ARM_ABS32`). With `-C target-feature=+no-movt` addresses go to literal pools: only `R_ARM_ABS32` remain (hello 3, vibration-lab 28), plus PC-relative `R_ARM_THM_CALL`/`R_ARM_THM_JUMP24` that need no fix-up. `e_entry = 0x1`. rustc warns that `no-movt` is an unknown/unstable feature, but honours it | high |
 | Cache maintenance for code in PSRAM | `0x101BEE52 (addr, size)`: SPI1 (PSRAM) cache write-buffer flush + write back and invalidate of the range; `wp2_core::load::load` calls it. See "Hardware: caches and MPU" | high |
 
@@ -269,6 +269,29 @@ resources (labels and icons come from vendor `/NAND:A` resources).
 - `0x804D` shows the "ble_connect" popup and sets `set_autosleep_time:5000`.
 - With the clock off by more than 2 minutes, `0x8004` time sync makes the stock app log `TIMESTAMP OVER 2min
   RECOVERED` and reboot through a factory recovery; the host handshake skips `0x8004`.
+
+### Bind popup, authkey and session key (early-review fixes)
+
+- Stock key buffers: authkey `0x38048E08` (16 B; `0x804B` and `0x8049`/`0x0049` frames, `0x100CCAB4`), session
+  key `0x380029A6` (16 B; every other system frame). At boot `0x100CC348` copies the authkey from `0x38007804`
+  (all zero, `key1 init: 0x0 …` in `uart0.log`) and loads the session key from the NVRAM key `APP_SESSION_KEY`
+  (absent in the fixture: `g_session_key_save err:-2`, buffer stays zero). `SESSION_KEY init` (`0x100CCFDC`,
+  from the `0x804B` handler) sets `session = sha256(nonce ‖ authkey)[:16]` and saves it to NVRAM.
+- The `0x804B` handler does not check its request: it answers any frame with a fresh nonce encrypted under the
+  current authkey. Right after boot the authkey is zero, so a client that never paired gets the nonce, derives
+  the session key and is answered by the stub (probe `runs/e2e/fixprobe-old.log`: `INFO` with the derived key got
+  status OK). A frame encrypted with an all-zero session key alone is not answered.
+- The stub therefore answers `0x90A0..0x90A4` only while both the authkey and the session key are non-zero. A
+  non-zero authkey comes only from a passed `0x8047` challenge (needs the pairing secret). There is no cleaner
+  stock signal: `0x8047` sets its flags `0x380498AA/AB` before it checks the signature.
+- `0x8047` sets `*0x380498AB = 1`; the next `0x8049` (`0x100CDCAC`) then opens the bind popup
+  (`ble_pair_request_msgbox`, sets the flag to 2) and does not answer. Any later `0x8049` sees 2 and answers at
+  once with the authkey; `0x804D` closes the popup when the flag is 2.
+- Confirming the popup (`bind_pick_receive`, `0x100D09E6`) calls `0x100CD2CC`, which zeroes the authkey (and
+  `0x38007804`), and sends the `0x0049` reply encrypted with that zero key. The host decrypted it with its
+  authkey and failed with `bad padding`: the demo install flake (owner taps on the popup,
+  `runs/e2e/demo-215315`). The host now sends `0x8049` twice and, on a zero-key reply, restarts from `0x8047`.
+
 
 ## Plan 2, task 7: app thread, time, crown and touch
 

@@ -8,7 +8,7 @@ import zlib
 from unittest import skipUnless
 
 from tests.e2e import harness
-from wp2apps import cli, firmware, install, link, package, paths
+from wp2apps import cli, firmware, h4, install, link, package, paths
 
 MARK = bytes.fromhex("a55ac33c")
 START, END = firmware.STUB_RAM, firmware.STUB_RAM + firmware.STUB_RAM_SIZE
@@ -108,7 +108,7 @@ def repack(data: bytes, version: int) -> bytes:
 
 
 def with_watch(port, action):
-    return asyncio.run(cli.with_watch(types.SimpleNamespace(hci_port=port), action))
+    return asyncio.run(cli.with_watch(types.SimpleNamespace(hci_port=port, address=None), action))
 
 
 @skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
@@ -184,6 +184,111 @@ class InstallTest(unittest.TestCase):
 
         with_watch(self.port, probe)
 
+    def test_unpaired_session_refused(self):
+        # both stock keys as after boot (the authkey is also zero after a confirmed bind popup): 0x804B then hands
+        # anyone a session key, so the stub must stay silent (docs/recon.md)
+        self.emu.poke(AUTHKEY, bytes(16))
+        self.emu.poke(SESSION_KEY, bytes(16))
+
+        async def attack(gatt):
+            s = link.Session()
+            await s.attach(gatt)
+            self.assertIsNone(await reply_to(s, install.INFO, b"\xff", link.ZERO_KEY))
+            nonce = link.decrypt(link.ZERO_KEY, await s._exchange(0x804B, b"\xa5", 0x004C, link.ZERO_KEY, 6.0))
+            self.assertIsNone(await reply_to(s, install.INFO, b"\xff", link.session_key(nonce, link.ZERO_KEY)))
+            self.assertIn(b"GETSECRET:", await s.at("AT GETSECRET"))
+
+        asyncio.run(raw_watch(self.port, attack))
+        self.assertEqual(self.listing(), {})  # a real handshake still works
+
+    def test_crc_and_data_beyond_size(self):
+        data = self.hello
+
+        async def run(s):
+            await install._call(s, install.BEGIN, struct.pack("<BII", 0, len(data), zlib.crc32(data) ^ 1))
+            for offset, part in install.chunks(data):
+                await install._call(s, install.DATA, struct.pack("<I", offset) + part)
+            with self.assertRaisesRegex(ValueError, "CRC"):
+                await install._call(s, install.END, b"\0")
+            await install._call(s, install.BEGIN, struct.pack("<BII", 0, package.HEADER_SIZE, 0))
+            with self.assertRaisesRegex(ValueError, "BAD_REQUEST"):
+                await install._call(s, install.DATA, struct.pack("<I", 0) + data[:package.HEADER_SIZE + 1])
+
+        with_watch(self.port, run)
+        self.assertNotIn("0", self.listing())  # INFO also drops the transfer left open above
+
+    def test_loader_slot_while_apps_open(self):
+        emu, loader, v2 = self.emu, (paths.ROOT / "target" / "loader.wp2app").read_bytes(), repack(self.hello, 2)
+        harness.cli_out(self.args("install", paths.ROOT / "target" / "loader.wp2app"))
+        dismiss_popup(emu)
+
+        async def half(s):
+            await install._call(s, install.BEGIN, struct.pack("<BII", 0, len(v2), zlib.crc32(v2)))
+            await install._call(s, install.DATA, struct.pack("<I", 0) + v2[:install.MAX_DATA])
+
+        def open_apps():
+            dismiss_popup(emu)
+            emu.call(harness.OPEN_VIEW, 0xF0, 0)
+            emu.sleep(3)
+            self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")
+
+        with_watch(self.port, half)  # dropped mid-transfer; Apps opens with the BLE file still open
+        open_apps()
+
+        async def busy(s):  # the stock bind (0x8049) switches to the clock face, so Apps is reopened in-session
+            await install.upload(s, 0, v2)
+            await asyncio.to_thread(open_apps)
+            for c2, payload in ((install.BEGIN, struct.pack("<BII", 0xFF, len(loader), zlib.crc32(loader))),
+                                (install.DELETE, b"\xff")):
+                with self.assertRaisesRegex(ValueError, "BUSY"):
+                    await install._call(s, c2, payload)
+
+        with_watch(self.port, busy)
+        for _ in range(3):  # button: stock closes a popup, then the view
+            if emu.peek(START + 4, 2) == b"\x00\x00":
+                break
+            emu.send("c 1", "c 0", pause=2)
+        self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
+        self.assertEqual(self.listing()["0"]["version"], 2)
+
+        # an L.pkg on NAND that END accepts (all CRCs valid) but load rejects: a repeated relocation offset
+        pkg = package.parse(loader)
+        relocs = (pkg.relocs[0], *pkg.relocs[:-1])
+        body = pkg.image + struct.pack(f"<{len(relocs)}I", *relocs)
+        bad = bytearray(loader[:package.HEADER_SIZE] + body)
+        struct.pack_into("<I", bad, 0x30, zlib.crc32(body))
+        struct.pack_into("<I", bad, package.HEADER_CRC_SPAN, zlib.crc32(bytes(bad[:package.HEADER_CRC_SPAN])))
+        with_watch(self.port, lambda s: install.upload(s, 0xFF, bytes(bad)))
+        dismiss_popup(emu)
+        before = emu.frame()
+        emu.call(harness.OPEN_VIEW, 0xF0, 0)
+        emu.sleep(3)
+        self.assertEqual(emu.peek(START + 4, 2), b"\x02\x00")  # corrupt, not active
+        self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
+        self.assertTrue(same_screen(emu.frame(), before), "the stock screen changed")
+        uart = emu.uart()
+        self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+        self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
+
+
+AUTHKEY, SESSION_KEY = 0x38048E08, 0x380029A6  # stock key buffers (docs/recon.md)
+
+
+async def raw_watch(port, action):
+    async with h4.gatt_over_h4(port) as gatt:
+        return await action(gatt)
+
+
+async def reply_to(s, c2: int, payload: bytes, key: bytes, timeout: float = 3.0) -> bytes | None:
+    await s.gatt.write(link.CMD_W, link.frame(link.SYSTEM, c2, payload, key), response=False)
+    try:
+        async with asyncio.timeout(timeout):
+            while (frame := await s.frames.get())[1] != c2 | 0xA000:
+                pass
+            return frame[2]
+    except TimeoutError:
+        return None
+
 
 POPUP_FLAGS = 0x3800FAF4  # bits 0/1: a stock popup ("Paired" after the first connection) is open
 
@@ -197,11 +302,12 @@ def bright_pixels(rgb: bytes, w: int, box) -> int:
 
 def dismiss_popup(emu):
     """The first connection pops "Paired" over every view and sets auto-sleep to 60 s; the button closes it."""
-    if emu.peek(POPUP_FLAGS, 1)[0] & 3:
+    for _ in range(3):  # with the screen already off the stock spends the press on waking it ("drop key workup")
+        if not emu.peek(POPUP_FLAGS, 1)[0] & 3:
+            return
         emu.send("c 1", "c 0", pause=2)
         emu.keep_awake()
-    if emu.peek(POPUP_FLAGS, 1)[0] & 3:
-        raise RuntimeError("stock popup is still open")
+    raise RuntimeError("stock popup is still open")
 
 
 @skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")

@@ -18,6 +18,13 @@ CMD_N = "0000fff1-0000-1000-8000-00805f9b34fb"
 SYSTEM = 0xFFFF
 # watch→phone frames in the clear declare a length with the CRC but omit it
 PLAIN_REPLIES = frozenset({0x0048})
+PHONE = b"\xa5CMF Watch Pro 2"
+ZERO_KEY = bytes(16)
+
+
+class Rebind(Exception):
+    """Confirming the stock bind popup clears the authkey (0x100CD2CC) and the watch answers with an all-zero key;
+    the stub refuses sessions made from it, so the handshake starts over (docs/recon.md)."""
 
 
 def encrypt(key: bytes, data: bytes) -> bytes:
@@ -119,20 +126,42 @@ class Session:
         key = key or self.key
         return decrypt(key, await self._exchange(c2, payload, expect, key, timeout))
 
-    async def handshake(self, gatt) -> None:
-        await self.attach(gatt)
-        secret = bytes.fromhex(await self._shell_value("GETSECRET"))
+    async def _auth_request(self, c2: int, payload: bytes, expect: int, auth: bytes, timeout: float = 6.0) -> bytes:
+        body = await self._exchange(c2, payload, expect, auth, timeout)
+        try:
+            return decrypt(auth, body)
+        except ValueError:
+            decrypt(ZERO_KEY, body)  # raises unless the watch cleared its authkey
+            raise Rebind from None
+
+    async def _bind(self, secret: bytes) -> tuple[bytes, bytes]:
+        while not self.frames.empty():
+            self.frames.get_nowait()
         rnd1 = os.urandom(16)
         reply = await self._exchange(0x8047, rnd1 + hashlib.sha256(rnd1 + secret).digest(), 0x0048, None, 6.0)
         rnd2 = reply[:16]
         if reply[16:48] != hashlib.sha256(rnd2 + secret).digest():
             raise ValueError("watch failed the pairing challenge")
         auth = authkey(rnd1, rnd2, secret)
-        try:  # the watch drops the first 0x8049 after pairing
-            await self.request(SYSTEM, 0x8049, b"\xa5CMF Watch Pro 2", 0x0049, timeout=2.0, key=auth)
+        # after 0x8047 the first 0x8049 only opens the stock bind popup; the next one is answered at once
+        await self.gatt.write(CMD_W, frame(SYSTEM, 0x8049, PHONE, auth), response=False)
+        try:
+            await self._auth_request(0x8049, PHONE, 0x0049, auth, timeout=2.0)
         except TimeoutError:
-            await self.request(SYSTEM, 0x8049, b"\xa5CMF Watch Pro 2", 0x0049, key=auth)
-        nonce = await self.request(SYSTEM, 0x804B, b"\xa5", 0x004C, key=auth)
+            await self._auth_request(0x8049, PHONE, 0x0049, auth)
+        return auth, await self._auth_request(0x804B, b"\xa5", 0x004C, auth)
+
+    async def handshake(self, gatt, attempts: int = 3) -> None:
+        await self.attach(gatt)
+        secret = bytes.fromhex(await self._shell_value("GETSECRET"))
+        for _ in range(attempts):
+            try:
+                auth, nonce = await self._bind(secret)
+                break
+            except Rebind:
+                continue
+        else:
+            raise ValueError("the bind popup on the watch was confirmed during every handshake; try again")
         self.key = session_key(nonce, auth)
         # no 0x8004 time sync: a clock off by over 2 min makes the stock app "recover" (factory reset)
         await self.request(SYSTEM, 0x804D, b"\xa5", 0x0004)
