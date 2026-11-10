@@ -12,8 +12,8 @@ except (FileNotFoundError, ImportError):
 HAVE_STOCK = STOCK is not None
 
 
-def fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100):
-    return b"WP2S" + struct.pack("<IIIIIII", 1, boot, ble, view_proc, view_name, 0, 0) + bytes(0x100)
+def fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100, applist=0):
+    return b"WP2S" + struct.pack("<IIIIIII", 1, boot, ble, view_proc, view_name, applist, 0) + bytes(0x100)
 
 
 class FirmwareTest(unittest.TestCase):
@@ -93,6 +93,23 @@ class FirmwareTest(unittest.TestCase):
         # neighbouring tables that merely share a bound with the view table (docs/recon.md)
         for lit in (0x101461AC, 0x10055458):
             self.assertEqual(out[lit - 0x10000000:lit - 0x10000000 + 4], STOCK[lit - 0x10000000:lit - 0x10000000 + 4])
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_applist_patch(self):
+        out = firmware.patch(STOCK, fake_stub(applist=0x1025A121))
+        desc = 0x101EB154 - 0x10000000
+        self.assertEqual(struct.unpack_from("<I", out, desc + 0xC)[0], 0x1025A121)
+        self.assertEqual(out[desc:desc + 0xC] + out[desc + 0x10:desc + 0x30],
+                         STOCK[desc:desc + 0xC] + STOCK[desc + 0x10:desc + 0x30])
+        base = firmware.patch(STOCK, fake_stub())
+        self.assertEqual(base[desc:desc + 0x30], STOCK[desc:desc + 0x30])
+        diff = {i & ~3 for i in range(0x200, 0x25A080) if out[i] != base[i]}
+        self.assertEqual(diff, {desc + 0xC})
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_applist_needs_thumb(self):
+        with self.assertRaisesRegex(ValueError, "stub"):
+            firmware.patch(STOCK, fake_stub(applist=0x1025A120))
 
     @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
     def test_stub_too_big_rejected(self):

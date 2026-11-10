@@ -4,7 +4,9 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
+import shutil
 import socket
 import struct
 import subprocess
@@ -316,6 +318,36 @@ def unhog(emu: Emu, ptrs: list[int]):
 def swipe(emu: Emu, x0, y0, x1, y1, steps=2, pause=2):
     points = [(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps) for i in range(steps + 1)]
     emu.send(*(f"t 1 {x} {y}" for x, y in points), f"t 0 {x1} {y1}", pause=pause)
+
+
+APPLIST_VIEW = 18
+APPS_ROW_Y = 340  # "Apps" (26th row) once the list is scrolled to the end (docs/recon.md)
+
+
+def focused(emu: Emu) -> int:
+    """Last view the stock view manager logged as focused on UART, -1 before the first one."""
+    hits = re.findall(r"\]: view (\d+) focused", emu.uart())
+    return int(hits[-1]) if hits else -1
+
+
+def to_app_list(emu: Emu, *, bottom: bool):
+    """Crown until the stock app list (list style) has focus, then scroll it to the end or the top."""
+    for _ in range(4):
+        if focused(emu) == APPLIST_VIEW:
+            break
+        emu.send("c 1", "c 0", pause=3)
+    else:
+        raise RuntimeError(f"app list never got focus (focused view {focused(emu)})")
+    for _ in range(16):
+        swipe(emu, 233, 400, 233, 120, pause=1) if bottom else swipe(emu, 233, 120, 233, 400, pause=1)
+    emu.sleep(2)
+
+
+def open_apps(emu: Emu):
+    """Opens view 0xF0 through the "Apps" row of the stock app list; the list frame goes to list.ppm."""
+    to_app_list(emu, bottom=True)
+    shutil.copy(emu.run / "frame.ppm", emu.run / "list.ppm")
+    emu.send(f"t 1 233 {APPS_ROW_Y}", f"t 0 233 {APPS_ROW_Y}", pause=3)
 
 
 def walk(emu: Emu):

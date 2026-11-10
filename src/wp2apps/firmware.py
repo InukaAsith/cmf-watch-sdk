@@ -13,7 +13,7 @@ APP_VBASE = 0x10000000
 NOR_APP_OFFSET = 0x24000
 NOR_APP_SIZE = 0x34B000
 STUB_MAX = 0x4000
-STUB_HEADER = struct.Struct("<4sIIIII8s")
+STUB_HEADER = struct.Struct("<4sIIIIII4s")
 VIEW_TABLE, VIEW_TABLE_END = 0x100004B8, 0x100013E8
 # 0x101461AC and 0x10055458 hold the same values but bound neighbouring tables (docs/recon.md)
 VIEW_START_LITERALS = (0x1018BC24, 0x1018DF3C)
@@ -23,6 +23,9 @@ BOOT_CALL = 0x101884FA
 STOCK_HEAP_INIT = 0x10146AA4
 BLE_CALL = 0x100D34F0
 STOCK_BLE_READ = 0x100CC284
+# list style descriptor +0xC: its layout; waterfall (0x101EB184) is not covered
+APPLIST_LAYOUT = 0x101EB160
+STOCK_APPLIST_LAYOUT = 0x1005EEE5
 
 
 def sum32(data: bytes) -> int:
@@ -82,8 +85,8 @@ def patch(app: bytes, stub: bytes | None = None, *, _verify: bool = True) -> byt
 
 
 def add_stub(out: bytearray, stub: bytes) -> None:
-    magic, version, boot, ble, view_proc, view_name, _ = STUB_HEADER.unpack_from(stub)
-    if magic != b"WP2S" or version != 1 or not boot & 1 or not view_proc & 1:
+    magic, version, boot, ble, view_proc, view_name, applist, _ = STUB_HEADER.unpack_from(stub)
+    if magic != b"WP2S" or version != 1 or not boot & 1 or not view_proc & 1 or applist and not applist & 1:
         raise ValueError("bad stub header")
     if len(out) != STUB_OFFSET:
         raise ValueError(f"app.bin is {len(out):#x} bytes; the stub goes at {STUB_OFFSET:#x}")
@@ -101,6 +104,8 @@ def add_stub(out: bytearray, stub: bytes) -> None:
     put(out, BOOT_CALL, thumb_bl(BOOT_CALL, STOCK_HEAP_INIT), thumb_bl(BOOT_CALL, boot & ~1))
     if ble:
         put(out, BLE_CALL, thumb_bl(BLE_CALL, STOCK_BLE_READ), thumb_bl(BLE_CALL, ble & ~1))
+    if applist:
+        put(out, APPLIST_LAYOUT, struct.pack("<I", STOCK_APPLIST_LAYOUT), struct.pack("<I", applist))
 
 
 def stage_nor(nor: bytes, app: bytes) -> bytes:
