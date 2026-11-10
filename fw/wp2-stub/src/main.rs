@@ -57,5 +57,6 @@ extern "C" fn wp2_boot_c() {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    // a fault goes through the Zephyr fatal handler and reboots the watch instead of hanging a stock thread
+    unsafe { core::arch::asm!("udf #0", options(noreturn)) }
 }

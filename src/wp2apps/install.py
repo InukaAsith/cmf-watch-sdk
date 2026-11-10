@@ -70,6 +70,10 @@ async def listing(s) -> dict[int, Header]:
 
 async def install(s, data: bytes, slot: int | None = None) -> int:
     pkg = package.parse(data)
+    if pkg.kind == package.KIND_LOADER and slot not in (None, LOADER_SLOT):
+        raise ValueError("a loader package goes to slot L")
+    if pkg.kind != package.KIND_LOADER and slot == LOADER_SLOT:
+        raise ValueError("slot L takes only the loader package")
     if pkg.kind == package.KIND_LOADER:
         slot = LOADER_SLOT
     elif slot is None:

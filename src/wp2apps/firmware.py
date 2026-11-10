@@ -86,7 +86,10 @@ def patch(app: bytes, stub: bytes | None = None, *, _verify: bool = True) -> byt
 
 def add_stub(out: bytearray, stub: bytes) -> None:
     magic, version, boot, ble, view_proc, view_name, applist, _ = STUB_HEADER.unpack_from(stub)
-    if magic != b"WP2S" or version != 1 or not boot & 1 or not view_proc & 1 or applist and not applist & 1:
+    base = APP_VBASE + STUB_OFFSET
+    code = (boot, view_proc) + tuple(p for p in (ble, applist) if p)
+    if (magic != b"WP2S" or version != 1 or not all(p & 1 for p in code)
+            or not all(base <= p & ~1 < base + len(stub) for p in (*code, view_name))):
         raise ValueError("bad stub header")
     if len(out) != STUB_OFFSET:
         raise ValueError(f"app.bin is {len(out):#x} bytes; the stub goes at {STUB_OFFSET:#x}")

@@ -24,7 +24,11 @@ def firmware() -> Path:
 
 def stock_app() -> bytes:
     def fwkit(*args):
-        subprocess.run(["uv", "run", "--locked", "fwkit", "unpack", *args], cwd=ROOT, check=True, capture_output=True)
+        try:
+            subprocess.run(["uv", "run", "--locked", "fwkit", "unpack", *args], cwd=ROOT, check=True,
+                           capture_output=True, text=True)
+        except subprocess.CalledProcessError as error:
+            raise ValueError(f"fwkit unpack failed: {error.stderr.strip() or error}") from None
 
     with tempfile.TemporaryDirectory() as tmp:
         outer, inner = Path(tmp) / "image", Path(tmp) / "temp"

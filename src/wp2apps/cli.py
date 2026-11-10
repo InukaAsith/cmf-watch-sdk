@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+import struct
 import sys
 import zlib
 
@@ -133,8 +134,11 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         return args.handler(args) or 0
-    except (OSError, ValueError, ConnectionError, BleakError) as error:
+    except (OSError, ValueError, ConnectionError, BleakError, struct.error) as error:
         print(f"Error: {error or type(error).__name__}", file=sys.stderr)
+        return 1
+    except KeyError as error:
+        print(f"Error: missing {error}", file=sys.stderr)
         return 1
 
 
