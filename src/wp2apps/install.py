@@ -79,13 +79,17 @@ async def install(s, data: bytes, slot: int | None = None) -> int:
         if not same and not free:
             raise ValueError("no free slot")
         slot = (same or free)[0]
+    await upload(s, slot, data)
+    return slot
+
+
+async def upload(s, slot: int, data: bytes) -> None:
     await _call(s, BEGIN, struct.pack("<BII", slot, len(data), zlib.crc32(data)))
     for offset, part in chunks(data):
         reply = await _call(s, DATA, struct.pack("<I", offset) + part)
         if struct.unpack("<I", reply)[0] != offset + len(part):
             raise ValueError(f"watch expects offset {struct.unpack('<I', reply)[0]}, sent {offset + len(part)}")
-    await _call(s, END, b"")
-    return slot
+    await _call(s, END, b"\0")
 
 
 async def remove(s, slot: int) -> None:

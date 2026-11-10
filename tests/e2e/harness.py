@@ -1,4 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -9,7 +11,7 @@ import subprocess
 import tempfile
 import time
 
-from wp2apps import firmware, paths
+from wp2apps import cli as wp2cli, firmware, paths
 
 E2E = os.environ.get("WP2_E2E") == "1"
 QEMU = Path(os.environ.get("WP2_QEMU") or paths.ROOT.parent / "cmf-watch-utils-motor-log/runtime-motor/qemu-system-arm")
@@ -61,6 +63,41 @@ def patched_nor() -> bytes:
     if not app.is_file():
         raise FileNotFoundError(f"{app} is missing: run scripts/build-fw")
     return firmware.stage_nor(stock_nor(), app.read_bytes())
+
+
+def patched_paired_nor() -> bytes:
+    """Paired stock NOR (synthetic secret) with target/app-wp2.bin."""
+    from .netsim import paired_nor
+    app = paths.ROOT / "target" / "app-wp2.bin"
+    if not app.is_file():
+        raise FileNotFoundError(f"{app} is missing: run scripts/build-fw")
+    return firmware.stage_nor(paired_nor(), app.read_bytes())
+
+
+def cli(args) -> int:
+    return wp2cli.main([str(a) for a in args])
+
+
+def cli_out(args) -> str:
+    out = io.StringIO()
+    with redirect_stdout(out):
+        code = cli(args)
+    if code:
+        raise RuntimeError(f"wp2apps {' '.join(map(str, args))} exited with {code}")
+    return out.getvalue()
+
+
+@contextmanager
+def installed(names):
+    """Booted paired watch on Netsim with target/<name>.wp2app installed for each name; yields (emu, hci port)."""
+    from .netsim import netsim
+    nor = patched_paired_nor()  # runs its own Netsim: two netsimd on one instance exit
+    with netsim() as port, Emu("installed", nor=nor, hci_port=port) as emu:
+        emu.wait_uart("launcher enter", 60)
+        emu.keep_awake()
+        for name in names:
+            cli_out(["install", paths.ROOT / "target" / f"{name}.wp2app", "--hci-port", port])
+        yield emu, port
 
 
 class Qmp:

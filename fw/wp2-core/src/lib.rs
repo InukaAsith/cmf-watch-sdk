@@ -10,5 +10,6 @@ pub mod layout;
 #[cfg(target_os = "none")]
 pub mod load;
 pub mod pkg;
+pub mod proto;
 pub mod pwm;
 pub mod stock;

@@ -61,6 +61,8 @@ class FakeController:
         elif op == 0x12:
             self.writes.append(pdu[1:])
             self.acl(bytes([0x13]))
+        elif op == 0x03:
+            self.writes.append(b"mtu")
         elif op == 0x52:
             self.writes.append(pdu[1:])
             handle = struct.unpack_from("<H", pdu, 1)[0]
@@ -90,8 +92,10 @@ class H4Test(unittest.IsolatedAsyncioTestCase):
         async with h4.gatt_over_h4(port, "cmf") as gatt:
             await gatt.subscribe(link.CMD_N, got.put_nowait)
             await gatt.write(link.SHELL_W, b"AT\r\n")
+            fake.acl(struct.pack("<BH", 0x02, 247))
             await gatt.write(link.CMD_W, b"x", response=False)
             self.assertEqual(await asyncio.wait_for(got.get(), 2), b"hi")
+        self.assertIn(b"mtu", fake.writes)
         self.assertIn(struct.pack("<H", 0x20) + b"AT\r\n", fake.writes)
         self.assertIn(struct.pack("<H", 0x13) + struct.pack("<H", 1), fake.writes)
         server.close()

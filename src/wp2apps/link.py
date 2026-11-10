@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import os
 import struct
-import time
 import zlib
 
 from Crypto.Cipher import AES
@@ -14,6 +13,7 @@ HEADER = struct.Struct(">BHHHHH")
 SHELL_W = "77d4ff01-2fe2-2334-0d35-9ccd078f529c"
 SHELL_N = "77d4ff02-2fe2-2334-0d35-9ccd078f529c"
 CMD_W = "0000fff2-0000-1000-8000-00805f9b34fb"
+DATA_N = "02f00000-0000-0000-0000-00000000ffe2"
 CMD_N = "0000fff1-0000-1000-8000-00805f9b34fb"
 SYSTEM = 0xFFFF
 # watch→phone frames in the clear declare a length with the CRC but omit it
@@ -82,18 +82,27 @@ class Session:
         self.shell = asyncio.Queue()
         self.parser = Parser()
 
-    async def _open(self, gatt):
+    async def attach(self, gatt):
         self.gatt = gatt
         await self.gatt.subscribe(CMD_N, lambda data: [self.frames.put_nowait(f) for f in self.parser.feed(data)])
         await self.gatt.subscribe(SHELL_N, self.shell.put_nowait)
+        # the stock app treats the third subscription as "phone ready"; the shell is silent before it
+        await self.gatt.subscribe(DATA_N, lambda data: None)
+        await asyncio.sleep(0.6)
 
     async def at(self, command: str, timeout: float = 6.0) -> bytes:
         await self.gatt.write(SHELL_W, command.encode() + b"\r\n")
         reply = b""
         async with asyncio.timeout(timeout):
-            while not reply.rstrip().endswith((b",OK", b"ERROR")):
+            while not any(end in reply for end in (b"OK", b"ERROR", b"FAIL")):
                 reply += await self.shell.get()
         return reply
+
+    async def _shell_value(self, field: str) -> str:
+        text = (await self.at(f"AT {field}")).decode(errors="replace").strip()
+        if not text.startswith(f"{field}:") or not text.endswith(",OK"):
+            raise ValueError(f"unexpected {field} reply {text!r}")
+        return text[len(field) + 1:-len(",OK")]
 
     async def _exchange(self, c2, payload, expect, key, timeout):
         await self.gatt.write(CMD_W, frame(SYSTEM, c2, payload, key), response=False)
@@ -111,21 +120,19 @@ class Session:
         return decrypt(key, await self._exchange(c2, payload, expect, key, timeout))
 
     async def handshake(self, gatt) -> None:
-        await self._open(gatt)
-        reply = await self.at("AT GETSECRET")
-        text = reply.decode(errors="replace").strip()
-        if not text.startswith("GETSECRET:") or not text.endswith(",OK"):
-            raise ValueError(f"unexpected GETSECRET reply {text!r}")
-        secret = bytes.fromhex(text[len("GETSECRET:"):-len(",OK")])
+        await self.attach(gatt)
+        secret = bytes.fromhex(await self._shell_value("GETSECRET"))
         rnd1 = os.urandom(16)
         reply = await self._exchange(0x8047, rnd1 + hashlib.sha256(rnd1 + secret).digest(), 0x0048, None, 6.0)
         rnd2 = reply[:16]
         if reply[16:48] != hashlib.sha256(rnd2 + secret).digest():
             raise ValueError("watch failed the pairing challenge")
         auth = authkey(rnd1, rnd2, secret)
-        await self.request(SYSTEM, 0x8049, b"\xa5" + b"CMF Watch Pro 2", 0x0049, key=auth)
+        try:  # the watch drops the first 0x8049 after pairing
+            await self.request(SYSTEM, 0x8049, b"\xa5CMF Watch Pro 2", 0x0049, timeout=2.0, key=auth)
+        except TimeoutError:
+            await self.request(SYSTEM, 0x8049, b"\xa5CMF Watch Pro 2", 0x0049, key=auth)
         nonce = await self.request(SYSTEM, 0x804B, b"\xa5", 0x004C, key=auth)
         self.key = session_key(nonce, auth)
+        # no 0x8004 time sync: a clock off by over 2 min makes the stock app "recover" (factory reset)
         await self.request(SYSTEM, 0x804D, b"\xa5", 0x0004)
-        await self.gatt.write(CMD_W, frame(SYSTEM, 0x8004, struct.pack(">ii", int(time.time()), 0), self.key),
-                              response=False)
