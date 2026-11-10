@@ -1,6 +1,6 @@
 use crate::{motor, ui};
 use core::ptr::addr_of_mut;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use wp2_core::events::{Api, Event, Queue, PAUSE, RESUME};
 use wp2_core::heap::{self, RES};
 use wp2_core::layout::stub_ram;
@@ -14,7 +14,6 @@ pub const NONE: u8 = 0xFF;
 // lowest preemptible priority (idle is 15): every stock thread but standby, actlog and shell_uart (also 14)
 // runs first, so a busy app cannot stall BLE, sensors or the UI (docs/recon.md)
 const APP_PRIO: i32 = 14;
-const FLAG: u32 = 1 << 31;
 const TEXT_MAX: usize = 64;
 
 #[repr(C, align(8))]
@@ -23,7 +22,8 @@ struct ThreadBuf([u8; 0x118 + 0x2000]);
 // k_thread (0x118) + stack; in the loader's .bss, so inside the loader block
 static mut THREAD_BUF: ThreadBuf = ThreadBuf([0; 0x118 + 0x2000]);
 pub static QUEUE: Queue = Queue::new();
-static EXITED: AtomicU32 = AtomicU32::new(0);
+static EXITED: AtomicBool = AtomicBool::new(false);
+static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 // view msg 8 (defocus) until msg 7 (focus)
 pub static DEFOCUSED: AtomicBool = AtomicBool::new(false);
 
@@ -48,8 +48,9 @@ pub fn running() -> bool {
     stub_ram().running_slot != NONE
 }
 
-pub fn exited() -> bool {
-    EXITED.load(Ordering::Acquire) & FLAG != 0
+// the app's exit code once it returned or called exit
+pub fn exited() -> Option<i32> {
+    EXITED.load(Ordering::Acquire).then(|| EXIT_CODE.load(Ordering::Relaxed))
 }
 
 pub fn launch(slot: u8) -> Result<(), i32> {
@@ -59,18 +60,25 @@ pub fn launch(slot: u8) -> Result<(), i32> {
     let ram = stub_ram();
     ram.app_block = block as u32;
     ram.app_size = h.image_size;
-    ram.running_slot = slot;
-    EXITED.store(0, Ordering::Release);
-    motor::PAUSED.store(false, Ordering::Release);
+    EXITED.store(false, Ordering::Release);
+    motor::reset();
     QUEUE.clear();
     ui::canvas().fill_rect(0, 0, 466, 466, 0);
     ui::DIRTY.store(true, Ordering::Release);
     let buf = unsafe { &mut *addr_of_mut!(THREAD_BUF) };
     let entry = (block as u32 + h.entry) | 1;
     // os_thread_create(buf, size, entry, p1, p2, p3, prio, options, delay_ms)
-    stock!(OS_THREAD_CREATE, fn(*mut u8, u32, ThreadFn, u32, *const Api, u32, i32, u32, i32) -> u32)(
+    // the app (prio 14) does not run before this UI-thread pass ends, so running_slot is set after the create
+    let tid = stock!(OS_THREAD_CREATE, fn(*mut u8, u32, ThreadFn, u32, *const Api, u32, i32, u32, i32) -> u32)(
         buf.0.as_mut_ptr(), buf.0.len() as u32, app_thread, entry, &API, 0, APP_PRIO, 0, 0,
     );
+    if tid == 0 {
+        unsafe { heap::free(RES, block) };
+        ram.app_block = 0;
+        ram.app_size = 0;
+        return Err(-1);
+    }
+    ram.running_slot = slot;
     Ok(())
 }
 
@@ -87,7 +95,7 @@ pub fn stop_app() {
     ram.app_block = 0;
     ram.app_size = 0;
     ram.running_slot = NONE;
-    motor::PAUSED.store(false, Ordering::Release);
+    motor::reset();
 }
 
 fn overlay() -> bool {
@@ -122,7 +130,8 @@ extern "C" fn app_thread(entry: u32, api: *const Api, _: u32) {
 }
 
 fn park(code: i32) -> ! {
-    EXITED.store(code as u32 | FLAG, Ordering::Release);
+    EXIT_CODE.store(code, Ordering::Relaxed);
+    EXITED.store(true, Ordering::Release);
     loop {
         sleep(1000);
     }

@@ -12,6 +12,8 @@ pub const BUTTON: u8 = 4;
 pub const PAUSE: u8 = 5;
 pub const RESUME: u8 = 6;
 
+/// `x`, `y`: touch point for `TOUCH_DOWN`/`TOUCH_UP`. `delta`: for `CROWN`, the direction of one detent,
+/// `+1` or `-1` per event, never a magnitude (a fast turn is several events); 0 otherwise.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Event {
@@ -55,6 +57,10 @@ impl Api {
         (self.next_event)(&mut event, timeout_ms).then_some(event)
     }
 
+    /// `duty_permille` 0..=1000 (0 = off), `freq_hz` 1..=20000. Returns 0, or:
+    /// `-1` out of range; `-3` paused under a stock popup (between `PAUSE` and `RESUME`);
+    /// `-4` locked: the loader cut a run longer than 2000 ms, and the motor stays off until `vibrate(0, _)`;
+    /// another negative value is a PWM driver error.
     pub fn vibrate(&self, duty_permille: u16, freq_hz: u16) -> i32 {
         (self.motor)(duty_permille, freq_hz)
     }

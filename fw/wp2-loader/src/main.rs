@@ -30,18 +30,23 @@ mod view {
     const DEFOCUS: u32 = 8;
     const KEY: u32 = 0xD;
     const ERROR_MS: u32 = 2000;
+    // an app still running this long after a BUTTON is stopped
+    const ESCAPE_MS: u32 = 1000;
 
     struct Menu {
         entries: [Option<menu::Entry>; menu::ROWS],
         count: usize,
         selected: usize,
-        armed: Option<usize>,
+        // (row, x, y) of the press
+        armed: Option<(usize, i32, i32)>,
         failed: Option<(usize, i32)>,
         failed_at: u32,
+        // millis() | 1 of a BUTTON for the running app, 0 if none
+        button_at: u32,
     }
 
     // Lives in the loader block: zero again on every open of the view.
-    static mut MENU: Menu = Menu { entries: [None; menu::ROWS], count: 0, selected: 0, armed: None, failed: None, failed_at: 0 };
+    static mut MENU: Menu = Menu { entries: [None; menu::ROWS], count: 0, selected: 0, armed: None, failed: None, failed_at: 0, button_at: 0 };
 
     fn st() -> &'static mut Menu {
         unsafe { &mut *addr_of_mut!(MENU) }
@@ -69,10 +74,7 @@ mod view {
                 0
             }
             DELETE => {
-                if app::running() {
-                    app::QUEUE.push(Event { kind: BUTTON, ..Event::default() });
-                    app::stop_app();
-                }
+                app::stop_app();
                 ui::delete();
                 0
             }
@@ -91,6 +93,10 @@ mod view {
         let Some(e) = map_key(unsafe { *(data as *const u32) }) else { return };
         if !app::running() && e.kind != CROWN {
             return;
+        }
+        let m = st();
+        if e.kind == BUTTON && !app::paused() && m.button_at == 0 {
+            m.button_at = app::millis() | 1;
         }
         crown(e);
         unsafe { *(data as *mut u8).add(4) = 1 };
@@ -135,15 +141,20 @@ mod view {
         }
         let m = st();
         if code == ui::PRESSED {
-            m.armed = i16::try_from(y).ok().and_then(menu::hit).filter(|&r| r < m.count);
-            if let Some(row) = m.armed {
+            let row = i16::try_from(y).ok().and_then(menu::hit).map(|r| menu::first(m.selected) + r);
+            m.armed = row.filter(|&r| r < m.count).map(|r| (r, x, y));
+            if let Some((row, ..)) = m.armed {
                 m.selected = row;
                 redraw();
             }
             return;
         }
-        // the release point of a short tap is off (e2e: pressed at y 140, released at y 103), so the pressed row runs
-        let Some(row) = m.armed.take() else { return };
+        // the pressed row runs: the release point of a short tap is off (e2e: pressed at y 140, released at y 103);
+        // no launch after a drag (LVGL 8.3 sends SHORT_CLICKED after a drag too when nothing scrolls)
+        let Some((row, px, py)) = m.armed.take() else { return };
+        if !menu::is_tap((px, py), (x, y)) {
+            return;
+        }
         let Some(entry) = m.entries[row] else { return };
         if let Err(code) = app::launch(entry.slot) {
             m.failed = Some((row, code));
@@ -156,9 +167,21 @@ mod view {
         let m = st();
         app::pause_tick();
         motor::watchdog();
-        if app::running() && app::exited() {
-            app::stop_app();
-            redraw();
+        if app::running() {
+            if let Some(code) = app::exited() {
+                app::stop_app();
+                if code != 0 {
+                    m.failed = Some((m.selected, code));
+                    m.failed_at = app::millis();
+                }
+                redraw();
+            } else if m.button_at != 0 && app::millis().wrapping_sub(m.button_at) >= ESCAPE_MS {
+                app::stop_app();
+                redraw();
+            }
+        }
+        if !app::running() {
+            m.button_at = 0;
         }
         if m.failed.is_some() && app::millis().wrapping_sub(m.failed_at) >= ERROR_MS {
             m.failed = None;
@@ -171,6 +194,7 @@ mod view {
 
     #[panic_handler]
     fn panic(_: &core::panic::PanicInfo) -> ! {
-        loop {}
+        // a fault reboots the watch: a hung ui_service would also stop the motor watchdog
+        unsafe { core::arch::asm!("udf #0", options(noreturn)) }
     }
 }

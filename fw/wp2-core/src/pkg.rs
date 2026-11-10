@@ -93,8 +93,8 @@ pub fn relocate(image: &mut [u8], base: u32, relocs: &[u8], next: &mut usize) ->
         if off < *next {
             return Err(PkgError::Reloc);
         }
-        *next = off + 1;
         let end = off.checked_add(4).filter(|&e| e <= image.len()).ok_or(PkgError::Reloc)?;
+        *next = off + 1;
         let w = u32::from_le_bytes(image[off..end].try_into().unwrap()).wrapping_add(base);
         image[off..end].copy_from_slice(&w.to_le_bytes());
     }
