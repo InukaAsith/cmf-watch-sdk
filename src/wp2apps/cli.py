@@ -9,9 +9,11 @@ from . import firmware, package, paths
 
 def cmd_pack(args):
     image = args.image.read_bytes()
-    if args.elf:
-        package.check_elf(image, args.elf.read_bytes())
-    data = package.pack(image, name=args.name, version=args.version)
+    elf = args.elf.read_bytes()
+    package.check_elf(image, elf)
+    kind = package.KIND_LOADER if args.kind == "loader" else package.KIND_APP
+    data = package.pack(image, name=args.name, version=args.version, kind=kind,
+                        relocs=package.relocations(elf))
     with args.output.open("xb") as out:
         out.write(data)
 
@@ -20,7 +22,7 @@ def cmd_info(args):
     pkg = package.parse(args.package.read_bytes())
     print(json.dumps({
         "name": pkg.name, "version": pkg.version, "kind": pkg.kind, "abi": pkg.abi, "abi_minor": pkg.abi_minor,
-        "load_addr": f"{pkg.load_addr:#x}", "entry": pkg.entry,
+        "relocs": len(pkg.relocs), "entry": pkg.entry,
         "image_size": len(pkg.image), "crc32": f"{zlib.crc32(pkg.image):#010x}",
     }, indent=2))
 
@@ -45,7 +47,8 @@ def parser():
     pack.add_argument("--name", required=True)
     pack.add_argument("--version", type=int, required=True)
     pack.add_argument("--output", type=Path, required=True)
-    pack.add_argument("--elf", type=Path, help="Linked ELF to check entry address and image length")
+    pack.add_argument("--elf", type=Path, required=True, help="Linked ELF: entry/length check and relocation table")
+    pack.add_argument("--kind", choices=("app", "loader"), default="app")
     pack.set_defaults(handler=cmd_pack)
     info = commands.add_parser("info", help="Validate a package and print its header")
     info.add_argument("package", type=Path)
