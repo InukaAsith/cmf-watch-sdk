@@ -13,13 +13,14 @@ from . import harness
 
 NETSIMD = Path(os.environ.get("WP2_NETSIMD") or shutil.which("netsimd") or "~/Library/Android/sdk/emulator/netsimd")
 PAIRED = harness.RUNS / "paired-nor.bin"
+INSTANCE = os.environ.get("WP2_NETSIM_INSTANCE", "71")  # one per agent: two netsimd on one instance exit
 
 
 @contextmanager
 def netsim():
     """netsimd with a free H4 port; yields the port."""
     port = harness.free_port()
-    proc = subprocess.Popen([str(NETSIMD.expanduser()), "--instance", "71", "--hci-port", str(port),
+    proc = subprocess.Popen([str(NETSIMD.expanduser()), "--instance", INSTANCE, "--hci-port", str(port),
                              "--no-cli-ui", "--no-web-ui"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         for _ in range(100):
