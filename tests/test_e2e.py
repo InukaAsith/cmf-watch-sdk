@@ -296,25 +296,7 @@ ROW0 = (90, 120, 300, 40)
 @skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
 class HelloTest(unittest.TestCase):
     def ready(self, emu):
-        """Closes the "Paired" popup, then waits out the screen-off that follows the BLE disconnect: the panel
-        blanks ~5.7 s after "Ble wake lock 0" despite keep_awake (e2e runs 3-5), and an idle guest stalls emu.call."""
-        emu.keep_awake()
-        for _ in range(3):
-            if not emu.peek(POPUP_FLAGS, 1)[0] & 3:
-                break
-            emu.send("c 1", "c 0", pause=2)
-        else:
-            raise RuntimeError("stock popup is still open")
-        for _ in range(60):
-            uart = emu.uart()
-            if uart.rfind("Ble wake lock 0") > uart.rfind("Ble wake lock 1"):
-                break
-            emu.sleep(0.5)
-        emu.sleep(8)
-        uart = emu.uart()
-        if uart.rfind("view_cache: deinit") > uart.rfind("view_cache: init"):
-            emu.send("c 1", "c 0", pause=2)  # wakes the screen on the face
-        emu.keep_awake()
+        harness.ready(emu)
 
     def open_menu(self, emu):
         emu.call(harness.OPEN_VIEW, 0xF0, 0)
@@ -455,3 +437,60 @@ class HelloTest(unittest.TestCase):
             emu.send("c 1", "c 0", pause=2)
             self.assert_menu(emu)
             self.assert_clean(emu)
+
+
+LOADER_ELF = paths.ROOT / "fw/target/thumbv7em-none-eabi/release/wp2-loader"
+CMU_PWMCLK0 = 0x40001068
+API_MOTOR = 0x18  # Api: abi, abi_minor, width, height (u16), then fill_rect, draw_text, present, next_event, motor
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd, gdb and llvm-nm)")
+class MotorTest(unittest.TestCase):
+    def assert_stock_clock(self, emu):
+        self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
+
+    def test_vibration_lab_drives_pwm(self):
+        with harness.installed(["loader", "vibration-lab"]) as (emu, port):
+            harness.open_app(emu, row=0)
+            n = len(emu.motor())
+            harness.lab_play(emu)
+            log = emu.motor()[n:]
+            print(f"\nlab motor.log {log}")
+            on = [e for e in log if e[1] > 0]
+            self.assertTrue(on)
+            ms, duty, hz = on[-1]
+            self.assertAlmostEqual(duty, 200, delta=5)  # pulse = period * 200 / 1000, the log rounds
+            self.assertAlmostEqual(hz, 31, delta=1)  # lab.rs STOCK_FREQUENCY
+            self.assertEqual(log[-1][1], 0)  # the 20 ms tick ended
+            emu.send("c 1", "c 0", pause=2)  # BUTTON: the lab exits
+            self.assertEqual(emu.peek(START + 6, 1), b"\xff")
+            self.assertEqual(emu.motor()[-1][1], 0)
+            self.assert_stock_clock(emu)
+
+    def test_motor_cap_without_event_loop(self):
+        with harness.installed(["loader", "motor-hog"]) as (emu, port):
+            n = len(emu.motor())  # stock boot buzz (1000 30) is not the app's
+            harness.open_app(emu, row=0)
+            emu.sleep(5)
+            log = emu.motor()[n:]
+            print(f"\nhog motor.log {log}")
+            start = next(m for m, d, hz in log if d == 1000 and hz == 31)
+            stop = next(m for m, d, _ in log if m > start and d == 0)
+            print(f"cap: on at {start} ms, off at {stop} ms ({stop - start} ms)")
+            self.assertLessEqual(stop - start, 2020)
+            self.assertGreaterEqual(stop - start, 1980)
+            self.assertFalse([e for e in log if e[0] > stop and e[1] > 0], "motor came back on")
+            self.assert_stock_clock(emu)
+
+    def test_motor_rejects_out_of_range(self):
+        with harness.installed(["loader", "hello"]) as (emu, port):
+            harness.open_menu(emu)
+            block = harness.u32(emu, START + harness.LOADER_BLOCK_OFF)
+            motor = harness.u32(emu, block + harness.symbol(LOADER_ELF, "API") + API_MOTOR)
+            self.assertTrue(block <= motor < block + 0x10000, hex(motor))
+            n = len(emu.motor())
+            for duty, hz in ((1001, 31), (500, 0), (500, 20001)):
+                self.assertEqual(emu.call(motor, duty, hz), 0xFFFFFFFF, (duty, hz))  # -1
+            emu.sleep(0.5)
+            self.assertEqual(emu.motor()[n:], [])
+            self.assert_stock_clock(emu)

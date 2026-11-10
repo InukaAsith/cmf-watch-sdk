@@ -1,4 +1,4 @@
-use crate::ui;
+use crate::{motor, ui};
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicU32, Ordering};
 use wp2_core::events::{Api, Event, Queue};
@@ -30,7 +30,7 @@ static API: Api = Api {
     draw_text,
     present,
     next_event,
-    motor,
+    motor: motor::motor,
     millis,
     exit,
 };
@@ -72,8 +72,9 @@ pub fn stop_app() {
     if !running() {
         return;
     }
-    // motor off goes here (Task 8)
+    // abort first: the app thread cannot start the motor again
     stock!(K_THREAD_ABORT, fn(*mut u8))(addr_of_mut!(THREAD_BUF) as *mut u8);
+    motor::off();
     let ram = stub_ram();
     unsafe { heap::free(RES, ram.app_block as *mut u8) };
     ram.app_block = 0;
@@ -128,11 +129,6 @@ extern "C" fn next_event(ev: *mut Event, timeout_ms: u32) -> bool {
         }
         sleep(5);
     }
-}
-
-// ponytail: placeholder until Task 8 wires the PWM
-extern "C" fn motor(_: u16, _: u16) -> i32 {
-    -1
 }
 
 pub extern "C" fn millis() -> u32 {

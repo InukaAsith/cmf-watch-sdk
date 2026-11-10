@@ -11,11 +11,13 @@ macro_rules! stock {
 mod app;
 mod menu;
 #[cfg(target_os = "none")]
+mod motor;
+#[cfg(target_os = "none")]
 mod ui;
 
 #[cfg(target_os = "none")]
 mod view {
-    use crate::{app, menu, ui};
+    use crate::{app, menu, motor, ui};
     use core::ffi::c_void;
     use core::ptr::addr_of_mut;
     use core::sync::atomic::Ordering;
@@ -141,6 +143,7 @@ mod view {
 
     extern "C" fn tick(_timer: *mut c_void) {
         let m = st();
+        motor::watchdog();
         if app::running() && app::exited() {
             app::stop_app();
             redraw();

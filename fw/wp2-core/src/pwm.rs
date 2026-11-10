@@ -14,6 +14,13 @@ pub fn pwm_params(freq_hz: u16) -> Option<(u32, u16)> {
     Some((0x200 | n, (HOSC / ((n + 1) * f)) as u16))
 }
 
+pub const CAP_MS: u32 = 2000;
+
+// signed: `since` is millis | 1 and may be 1 ms ahead of `now`
+pub fn over_cap(now: u32, since: u32) -> bool {
+    now.wrapping_sub(since) as i32 >= CAP_MS as i32
+}
+
 pub fn pulse(period: u16, duty_permille: u16) -> u16 {
     (u32::from(period) * u32::from(duty_permille.min(1000)) / 1000) as u16
 }
@@ -33,5 +40,13 @@ mod tests {
         assert_eq!(pwm_params(20001), None);
         assert_eq!(pulse(252, 500), 126);
         assert_eq!(pulse(255, 1000), 255);
+    }
+
+    #[test]
+    fn cap_after_2000_ms() {
+        assert!(!over_cap(1000, 1001)); // since = millis | 1 can be 1 ms ahead of the watchdog's clock
+        assert!(!over_cap(2999, 1001));
+        assert!(over_cap(3001, 1001));
+        assert!(over_cap(1999, 0xFFFF_FFFF)); // wrap
     }
 }
