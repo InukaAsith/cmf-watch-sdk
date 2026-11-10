@@ -12,3 +12,10 @@ version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
 ]
+
+[[package]]
+name = "vibration-lab"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+]
