@@ -2,9 +2,13 @@
 
 pub mod events;
 pub mod font8x8;
+#[cfg(target_os = "none")]
+pub mod fs;
 pub mod gfx;
 pub mod heap;
 pub mod layout;
+#[cfg(target_os = "none")]
+pub mod load;
 pub mod pkg;
 pub mod pwm;
 pub mod stock;

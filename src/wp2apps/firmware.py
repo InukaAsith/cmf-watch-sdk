@@ -12,6 +12,15 @@ STUB_RAM_SIZE = 0x1000
 APP_VBASE = 0x10000000
 NOR_APP_OFFSET = 0x24000
 NOR_APP_SIZE = 0x34B000
+STUB_MAX = 0x4000
+STUB_HEADER = struct.Struct("<4sIIIII8s")
+VIEW_TABLE, VIEW_TABLE_END = 0x100004B8, 0x100013E8
+# 0x101461AC and 0x10055458 hold the same values but bound neighbouring tables (docs/recon.md)
+VIEW_START_LITERALS = (0x1018BC24, 0x1018DF3C)
+VIEW_END_LITERALS = (0x1018BC28, 0x1018DF40)
+VIEW_ID = 0xF0
+BOOT_CALL = 0x101884FA
+STOCK_HEAP_INIT = 0x10146AA4
 
 
 def sum32(data: bytes) -> int:
@@ -63,9 +72,31 @@ def patch(app: bytes, stub: bytes | None = None, *, _verify: bool = True) -> byt
     out = bytearray(app)
     for off in HEAP_LITERALS:
         put(out, APP_VBASE + off, struct.pack("<I", HEAP_OLD), struct.pack("<I", HEAP_NEW))
+    if stub is not None:
+        add_stub(out, stub)
     out += bytes(-len(out) % 4)
     fix_acth(out)
     return bytes(out)
+
+
+def add_stub(out: bytearray, stub: bytes) -> None:
+    magic, version, boot, _ble, view_proc, view_name, _ = STUB_HEADER.unpack_from(stub)
+    if magic != b"WP2S" or version != 1 or not boot & 1 or not view_proc & 1:
+        raise ValueError("bad stub header")
+    if len(out) != STUB_OFFSET:
+        raise ValueError(f"app.bin is {len(out):#x} bytes; the stub goes at {STUB_OFFSET:#x}")
+    out += stub
+    out += bytes(-len(out) % 8)
+    table = APP_VBASE + len(out)
+    out += out[VIEW_TABLE - APP_VBASE:VIEW_TABLE_END - APP_VBASE]
+    out += struct.pack("<IIIIHHHH", view_name, view_proc, 0, 0, VIEW_ID, 0x102, 466, 466)
+    if len(out) - STUB_OFFSET > STUB_MAX:
+        raise ValueError(f"stub and view table take {len(out) - STUB_OFFSET:#x} bytes; the limit is {STUB_MAX:#x}")
+    for lit in VIEW_START_LITERALS:
+        put(out, lit, struct.pack("<I", VIEW_TABLE), struct.pack("<I", table))
+    for lit in VIEW_END_LITERALS:
+        put(out, lit, struct.pack("<I", VIEW_TABLE_END), struct.pack("<I", APP_VBASE + len(out)))
+    put(out, BOOT_CALL, thumb_bl(BOOT_CALL, STOCK_HEAP_INIT), thumb_bl(BOOT_CALL, boot & ~1))
 
 
 def stage_nor(nor: bytes, app: bytes) -> bytes:

@@ -19,6 +19,13 @@ HEAP = 0x38043824
 UI_MEM_ALIGNED_ALLOC = 0x101882C5
 UI_MEM_FREE = 0x10188381
 AWAKE_PTR = 0x38037D14
+OS_MUTEX_LOCK = 0x101BE219
+OPEN_VIEW = 0x101898BD
+FS_FIND_MOUNT = 0x10106FA1
+TRACE_OFF = 0x44
+LOADER_BLOCK_OFF = 0x4E8
+APP_BLOCK_OFF = 0x4F0
+ALLOC_LIMIT_OFF = 0x4F8
 GUEST_CLOCK = 0x40004118  # low 26 bits: QEMU_CLOCK_VIRTUAL in 125 ms steps (ats3089c.c acts_read)
 WALK = "tour1"  # names the walk in cache keys; bump when walk() changes
 PARALLEL = 3  # stock control walks at once during heavy-face selection
@@ -46,6 +53,14 @@ def free_port() -> int:
 
 def stock_nor() -> bytes:
     return (paths.cmf_watch_utils() / "fixtures" / "nor.bin").read_bytes()
+
+
+def patched_nor() -> bytes:
+    """Stock NOR with target/app-wp2.bin (heap reservation and stub) from scripts/build-fw."""
+    app = paths.ROOT / "target" / "app-wp2.bin"
+    if not app.is_file():
+        raise FileNotFoundError(f"{app} is missing: run scripts/build-fw")
+    return firmware.stage_nor(stock_nor(), app.read_bytes())
 
 
 class Qmp:
@@ -165,9 +180,13 @@ class Emu:
             self.gdb(f"restore {f.name} binary {addr:#x}")
 
     def call(self, fn: int, *args: int) -> int:
+        """Runs fn(*args) in the next thread that enters os_mutex_lock: a plain stop may land in an ISR or
+        the idle thread, where stock code that takes a mutex panics (docs/recon.md)."""
+        # ponytail: that thread may hold another lock; fine for the short calls the tests make
         regs = [f"r{i}" for i in range(13)] + ["sp", "lr", "pc", "xpsr"]
         spin = STUB_RAM + 0xE00
-        out = self.gdb(*(f"set $saved_{r} = ${r}" for r in regs),
+        out = self.gdb(f"tbreak *{OS_MUTEX_LOCK & ~1:#x}", "continue",
+                       *(f"set $saved_{r} = ${r}" for r in regs),
                        f"set *(unsigned short *){spin:#x} = 0xe7fe",
                        *(f"set $r{i} = {a:#x}" for i, a in enumerate(args)),
                        "set $sp = ((unsigned) $sp - 256) & ~7",
@@ -178,12 +197,15 @@ class Emu:
         return int(out.split("returned ")[-1].split()[0])
 
     def keep_awake(self):
+        """The launcher sometimes enters twice at boot and re-arms the timeout, so the write is checked later."""
         for _ in range(10):
             out = self.gdb(f"set $c = *(unsigned *){AWAKE_PTR:#x}",
                            "if $c >= 0x38000000 && $c < 0x38800000\n set *(unsigned *)$c = 0xffffffff\n"
                            ' printf "awake ok\\n"\n end')
             if "awake ok" in out:
-                return
+                self.sleep(1)
+                if u32(self, u32(self, AWAKE_PTR)) == 0xFFFFFFFF:
+                    return
             time.sleep(2)
         raise RuntimeError("auto-sleep timeout pointer never became valid")
 
