@@ -215,7 +215,9 @@ class InstallTest(unittest.TestCase):
                 await install._call(s, install.DATA, struct.pack("<I", 0) + data[:package.HEADER_SIZE + 1])
 
         with_watch(self.port, run)
+        self.assertEqual(self.emu.peek(START + 7, 1), b"\x01")  # xfer_state: the transfer above is still open
         self.assertNotIn("0", self.listing())  # INFO also drops the transfer left open above
+        self.assertEqual(self.emu.peek(START + 7, 1), b"\x00")
 
     def test_loader_slot_while_apps_open(self):
         emu, loader, v2 = self.emu, (paths.ROOT / "target" / "loader.wp2app").read_bytes(), repack(self.hello, 2)
@@ -233,7 +235,10 @@ class InstallTest(unittest.TestCase):
             self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")
 
         with_watch(self.port, half)  # dropped mid-transfer; Apps opens with the BLE file still open
+        ble_file = emu.peek(START + 7, 0x18 - 7 + 0x2C)  # xfer_state .. StubRam.file
         open_apps()
+        self.assertEqual(emu.peek(START + 7, len(ble_file)), ble_file, "the loader load touched the BLE transfer")
+        self.assertEqual(ble_file[0], 1)
 
         async def busy(s):  # the stock bind (0x8049) switches to the clock face, so Apps is reopened in-session
             await install.upload(s, 0, v2)
@@ -242,9 +247,14 @@ class InstallTest(unittest.TestCase):
                                 (install.DELETE, b"\xff")):
                 with self.assertRaisesRegex(ValueError, "BUSY"):
                     await install._call(s, c2, payload)
+            await asyncio.to_thread(emu.send, "t 1 200 140", "t 0 200 140", pause=2)  # hello (v2, slot 0) runs
+            self.assertEqual(await asyncio.to_thread(emu.peek, START + 6, 1), b"\x00")
+            for c2, payload in ((install.BEGIN, struct.pack("<BII", 0, len(v2), zlib.crc32(v2))), (install.DELETE, b"\x00")):
+                with self.assertRaisesRegex(ValueError, "BUSY"):
+                    await install._call(s, c2, payload)
 
         with_watch(self.port, busy)
-        for _ in range(3):  # button: stock closes a popup, then the view
+        for _ in range(4):  # button: stock closes a popup, hello exits, then stock closes the view
             if emu.peek(START + 4, 2) == b"\x00\x00":
                 break
             emu.send("c 1", "c 0", pause=2)
@@ -331,6 +341,10 @@ class LoaderTest(unittest.TestCase):
             self.assertGreater(bright_pixels(rgb, w, (90, 120, 300, 40)), 50)  # "hello"
             self.assertGreater(bright_pixels(rgb, w, (90, 180, 300, 40)), 50)  # "vibration-lab"
             self.assertEqual(rgb[300 * w * 3:], bytes(len(rgb) - 300 * w * 3), "framebuffer does not cover the face")
+            emu.send("r -80", pause=1)  # crown +1: the selection marker moves to row 1
+            rgb = emu.frame()[2]
+            self.assertEqual(bright_pixels(rgb, w, (55, 120, 35, 60)), 0)
+            self.assertGreater(bright_pixels(rgb, w, (55, 180, 35, 60)), 20)
             emu.send("c 1", "c 0", pause=2)  # button: stock closes the view
             self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
             self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
@@ -446,6 +460,8 @@ class HelloTest(unittest.TestCase):
         with harness.installed(["loader", "hello"]) as (emu, port):
             self.ready(emu)
             self.open_menu(emu)
+            harness.swipe(emu, 233, 140, 233, 400)  # a drag that starts on row 0 launches nothing
+            self.assertEqual(emu.peek(START + 4, 3), b"\x01\x01\xff")
             self.tap_row0(emu)
             self.assert_hello(emu)
             (emu.run / "hello.ppm").write_bytes((emu.run / "frame.ppm").read_bytes())
@@ -473,6 +489,9 @@ class HelloTest(unittest.TestCase):
             self.assert_menu(emu)
             self.tap_row0(emu)
             self.assert_hello(emu)
+            harness.swipe(emu, 30, 233, 430, 233, steps=4, pause=3)  # swipe back: key 0xFFFF0071, stock leaves 0xF0
+            self.assertEqual(emu.peek(START + 4, 3), b"\x00\x00\xff")
+            self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
             self.assert_clean(emu)
 
     def test_blocks_freed_and_relocated(self):
@@ -546,6 +565,18 @@ class HelloTest(unittest.TestCase):
 
 
 LOADER_ELF = paths.ROOT / "fw/target/thumbv7em-none-eabi/release/wp2-loader"
+MOTOR_HOG_ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/motor-hog"
+
+
+def app_i32(emu, elf, name) -> int:
+    """An i32 static of the running app (its symbol is an image offset)."""
+    raw = harness.u32(emu, harness.u32(emu, START + harness.APP_BLOCK_OFF) + harness.symbol(elf, name))
+    return struct.unpack("<i", struct.pack("<I", raw))[0]
+
+
+def without_resets(log):
+    """motor.log without the 0 line pin_set_cycles writes before it switches on again in the same ms."""
+    return [e for i, e in enumerate(log) if e[1] or i + 1 == len(log) or log[i + 1][0] != e[0] or not log[i + 1][1]]
 CMU_PWMCLK0 = 0x40001068
 API_MOTOR = 0x18  # Api: abi, abi_minor, width, height (u16), then fill_rect, draw_text, present, next_event, motor
 
@@ -580,16 +611,33 @@ class MotorTest(unittest.TestCase):
             emu.sleep(5)
             log = emu.motor()[n:]
             print(f"\nhog motor.log {log}")
-            start = next(m for m, d, hz in log if d == 1000 and hz == 31)
-            stop = next(m for m, d, _ in log if m > start and d == 0)
+            runs = without_resets(log)  # the hog switches on again every 100 ms
+            start = next(m for m, d, hz in runs if d == 1000 and hz == 31)
+            stop = next(m for m, d, _ in runs if m > start and d == 0)
             print(f"cap: on at {start} ms, off at {stop} ms ({stop - start} ms)")
             self.assertLessEqual(stop - start, 2000)
             self.assertGreaterEqual(stop - start, 1960)
             self.assertFalse([e for e in log if e[0] > stop and e[1] > 0], "motor came back on")
+            self.assertEqual(app_i32(emu, MOTOR_HOG_ELF, "RC"), -4)  # locked until vibrate(0)
             self.assert_stock_clock(emu)
             # the hog still spins at the lowest app priority: BLE (wewear, prio 13) must keep working
             self.assertIn("motor-hog", harness.cli_out(["list", "--hci-port", port]))
             self.assertNotEqual(emu.peek(START + 6, 1), b"\xff")
+
+    def test_button_stops_unresponsive_app(self):
+        with harness.installed(["loader", "motor-hog"]) as (emu, port):
+            harness.open_app(emu, row=0, pause=0.5)
+            self.assertGreater(emu.motor()[-1][1], 0)
+            emu.send("c 1", "c 0", pause=0)  # the hog never reads its BUTTON
+            start = emu.clock()
+            while emu.peek(START + 6, 1) != b"\xff" and emu.clock() - start < 3:
+                emu.sleep(0.125)
+            print(f"\nbutton escape after {emu.clock() - start:.3f} s")
+            self.assertLessEqual(emu.clock() - start, 2)
+            self.assertEqual(emu.peek(START + 4, 3), b"\x01\x01\xff")  # back in the menu
+            self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
+            self.assertEqual(emu.motor()[-1][1], 0)
+            self.assert_stock_clock(emu)
 
     def test_motor_rejects_out_of_range(self):
         with harness.installed(["loader", "hello"]) as (emu, port):
@@ -606,6 +654,23 @@ class MotorTest(unittest.TestCase):
 
 
 PAUSE, RESUME = 5, 6  # wp2-core events.rs
+MSGBOX_POPUP, MSGBOX_CLOSE, BTCALL_MSGBOX = 0x100D5E35, 0x100D6461, 0xF6  # docs/recon.md (task 9, fix-final)
+DEFOCUS, FOCUS = 0x800F0, 0x700F0  # StubRam.trace entries: msg << 16 | view
+
+
+def trace_since(emu, head: int) -> list[int]:
+    """StubRam.trace entries the stub proc logged after trace_head was `head` (ring of 32)."""
+    raw = emu.peek(START + harness.TRACE_OFF, 4 + 32 * 4)
+    now, ring = struct.unpack_from("<I", raw)[0], struct.unpack_from("<32I", raw, 4)
+    return [ring[i % 32] for i in range(max(head, now - 32), now)]
+
+
+def cut_by_loader(test, log, start_hz=31):
+    """(start, stop) of the app's first run; the stop is the loader's cut, not the stock popup's own 30 Hz buzz."""
+    i = next(i for i, (m, d, hz) in enumerate(log) if d > 0 and hz == start_hz)
+    j = next(j for j in range(i + 1, len(log)) if log[j][1] == 0)
+    test.assertFalse([e for e in log[i:j] if e[2] == 30], "the stock buzz took the motor before the cut")
+    return log[i][0], log[j][0]
 LAB_TO_LONG = "r 80"  # knob step -1: Pattern Tick -> Long (runs/e2e/task9-knob.log)
 
 
@@ -616,13 +681,14 @@ class PauseTest(unittest.TestCase):
             n = len(emu.motor())
             harness.open_app(emu, row=0, pause=0.25)  # popup well inside the 2 s cap
             self.assertGreater(emu.motor()[-1][1], 0)
+            head = harness.u32(emu, START + harness.TRACE_OFF)
             harness.popup(emu)
             emu.sleep(1)
             log = emu.motor()[n:]
             print(f"\nhold motor.log {log}")
-            start = next(m for m, d, hz in log if d == 1000 and hz == 31)
-            stop = next(m for m, d, _ in log if m > start and d == 0)
+            start, stop = cut_by_loader(self, log)
             self.assertLess(stop - start, 1900)  # cut by the pause, not by the cap
+            self.assertEqual(app_i32(emu, harness.MOTOR_HOLD_ELF, "PAUSED_RC"), -3)
             self.assertEqual(log[-1][1], 0)
             self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
             self.assertEqual(emu.peek(START + 6, 1), b"\x00")  # the app lives on
@@ -630,6 +696,9 @@ class PauseTest(unittest.TestCase):
             harness.close_popup(emu)
             emu.sleep(1.5)
             self.assertEqual(harness.read_marker(emu), [PAUSE, RESUME])
+            trace = trace_since(emu, head)
+            self.assertIn(DEFOCUS, trace)  # the stub proc gets msg 8 and then 7, not only the flag byte
+            self.assertIn(FOCUS, trace[trace.index(DEFOCUS):])
             self.assertEqual(bright_pixels(emu.frame()[2], 466, box=(150, 200, 166, 60)), 166 * 60)
             # the charge popup buzzes at 30 Hz itself; the app's lines are the 31 Hz ones
             self.assertFalse([e for e in emu.motor()[n:] if e[0] > stop and e[2] == 31], "app motor came back")
@@ -645,12 +714,36 @@ class PauseTest(unittest.TestCase):
             emu.sleep(1)
             log = emu.motor()[n:]
             print(f"\nlab motor.log {log}")
-            start = next(m for m, d, hz in log if d > 0 and hz == 31)
-            stop = next(m for m, d, _ in log if m > start and d == 0)
+            start, stop = cut_by_loader(self, log)
             self.assertLess(stop - start, 900)  # Long runs 1000 ms
             self.assertEqual(log[-1][1], 0)
             harness.close_popup(emu)
             emu.sleep(2)
             self.assertFalse([e for e in emu.motor()[n:] if e[0] > stop and e[2] == 31], "lab motor came back")
             self.assertNotEqual(emu.peek(START + 6, 1), b"\xff")
+            self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
+
+    def test_incoming_call_keeps_app(self):
+        # stock overlays share msgbox view 62 (notify_view); a message notification (mid 252) needs stock message
+        # data, the incoming-call box (mid 246) opens without it (docs/recon.md)
+        with harness.installed(["loader", "motor-hold"]) as (emu, port):
+            n = len(emu.motor())
+            harness.open_app(emu, row=0, pause=0.25)
+            head = harness.u32(emu, START + harness.TRACE_OFF)
+            emu.call(MSGBOX_POPUP, BTCALL_MSGBOX, 0)
+            harness.wait_popup(emu, True)
+            emu.sleep(1)
+            start, stop = cut_by_loader(self, emu.motor()[n:])
+            self.assertLess(stop - start, 1900)
+            self.assertEqual(emu.peek(START + 4, 3), b"\x01\x01\x00")  # loader view and app alive
+            self.assertEqual(app_i32(emu, harness.MOTOR_HOLD_ELF, "PAUSED_RC"), -3)
+            emu.call(MSGBOX_CLOSE, BTCALL_MSGBOX, 0)
+            harness.wait_popup(emu, False)
+            emu.sleep(1.5)
+            self.assertEqual(emu.peek(START + 6, 1), b"\x00")
+            self.assertEqual(harness.read_marker(emu), [PAUSE, RESUME])
+            trace = trace_since(emu, head)
+            self.assertIn(DEFOCUS, trace)
+            self.assertIn(FOCUS, trace[trace.index(DEFOCUS):])
+            self.assertEqual(bright_pixels(emu.frame()[2], 466, box=(150, 200, 166, 60)), 166 * 60)
             self.assertEqual(harness.u32(emu, CMU_PWMCLK0), 0x303)
