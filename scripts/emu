@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+cmf=$(cd "${CMF_WATCH_UTILS:-$root/../cmf-watch-utils}" && pwd)
+cd "$root"
+mkdir -p runs
+output="runs/$(date +%Y%m%d-%H%M%S)"
+args=""
+[ $# -gt 0 ] && args=$(printf ' %q' "$@")
+exec nix-shell -p tk --run "uv run --locked cmf-watch-utils emu run --fixtures '$cmf/fixtures' --qemu '$cmf/runtime/qemu-system-arm' --rom '$cmf/runtime/compat.bin' --output '$output'$args"
