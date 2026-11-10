@@ -1,6 +1,6 @@
 MEMORY
 {
-  APP (rwx) : ORIGIN = 0x386FF000, LENGTH = 0x20000
+  APP (rwx) : ORIGIN = 0, LENGTH = 0x20000
 }
 
 ENTRY(_start)

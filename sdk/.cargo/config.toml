@@ -2,4 +2,4 @@
 target = "thumbv7em-none-eabi"
 
 [target.thumbv7em-none-eabi]
-rustflags = ["-C", "link-arg=-Tapp.ld"]
+rustflags = ["-C", "link-arg=-Tapp.ld", "-C", "link-arg=--emit-relocs", "-C", "target-feature=+no-movt"]

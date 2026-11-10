@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import unittest
 
@@ -15,7 +16,10 @@ class SdkTest(unittest.TestCase):
             with self.subTest(name):
                 subprocess.run([str(ROOT / "scripts" / "build-app"), name, "1"], check=True, capture_output=True)
                 pkg = package.parse((ROOT / "target" / f"{name}.wp2app").read_bytes())
-                self.assertEqual((pkg.name, pkg.entry, pkg.load_addr), (name, 0, package.APP_BASE))
+                self.assertEqual((pkg.name, pkg.entry), (name, 0))
+                self.assertTrue(pkg.relocs)
+                for off in pkg.relocs:
+                    self.assertLess(struct.unpack_from("<I", pkg.image, off)[0] & ~1, len(pkg.image))
                 self.assertTrue(0 < len(pkg.image) < 16 * 1024)
                 elf = ROOT / f"sdk/target/thumbv7em-none-eabi/release/{name}"
                 package.check_elf(pkg.image, elf.read_bytes())
