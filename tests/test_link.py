@@ -56,8 +56,10 @@ class FakeWatch:
     """Stock handshake: 0x8047 sets the authkey and arms the bind popup, which swallows the next 0x8049;
     `confirm` presses its button then, so the stock clears the authkey and answers with it (0x100D09E6)."""
 
-    def __init__(self, confirm=0):
+    def __init__(self, confirm=0, late=0):
+        """`late`: taps after 0x804B, so the authkey is zero and the stub stays silent."""
         self.secret, self.confirm, self.auth, self.notify, self.shell = bytes(range(16)), confirm, None, None, None
+        self.late = late
         self.popup, self.session = False, None
 
     async def subscribe(self, uuid, callback):
@@ -81,7 +83,7 @@ class FakeWatch:
             self.notify(link.HEADER.pack(link.HEAD, len(reply) + 4, link.SYSTEM, 1, 1, 0x0048) + reply)
             return
         try:
-            link.decrypt(self.session if c2 == 0x804D else self.auth, body)
+            link.decrypt(self.auth if c2 in (0x8049, 0x804B) else self.session, body)
         except ValueError:
             return  # check_extra_data fault: dropped
         if c2 == 0x8049 and self.popup:
@@ -97,6 +99,11 @@ class FakeWatch:
             self.send(0x004C, bytes([9] * 16), self.auth)
         elif c2 == 0x804D:
             self.send(0x0004, b"\x5a", self.session)
+            if self.late:
+                self.late -= 1
+                self.auth = bytes(16)
+        elif c2 == link.STUB_INFO and any(self.auth):
+            self.send(link.STUB_INFO | 0xA000, b"\x00", self.session)
 
 
 class HandshakeTest(unittest.IsolatedAsyncioTestCase):
@@ -115,6 +122,12 @@ class HandshakeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_confirmed_popup_restarts_bind(self):
         watch, s = FakeWatch(confirm=1), link.Session()
+        await s.handshake(watch)
+        self.assertEqual(s.key, watch.session)
+        self.assertNotEqual(watch.auth, bytes(16))
+
+    async def test_late_tap_rebinds(self):
+        watch, s = FakeWatch(late=1), link.Session()
         await s.handshake(watch)
         self.assertEqual(s.key, watch.session)
         self.assertNotEqual(watch.auth, bytes(16))

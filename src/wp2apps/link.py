@@ -44,6 +44,9 @@ def decrypt(key: bytes, data: bytes) -> bytes:
     return body[:-4]
 
 
+STUB_INFO = 0x90A0  # install.INFO, answered by the stub only with a bound session
+
+
 def frame(c1: int, c2: int, payload: bytes, key: bytes | None) -> bytes:
     body = encrypt(key, payload) if key else payload + struct.pack("<I", zlib.crc32(payload))
     return HEADER.pack(HEAD, len(body), c1, 1, 1, c2) + body
@@ -157,11 +160,16 @@ class Session:
         for _ in range(attempts):
             try:
                 auth, nonce = await self._bind(secret)
-                break
             except Rebind:
                 continue
-        else:
-            raise ValueError("the bind popup on the watch was confirmed during every handshake; try again")
-        self.key = session_key(nonce, auth)
-        # no 0x8004 time sync: a clock off by over 2 min makes the stock app "recover" (factory reset)
-        await self.request(SYSTEM, 0x804D, b"\xa5", 0x0004)
+            self.key = session_key(nonce, auth)
+            # no 0x8004 time sync: a clock off by over 2 min makes the stock app "recover" (factory reset)
+            await self.request(SYSTEM, 0x804D, b"\xa5", 0x0004)
+            # a tap on the bind popup after 0x8049 zeroes the authkey and the stub goes silent: check, else bind again
+            try:
+                await self.request(SYSTEM, STUB_INFO, b"\xff", STUB_INFO | 0xA000, timeout=2.0)
+                return
+            except TimeoutError:
+                continue
+        raise ValueError("no session: the bind popup on the watch was confirmed during every handshake (try again "
+                         "without touching it), or the watch firmware has no wp2apps stub")
