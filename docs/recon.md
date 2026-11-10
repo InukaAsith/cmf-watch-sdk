@@ -206,3 +206,66 @@ Ghidra (`scripts/recon/decomp`) on `0x1013E9AC`, `0x1013E52C`, `0x1012F38C`, `0x
 | Image cache | `LV_IMG_CACHE_DEF_SIZE = 0`: `_lv_img_cache_open` (`0x1012EE94`) reopens a single static entry per draw and `lv_draw_img` closes it, so no cache entry keeps `&DSC` or the framebuffer | medium |
 | View delete order (`FUN_1018DC9C` area) | display op `+0x10` → `proc(id, 4, view+0x1C)` → … → scene cleanup `FUN_1018E6BC` (display op `+4`). The view's own `lv_obj_del` in msg 4 runs before the scene is torn down | medium |
 | Layout after preload | the view manager sends msg 3 only after a `{9, 3, id}` message: `ui_view_layout(id)` `0x101D72FF` (`0x10182060(id, 3, 0, 0)`). Stock preload handlers (`goodbye_view`) end with `return ui_view_layout(id)`; a preload that just returns 0 leaves the view created and focused but never laid out (e2e: no `view 240 layout started`) | high |
+
+## Plan 2, task 10: "Apps" row in the stock app list
+
+Ghidra (`scripts/recon/decomp`) on `0x1005E790..0x1005F300`, emulator probes on stock and patched NOR.
+
+### Stock app list
+
+| Item | Value | Confidence |
+|---|---|---|
+| Entries | `0x101EAF40`, flash, **25 × 12 B** `{u32 icon_res_id, u32 label_res_id, u32 target}`; the ops table follows at `0x101EB06C`, no room. Literals: `0x1005E7E4` (click), `0x1005E9C4` (grid), `0x1005EC40` (list text), `0x1005ED58` (list preload), `0x1005F170` (waterfall preload) | high |
+| `target` | `≤ 0xF4` → `FUN_101898bc(target, 0)`, else a Thumb function. Views: 0 `0x6A` sportlist, 3 `0x73`, 10 `0xDC`, 11 `0xC5`, 12 `0x90`, 13 `0x88`, 15 `0x8C`, 16 `0xCF`, 17 `0x1C`, 18 `0x61`, 19 `0x81`, 20 `0xCD`, 21 `0xCE`, 22 `0x86`, 23 `0x43`, 24 `0x44` setlist; functions at 1, 2, 4–9, 14 | high |
+| Icons, labels | hash ids into the scene resources `/NAND:A/bt_watch.sty`/`.res` and `/NAND:A/bt_watch.<lang>`; loaded by `FUN_101848d4(scene, ids, out_img_dsc, 0, n)` / `FUN_10184a5c(scene, ids, out_text, n)`. There is no "Apps" string | high |
+| Count | 25 is an immediate everywhere (`0x1005ECB8`, `0x1005ED02`, `0x1005F134`, `0x1005F218`, `0x1005F230`, `0x1005F2CE`, click `0x1005E7B0` `cmp r4,#0x18`); `data+8` only stores it | high |
+| View data (list) | `applist_view` id `0x12`, desc `0x101EB07C` (`+4` size `0x230`). `data = *(view+0x14)`: `+0` screen, `+4` scroll container (rows 0..24 in order), `+8` u8 count, `+0xC` 25 × `lv_img_dsc_t`, `+0x138` 25 × `TextRec {const char *text; u32 0}`, `+0x200` label `lv_style_t`, `+0x20C` font `/NAND:A/font32M.font`, `+0x214` label height (39). Arrays are packed, so a table entry cannot be added without moving ≈ 20 offsets | high |
+| Styles | preload `0x1005E848` reads property `0x2C`; `*(0x101EB0AC + 4·style)`: 0 list desc `0x101EB154` (**default**), 1 waterfall `0x101EB184`. Grid (`0x101EB0B4`) is dead in 1.0.0.73: `applist_grid_view` shares id `0x12` and the lookup returns the first entry | high |
+| Style desc | `{u8 flags, u8, u16 view_id, u16 data_size, …, +0xC layout, +0x14 focus, +0x1C preload, +0x20 unload, +0x24 res reload, +0x28 key, +0x2C misc}`; the layout is called only through the RAM pointer to the selected desc (`0x1005E8A4`) | medium |
+| Click | event 4 (SHORT_CLICKED) on a row → `0x1005ED75` → `FUN_1005e790(row->user_data)`: `index < 25`, `table[index].target`. Emulator: tap on row 0 → `view:106` (sportlist) | high |
+| Row (layout `0x1005EEE4`) | `row = lv_obj_create(cont)`, `user_data = i`, size `0x18A × icon.h`, cb `0x1005ED75` on 4, first row `lv_obj_align(1, 0x10, 0x50)`, then `lv_obj_align_to(row, prev, 0xD, 0, 8)`; vendor image create `0x1005A015` + flag `0x4000` + set_src `0x1005A02D`; vendor label create `0x1005B579`, size `(0x172 − icon.w) × data[+0x214]`, style `data+0x200`, long mode `0x101ACBA5(3)`, set_text `0x1005B70D(&TextRec)`, flag `0x4000`, `lv_obj_align_to(lab, img, 0x14, 0x18, 0)`. After the loop: restore scroll, fisheye once, vendor scrollbar, return 0 | high |
+| Unload `0x1005EC51` | save scroll → `lv_obj_clean(scr)` (all rows) → `lv_style_reset(+0x200)` → free 25 images and 25 texts by `data[8]` → close font. `data[8]` must never change | high |
+
+LVGL addresses (Thumb): `lv_obj_create 0x10127CFD`, `lv_obj_get_child(obj, i) 0x1012C3DD` (negative from the end),
+`lv_obj_get_child_cnt 0x1012C4AD`, `lv_obj_clean 0x1012C881`, `lv_obj_set_size 0x101294C9`, `lv_obj_set_x 0x101290CD`,
+`lv_obj_align 0x101C5DE5`, `lv_obj_align_to 0x1012A87D` (5th argument on the stack), `lv_obj_add_flag 0x10128D39`,
+`lv_obj_add_event_cb 0x10125A95`, `lv_obj_add_style 0x1012BB15`, `lv_obj_get_scroll_y 0x101C6515`,
+vendor image `set_zoom 0x1005A2D1`.
+
+### The patch (P5, option D)
+
+The rodata word `0x101EB160` (list desc `+0xC`, stock `0x1005EEE5`) points to the stub's `wp2_applist_layout`. It
+calls the stock layout and, when that returns 0 with `data[8] == 25` and 25 children in the container, appends a 26th
+row built exactly like the stock rows. Its own cb on event 4 calls `FUN_101898bc(0xF0, 0)`. The table, the count, the
+indices and the view data stay stock; the row dies with the screen in the stock unload. Only the list style is
+covered: with property `0x2C == 1` (waterfall) there is no "Apps" row.
+
+- Icon: own `LV_IMG_CF_INDEXED_1BIT` 96×96 in stub flash (`header = 0x0C018007`, 1160 B: palette `00000000`
+  transparent, `FFFFFFFF` white as B,G,R,A, then 12 B per row, MSB = left pixel), a 2×2 grid of rounded squares.
+  The stock LVGL 8.3 decoder (`0x1012F921`) handles INDEXED_1/2/4/8 and ALPHA_1/2/4/8; stock icons are
+  `TRUE_COLOR_ALPHA` 96×96 (27648 B), too big for the stub.
+- **Never zoom the 1-bit icon**: `set_zoom(img, 0xC0)` stops QEMU on an unimplemented Display Engine write
+  (`0x4006C020`). The row is therefore outside the stock fisheye (which walks `data[8]` rows) and stays at `x = 0x10`.
+- Label: `TextRec {"Apps", 0}` in stub flash. The vendor label keeps the pointer (static flag) and re-reads
+  `rec->text` on every refresh (language change), so both must live as long as the label.
+- RES heap: the label canvas (A4, 280×39) takes ≈ 5.5 KiB while the list is open and is freed by its destructor
+  (`0x101ACB9F`); no leak after unload (emulator).
+- The saved scroll position includes the extra row, but the stock layout restores it before the row exists; at
+  most the list opens slightly above the end.
+- Harness: after 16 swipes `(233,400)→(233,120)` the "Apps" row is last, at `y ≈ 340`; rows 24/23 at `y ≈ 236/132`.
+  The stock view manager logs `view <id> focused` for every view (including `0xF0`); `_view_focus:1` is logged
+  only by stock procs.
+
+Rejected alternatives: a settings entry (`sysmenulist_view` `0x4C`, same static table shape), a long crown press in
+the list (desc `+0x28` key handler; the long-press code and whether the system swallows it are unknown), own
+resources (labels and icons come from vendor `/NAND:A` resources).
+
+### BLE install channel (task 5)
+
+- The stock decrypt `0x101B608D` logs `check_extra_data fault` and drops frames with an empty plaintext, so END
+  carries one dummy byte.
+- `uart0.log` logs every incoming frame as `head_id/ability_id/cmd_id/length_id` and every reply as
+  `wewear send ability:… cmd:…`; handy for probes.
+- `0x804D` shows the "ble_connect" popup and sets `set_autosleep_time:5000`.
+- With the clock off by more than 2 minutes, `0x8004` time sync makes the stock app log `TIMESTAMP OVER 2min
+  RECOVERED` and reboot through a factory recovery; the host handshake skips `0x8004`.

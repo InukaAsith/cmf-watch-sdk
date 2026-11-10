@@ -250,3 +250,37 @@ class LoaderTest(unittest.TestCase):
             uart = emu.uart()
             self.assertNotIn("MllcFailedHook", uart)
             self.assertEqual(uart.count("*** Booting Zephyr"), 1)
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class AppListTest(unittest.TestCase):
+    # (list scrolled to the end, row y, view id from the stock table 0x101EAF40)
+    STOCK_SAMPLE = ((False, 130, 0x6A), (True, 132, 0x43), (True, 236, 0x44))  # Exercise, row 23, Settings
+
+    def test_apps_entry_opens_menu(self):
+        from tests.e2e.netsim import netsim
+        nor = harness.patched_paired_nor()
+        with netsim() as port, harness.Emu("applist", nor=nor, hci_port=port) as emu:
+            emu.wait_uart("launcher enter", 60)
+            emu.keep_awake()
+            for name in ("loader", "hello"):
+                self.assertEqual(harness.cli(["install", paths.ROOT / "target" / f"{name}.wp2app", "--hci-port", port]), 0)
+            dismiss_popup(emu)
+            for bottom, y, view in self.STOCK_SAMPLE:
+                harness.to_app_list(emu, bottom=bottom)
+                mark = len(emu.uart())
+                emu.send(f"t 1 233 {y}", f"t 0 233 {y}", pause=3)
+                self.assertIn(f"]: view {view} focused", emu.uart()[mark:], f"row at y={y}")
+            mark = len(emu.uart())
+            harness.open_apps(emu)
+            self.assertIn("]: view 240 focused", emu.uart()[mark:])
+            self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")  # loader loaded, active
+            emu.send("c 1", "c 0", pause=3)
+            self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
+            harness.to_app_list(emu, bottom=False)  # the list with the Apps row is built and unloaded again
+            emu.send("c 1", "c 0", pause=3)
+            self.assertNotEqual(harness.focused(emu), harness.APPLIST_VIEW)
+            uart = emu.uart()
+            self.assertNotIn("MllcFailedHook", uart)
+            self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+            self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
