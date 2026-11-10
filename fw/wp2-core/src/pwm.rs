@@ -30,6 +30,28 @@ pub fn mark_on(since: &AtomicU32, now: u32) {
     let _ = since.compare_exchange(0, now | 1, Ordering::AcqRel, Ordering::Acquire);
 }
 
+pub const E_RANGE: i32 = -1;
+pub const E_PAUSED: i32 = -3;
+pub const E_LOCKED: i32 = -4;
+
+// motor(duty, freq): Ok(None) switches off, Ok(Some((clock, period))) on; `locked` after a cap cut until motor(0)
+pub fn decide(duty_permille: u16, freq_hz: u16, paused: bool, locked: bool) -> Result<Option<(u32, u16)>, i32> {
+    let params = pwm_params(freq_hz);
+    if duty_permille > 1000 || (duty_permille > 0 && params.is_none()) {
+        return Err(E_RANGE);
+    }
+    if paused {
+        return Err(E_PAUSED);
+    }
+    if duty_permille == 0 {
+        return Ok(None);
+    }
+    if locked {
+        return Err(E_LOCKED);
+    }
+    Ok(params)
+}
+
 pub fn pulse(period: u16, duty_permille: u16) -> u16 {
     (u32::from(period) * u32::from(duty_permille.min(1000)) / 1000) as u16
 }
@@ -57,6 +79,17 @@ mod tests {
         assert!(!over_cap(2980, 1001));
         assert!(over_cap(2981, 1001));
         assert!(over_cap(1979, 0xFFFF_FFFF)); // wrap
+    }
+
+    #[test]
+    fn motor_decision() {
+        assert_eq!(decide(1001, 31, false, false), Err(E_RANGE));
+        assert_eq!(decide(500, 0, true, true), Err(E_RANGE));
+        assert_eq!(decide(0, 0, false, true), Ok(None));
+        assert_eq!(decide(500, 31, true, false), Err(E_PAUSED));
+        assert_eq!(decide(0, 31, true, true), Err(E_PAUSED));
+        assert_eq!(decide(500, 31, false, true), Err(E_LOCKED));
+        assert_eq!(decide(500, 31, false, false), Ok(Some((0x303, 252))));
     }
 
     #[test]

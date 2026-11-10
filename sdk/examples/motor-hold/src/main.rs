@@ -11,6 +11,10 @@ cmf_wp2_app::entry!(main);
 #[unsafe(no_mangle)]
 static mut JOURNAL: [u8; 20] = [0; 20];
 
+// vibrate() right after PAUSE
+#[unsafe(no_mangle)]
+static mut PAUSED_RC: i32 = 0;
+
 fn record(kind: u8) {
     let j = addr_of_mut!(JOURNAL) as *mut u8;
     unsafe {
@@ -36,6 +40,9 @@ fn main(api: &'static Api) -> i32 {
     loop {
         if let Some(event) = api.event(1000) {
             record(event.kind);
+            if event.kind == cmf_wp2_app::PAUSE {
+                unsafe { write_volatile(addr_of_mut!(PAUSED_RC), api.vibrate(1000, 31)) };
+            }
         }
     }
 }

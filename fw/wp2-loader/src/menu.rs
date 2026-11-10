@@ -16,6 +16,10 @@ const TOP: i16 = 120;
 const ROW_H: i16 = 60;
 const TEXT_DY: i16 = 12;
 const WHITE: u16 = 0xFFFF;
+// rows on the round screen; the menu pages by VISIBLE so the selected row is shown
+pub const VISIBLE: usize = 5;
+// press-to-release distance (px, per axis) still counted as a tap; the emulator reports a 125 ms tap ~40 px off
+const DRAG: i32 = 80;
 
 pub fn entry(slot: u8, raw: &[u8; HEADER_SIZE]) -> Option<Entry> {
     let h = parse_header(raw).ok()?;
@@ -46,7 +50,14 @@ pub fn scan() -> [Option<Entry>; ROWS] {
     out
 }
 
-// ponytail: rows 6 and 7 fall below the round screen; scroll when 7+ apps get real
+pub fn first(selected: usize) -> usize {
+    selected - selected % VISIBLE
+}
+
+pub fn is_tap(press: (i32, i32), release: (i32, i32)) -> bool {
+    (press.0 - release.0).abs() <= DRAG && (press.1 - release.1).abs() <= DRAG
+}
+
 // `failed`: (row, code) shows "Error <code>" in place of that row's name
 pub fn draw(c: &mut Canvas, entries: &[Option<Entry>; ROWS], selected: usize, failed: Option<(usize, i32)>) {
     use wp2_core::gfx::{H, W};
@@ -54,8 +65,9 @@ pub fn draw(c: &mut Canvas, entries: &[Option<Entry>; ROWS], selected: usize, fa
     c.text((W as i16 - 4 * 16) / 2, 60, b"Apps", WHITE);
     let mut shown = 0;
     let mut buf = [0u8; 18];
-    for (i, e) in entries.iter().flatten().enumerate() {
-        let y = TOP + ROW_H * i as i16 + TEXT_DY;
+    let top = first(selected);
+    for (i, e) in entries.iter().flatten().enumerate().skip(top).take(VISIBLE) {
+        let y = TOP + ROW_H * (i - top) as i16 + TEXT_DY;
         if i == selected {
             c.text(X - 24, y, b">", WHITE);
         }
@@ -98,7 +110,7 @@ pub fn error(code: i32, buf: &mut [u8; 18]) -> &[u8] {
 
 pub fn hit(y: i16) -> Option<usize> {
     let row = usize::try_from((y - TOP) / ROW_H).ok().filter(|_| y >= TOP)?;
-    (row < ROWS).then_some(row)
+    (row < VISIBLE).then_some(row)
 }
 
 #[cfg(test)]
@@ -139,7 +151,8 @@ mod tests {
         assert_eq!(hit(120), Some(0));
         assert_eq!(hit(179), Some(0));
         assert_eq!(hit(180), Some(1));
-        assert_eq!(hit(120 + 60 * ROWS as i16), None);
+        assert_eq!(hit(120 + 60 * VISIBLE as i16 - 1), Some(VISIBLE - 1));
+        assert_eq!(hit(120 + 60 * VISIBLE as i16), None);
         assert_eq!(hit(-5), None);
     }
 
@@ -158,6 +171,27 @@ mod tests {
         assert_eq!(lit(&px, 90, 240, 300, 40), 0);
         assert!(lit(&px, 0, 180, 90, 40) > 0, "selection marker left of row 1");
         assert_eq!(lit(&px, 0, 120, 90, 40), 0);
+    }
+
+    #[test]
+    fn selection_pages_the_rows() {
+        assert_eq!((first(0), first(4), first(5), first(7)), (0, 0, 5, 5));
+        let mut entries = [None; ROWS];
+        for (i, e) in entries.iter_mut().enumerate() {
+            *e = entry(i as u8, &header(b"app", 0));
+        }
+        let mut px = vec![0u16; W * H];
+        draw(&mut Canvas { px: &mut px }, &entries, 6, None);
+        assert!(lit(&px, 0, 180, 90, 40) > 0, "entry 6 is the second row of page 2");
+        assert!(lit(&px, 90, 240, 300, 40) > 0);
+        assert_eq!(lit(&px, 0, 300, W, H - 300), 0, "page 2 has 3 rows");
+    }
+
+    #[test]
+    fn drag_is_not_a_tap() {
+        assert!(is_tap((200, 140), (200, 103)));
+        assert!(!is_tap((233, 140), (233, 363)));
+        assert!(!is_tap((40, 233), (400, 233)));
     }
 
     #[test]
