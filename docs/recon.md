@@ -140,3 +140,49 @@ Heavy-face selection for the e2e walk (candidates in `emu faces --sort downloads
 | `hvk9m1hmpyuheyd` (NMS 176, 1267 downloads) | 2 boots, 1 `MllcFailedHook` (651,548 B) | rejected |
 | `kcumc43wn4cb8e9` (Wavy Seconds, 534) | `emu run --fmc-face` fails: QEMU stops on an unimplemented write at `0x40070504` during boot | rejected |
 | `w23jrco8sqew3nv` (Concentric Hal, 476) | 1 boot, no `MllcFailedHook`, no fatal | chosen |
+
+## Plan 2, task 4: view table bounds
+
+Disassembly of every PC-relative load of the six literals listed under "Таблица view" (`scripts/recon` + `llvm-objdump`):
+
+| Literal | Reader | Meaning |
+|---|---|---|
+| `0x1018BC24` / `0x1018BC28` | `FUN_1018bc04(id)`: `for (e = start; e < end; e += 0x18) if (e->id == id) return e;` | view table start / end |
+| `0x1018DF3C` / `0x1018DF40` | `FUN_1018dc9c` (view create), the same inline loop with step `0x18` | view table start / end |
+| `0x101461AC` | `FUN_10146060`: loop `0x100003A0 .. 0x100004B8`, step `0x1C`, entries go to `os_thread_create` | **end of the preceding table**, not the view table start |
+| `0x10055458` | `FUN_10055420`: `0x100013E8 .. 0x100015E8`, count `(end − start) >> 4` passed to `0x100D5D64` | **start of the following table**, not the view table end |
+
+The view table sits between two linker-generated tables, so their bounds share values with it. The patcher
+therefore rewrites only the four view literals; `0x101461AC` and `0x10055458` stay stock (rewriting them would
+walk the thread table over the new view table and drop the following table). No other code reads the
+table: no aligned word in the image points into `0x100004B8..0x100013E8` except two bit-mask constants
+(`0x10000800` at `0x1017324C`, `0x10000808` in data at `0x101EC848`), no `movw` of `0x04B8`/`0x13E8`/`0xF30`,
+and the count `0xA2` is never used — both readers are bounded by the end pointer. The view manager
+`0x10187000..0x10190000` has no `cmp rN, #0xEE..0xF0`; ids are stored as `u16`; the highest stock id is
+`0xED`. Byte `+0x13` of an entry (high byte of the `0x0102` field) indexes a 3-entry display table at
+`0x38043A78` (`FUN_1018e580`, must be ≤ 2).
+
+Preload result (`FUN_1018dc9c`, `0x1018DE08`): the view is created and its scene prepared
+(`FUN_1018e580`, `FUN_1018e6e4`), then `proc(id, 2, view+0x1C)` (or `presenter(id, view+0x1C, 2, …)` when
+`+8` is set). A non-zero result logs, calls the scene cleanup `FUN_1018e6bc`, frees the view and returns the
+code to `FUN_101898bc`, so the previous view stays on screen. The stub returns `-2` there when the loader
+is missing, corrupt or does not fit.
+
+### Mounts and `mkdir` (emulator probe, `fs_get_mnt_point` + mount list walk)
+
+| Mount | Type | API (`mp+0x1C`) | Writable |
+|---|---|---|---|
+| `/NAND:` | 0 (FAT) | `0x101F6AC0`: all 20 entries set, `mkdir` (`+0x3C`) = `0x101079F1` | yes |
+| `/NAND:A`, `B`, `C`, `E`, `K` | 2 | `0x101F5CD8`: open, read, lseek, tell, close, mount, unmount, stat, statvfs only; `write`, `truncate`, `sync`, `opendir…closedir`, `unlink`, `rename`, `mkdir` are 0 | no |
+
+`fs_get_mnt_point` takes the longest prefix, so `/NAND:C/…` reaches the read-only type 2 fs. Stock writes go to
+`/NAND:/…` (`/NAND:/epo.bin`, `/NAND:/record.pcm`). The plan's `/NAND:C/wp2apps` (and its fallback, files in
+the root of `/NAND:C`) cannot be written; `wp2_core::layout::DIR` is `/NAND:/wp2apps` instead, on the FAT,
+which has `mkdir`.
+
+### Calling stock code from gdb
+
+A plain QMP/gdb stop can land in an ISR or the idle thread. Calling a function that takes a mutex there
+(`fs_get_mnt_point`, `FUN_101898bc` → `os_mutex_lock 0x101BE218`) panics with `Fault during interrupt
+handling`. The harness therefore breaks on the entry of `os_mutex_lock` (only threads call it) and runs the
+call from that thread. `os_sleep` is not a usable hook: nothing calls it while the watch idles.

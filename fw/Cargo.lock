@@ -12,3 +12,10 @@ version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
 ]
+
+[[package]]
+name = "wp2-stub"
+version = "0.1.0"
+dependencies = [
+ "wp2-core",
+]

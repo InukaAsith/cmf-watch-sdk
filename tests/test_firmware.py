@@ -12,6 +12,10 @@ except (FileNotFoundError, ImportError):
 HAVE_STOCK = STOCK is not None
 
 
+def fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100):
+    return b"WP2S" + struct.pack("<IIIIIII", 1, boot, ble, view_proc, view_name, 0, 0) + bytes(0x100)
+
+
 class FirmwareTest(unittest.TestCase):
     def test_thumb_bl_known_encoding(self):
         self.assertEqual(firmware.thumb_bl(0x100D34F0, 0x100CC284), bytes.fromhex("f8f7c8fe"))
@@ -69,6 +73,37 @@ class FirmwareTest(unittest.TestCase):
             firmware.patch(bytes(bad), _verify=False)
         with self.assertRaisesRegex(ValueError, "sha256"):
             firmware.patch(bytes(bad))
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_stub_patch_points(self):
+        stub = fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100)
+        out = firmware.patch(STOCK, stub)
+        self.assertEqual(out[0x25A080:0x25A080 + len(stub)], stub)
+        self.assertEqual(out[0x1884FA:0x1884FE], firmware.thumb_bl(0x101884FA, 0x1025A0A0))
+        table = struct.unpack_from("<I", out, 0x1018BC24 - 0x10000000)[0]
+        end = struct.unpack_from("<I", out, 0x1018BC28 - 0x10000000)[0]
+        self.assertEqual(table % 8, 0)
+        self.assertEqual((end - table) // 0x18, 163)
+        self.assertEqual(out[table - 0x10000000:end - 0x18 - 0x10000000], STOCK[0x4B8:0x13E8])
+        last = out[end - 0x18 - 0x10000000:end - 0x10000000]
+        self.assertEqual(struct.unpack_from("<IIIIHHHH", last), (0x1025A100, 0x1025A0E1, 0, 0, 0xF0, 0x102, 0x1D2, 0x1D2))
+        self.assertEqual(struct.unpack_from("<I", out, 0x1018DF3C - 0x10000000)[0], table)
+        self.assertEqual(struct.unpack_from("<I", out, 0x1018DF40 - 0x10000000)[0], end)
+        # neighbouring tables that merely share a bound with the view table (docs/recon.md)
+        for lit in (0x101461AC, 0x10055458):
+            self.assertEqual(out[lit - 0x10000000:lit - 0x10000000 + 4], STOCK[lit - 0x10000000:lit - 0x10000000 + 4])
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_stub_too_big_rejected(self):
+        with self.assertRaises(ValueError):
+            firmware.patch(STOCK, fake_stub() + bytes(0x4000))
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_stub_header_checked(self):
+        with self.assertRaisesRegex(ValueError, "stub"):
+            firmware.patch(STOCK, b"XXXX" + fake_stub()[4:])
+        with self.assertRaisesRegex(ValueError, "stub"):
+            firmware.patch(STOCK, fake_stub(boot=0x1025A0A0))
 
     def test_heap_shrinks_by_stub_ram_only(self):
         self.assertEqual(firmware.HEAP_OLD - firmware.HEAP_NEW, 0x1000)

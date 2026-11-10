@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+out=$root/fw/target/thumbv7em-none-eabi/release
+packages=(-p wp2-stub)
+loader=0
+if [ -f "$root/fw/wp2-loader/Cargo.toml" ]; then
+    packages+=(-p wp2-loader)
+    loader=1
+fi
+(cd "$root/fw" && cargo build --release "${packages[@]}")
+mkdir -p "$root/target"
+cd "$root"
+llvm-objcopy -O binary "$out/wp2-stub" target/wp2-stub.bin
+if [ "$loader" = 1 ]; then
+    llvm-objcopy -O binary --set-section-flags .data=alloc,load,contents "$out/wp2-loader" target/loader.bin
+    rm -f target/loader.wp2app
+    uv run --locked wp2apps pack target/loader.bin --elf "$out/wp2-loader" --kind loader --name loader \
+        --version "${WP2_LOADER_VERSION:-1}" --output target/loader.wp2app
+fi
+rm -f target/app-wp2.bin
+uv run --locked wp2apps firmware --stub target/wp2-stub.bin --output target/app-wp2.bin
+echo "$root/target/app-wp2.bin"
