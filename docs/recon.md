@@ -303,7 +303,7 @@ functions below; disassembly of `0x101842A4`, `0x101BA1C8`, `0x101DB2A6`, `0x101
 |---|---|---|
 | `os_thread_create(buf, size, entry, p1, p2, p3, prio, options, delay_ms)` | `0x101BE1A3` → `k_thread_create(buf, buf + 0x118, size − 0x118, …)`, delay `-1` = never, returns the thread; entry gets `(p1, p2, p3)` | high |
 | `k_thread_abort(tid)` | **`0x10105C91`**: `z_thread_entry` (`0x101BA1C8`) calls it with `k_current_get()` (`0x1019B2CD`) after the entry returns; it unpends, aborts the timeout and unlinks the thread. `0x1019B2D8` is a bool "current thread is preemptible" check, not abort | high |
-| Thread priorities | stock thread table `0x100003A0` (0x1C B: name, stack, `u16` size, `u8` prio at `+0xA`, p1..p3, entry): created at `-16`, then `k_thread_priority_set(+0xA)`. `ui_service` **3** (its loop `0x1018B234` runs the view messages, so view procs, LVGL timers and event callbacks), `lvglworkq` 2 (`k_work_queue_start` at `0x101842BC`), `bluetooth` 2, `media` 1, `gps_service` 4, `sensor_service` 5, `logsrv` 0xB, `vendor`/`ble_fate`/`wewear`/`wewear_ftp` 0xD. Apps run at **4** | high |
+| Thread priorities | stock thread table `0x100003A0` (0x1C B: name, stack, `u16` size, `u8` prio at `+0xA`, p1..p3, entry): created at `-16`, then `k_thread_priority_set(+0xA)`. `ui_service` **3** (its loop `0x1018B234` runs the view messages, so view procs, LVGL timers and event callbacks), `lvglworkq` 2 (`k_work_queue_start` at `0x101842BC`), `bluetooth` 2, `media` 1, `gps_service` 4, `sensor_service` 5, `logsrv` 0xB, `vendor`/`ble_fate`/`wewear`/`wewear_ftp` 0xD. Apps ran at 4 here; task 9 moved them to 14 (below) | high |
 | Time | `sys_clock_tick_get()` `0x1019B7E1` returns `u64` ticks; 1 tick = 1 ms (`os_sleep(ms)` hands ms to `k_sleep` unscaled; the shell `uptime` prints the same value as ms via `0x101DB2A6`) | high |
 | Crown rotation | `view_key 0xFFFF006F/6E` reaches only list views. Any other view gets rotation only through an LVGL object registered as the display's knob object: `lv_obj_add_event_cb(obj, cb, 0x2D, …)` registers it (`0x10125A94` → `lv_disp_add_knob_obj` `0x10128C50`; also `lv_obj_add_flag` bit 30), and the object then gets event `0x2D` whose param points to the `i32` step. `lv_obj_del` unregisters it (`0x1012C644` → `0x10127D14`). The loader maps step > 0 to `+1`; `r 80` → `0x6F` (+1) in a list view, the sign of `0x2D` itself is not observed | high / sign low |
 | Event callback filter | filter 0 (`LV_EVENT_ALL`) also delivers every draw event (`0x12`–`0x2C`) each frame and does not register the knob; the loader registers one callback per code (1 `PRESSED`, 8 `RELEASED`, `0x2D`) | high |
@@ -312,6 +312,17 @@ functions below; disassembly of `0x101842A4`, `0x101BA1C8`, `0x101DB2A6`, `0x101
 | `OPEN_VIEW(0x10, 0)` | jumps the view stack to the clock and deletes view 0xF0 (msg 4) | high |
 | Block placement | opening 0xF0 deletes the face, and the loader (`0x380A9A38`) and app (`0x380A9678`) take the freed face region every time; a block allocated from outside while the face shows cannot move the loader. A block of `app_size` allocated with the menu open moves the app (`0x380A9758`) | high (emulator) |
 | Screen-off after BLE | the panel blanks ~5.7 s after `Ble wake lock 0` (the install connection closing) although `keep_awake` set the timeout to `0xFFFFFFFF`; with the screen off no thread enters `os_mutex_lock` and `emu.call` hangs. `HelloTest.ready` waits for it and wakes the watch with the button | medium |
+
+## Plan 2, task 9: thread priorities
+
+Disassembly (capstone) of `k_thread_foreach` `0x10199430`, the shell `kernel threads` handler `0x100F137D` and
+the thread switch-out hook `0x1004D6F0`; emulator probes `runs/e2e/task9-probe.log`, `task9-hog-prio{4,14}.log`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| Thread list | `_kernel` `0x380445B0`, list head `+0x2C`, `k_thread`: next `+0x74`, name `+0x78`, `s8` prio `+0xE`, state `+0xD`, `u64` run time `+0xC0`. The switch-out hook prints `Thread %p %s run time %d ms` for a run over 10 ms at prio ≤ 14 | high |
+| Priority map (emulator, after boot) | cooperative: `displayworkq` −12, `BT HCI RX` −10, `BT TX` −9, `BT RX` −8, `prd_tsk_workq` −2, `dspworkq` −2, `sysworkq` −1. Preemptive: `main` 0, `media` 1, `BT MONITOR` 1, `bluetooth` 2, `lvglworkq` 2, a work queue 2, `ui_service` 3, `gps_service` 4, `diskio_cache` 4, `sensor_service` 5, `res_preload` 5, work queues 6, 7, 8, `userworkq` 8, `launcher` 10, `logsrv` 11, `wewear_read` 12, `tcomp_workq` 12, `vendor`, `vendor_read`, `ble_fate`, `fate_read`, `wewear`, `wewear_ftp`, `wewear_ftp_read` and a work queue 13, `standby` 14, `actlog` 14, `shell_uart` 14, `idle 00` 15 | high |
+| App priority | `idle` is 15, so `CONFIG_NUM_PREEMPT_PRIORITIES` = 15 and 14 is the lowest priority `k_thread_create` accepts for another thread. Apps run at **14**, equal to `standby`, `actlog` and `shell_uart`. With `motor-hog` spinning: at 4, `wp2apps list` failed after 7.3 s (the vendor/wewear threads at 13 starve); at 14 it answered in 1.5 s, and `standby` still ran (the panel blanked after the BLE disconnect and closed the view, which it did not at 4) | high (emulator) |
 
 ## Hardware: caches and MPU
 

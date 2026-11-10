@@ -583,10 +583,13 @@ class MotorTest(unittest.TestCase):
             start = next(m for m, d, hz in log if d == 1000 and hz == 31)
             stop = next(m for m, d, _ in log if m > start and d == 0)
             print(f"cap: on at {start} ms, off at {stop} ms ({stop - start} ms)")
-            self.assertLessEqual(stop - start, 2020)
-            self.assertGreaterEqual(stop - start, 1980)
+            self.assertLessEqual(stop - start, 2000)
+            self.assertGreaterEqual(stop - start, 1960)
             self.assertFalse([e for e in log if e[0] > stop and e[1] > 0], "motor came back on")
             self.assert_stock_clock(emu)
+            # the hog still spins at the lowest app priority: BLE (wewear, prio 13) must keep working
+            self.assertIn("motor-hog", harness.cli_out(["list", "--hci-port", port]))
+            self.assertNotEqual(emu.peek(START + 6, 1), b"\xff")
 
     def test_motor_rejects_out_of_range(self):
         with harness.installed(["loader", "hello"]) as (emu, port):

@@ -8,8 +8,9 @@ use wp2_core::load;
 use wp2_core::stock::{K_THREAD_ABORT, OS_SLEEP, OS_THREAD_CREATE, SYS_CLOCK_TICK_GET};
 
 pub const NONE: u8 = 0xFF;
-// ui_service runs at 3 (stock thread table); lower than it, so a busy app cannot stall the UI
-const APP_PRIO: i32 = 4;
+// lowest preemptible priority (idle is 15): every stock thread but standby, actlog and shell_uart (also 14)
+// runs first, so a busy app cannot stall BLE, sensors or the UI (docs/recon.md)
+const APP_PRIO: i32 = 14;
 const FLAG: u32 = 1 << 31;
 const TEXT_MAX: usize = 64;
 

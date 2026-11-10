@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU32, Ordering};
+
 pub const STOCK_CLOCK: u32 = 0x303;
 const HOSC: u32 = 32_000_000;
 
@@ -15,10 +17,17 @@ pub fn pwm_params(freq_hz: u16) -> Option<(u32, u16)> {
 }
 
 pub const CAP_MS: u32 = 2000;
+// the watchdog runs every 20 ms and trips one step early, so a run ends by CAP_MS
+const TRIP_MS: u32 = CAP_MS - 20;
 
 // signed: `since` is millis | 1 and may be 1 ms ahead of `now`
 pub fn over_cap(now: u32, since: u32) -> bool {
-    now.wrapping_sub(since) as i32 >= CAP_MS as i32
+    now.wrapping_sub(since) as i32 >= TRIP_MS as i32
+}
+
+// the run is timed from the off->on switch: a call while on keeps the first start
+pub fn mark_on(since: &AtomicU32, now: u32) {
+    let _ = since.compare_exchange(0, now | 1, Ordering::AcqRel, Ordering::Acquire);
 }
 
 pub fn pulse(period: u16, duty_permille: u16) -> u16 {
@@ -45,8 +54,20 @@ mod tests {
     #[test]
     fn cap_after_2000_ms() {
         assert!(!over_cap(1000, 1001)); // since = millis | 1 can be 1 ms ahead of the watchdog's clock
-        assert!(!over_cap(2999, 1001));
-        assert!(over_cap(3001, 1001));
-        assert!(over_cap(1999, 0xFFFF_FFFF)); // wrap
+        assert!(!over_cap(2980, 1001));
+        assert!(over_cap(2981, 1001));
+        assert!(over_cap(1979, 0xFFFF_FFFF)); // wrap
+    }
+
+    #[test]
+    fn clock_starts_at_first_switch_on() {
+        let since = AtomicU32::new(0);
+        mark_on(&since, 1000);
+        mark_on(&since, 1500);
+        assert_eq!(since.load(Ordering::Relaxed), 1001);
+        assert!(over_cap(2981, since.load(Ordering::Relaxed)));
+        since.store(0, Ordering::Relaxed); // off
+        mark_on(&since, 4000);
+        assert_eq!(since.load(Ordering::Relaxed), 4001);
     }
 }
