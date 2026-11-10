@@ -9,6 +9,10 @@ const READ_PAYLOAD: u32 = 0x100CC285;
 const DECRYPT: u32 = 0x101B608D;
 const ENCRYPT: u32 = 0x101B605B;
 const SEND: u32 = 0x100CC2D5;
+// stock key buffers (docs/recon.md): 0x804B answers with whatever authkey is set, all zero after boot or after the
+// bind popup is confirmed, so a session counts only when both keys are non-zero
+const AUTHKEY: u32 = 0x3804_8E08;
+const SESSION_KEY: u32 = 0x3800_29A6;
 const EEXIST: i32 = -17;
 const HEADER_LEN: usize = 11;
 // longest reply: status + 64-byte header
@@ -27,7 +31,7 @@ extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
     let f = unsafe { core::slice::from_raw_parts(frame, HEADER_LEN) };
     let c1 = u16::from_le_bytes([f[3], f[4]]);
     let c2 = u16::from_le_bytes([f[9], f[10]]);
-    if rc != 0 || c1 != 0xFFFF || !(INFO..=DELETE).contains(&c2) {
+    if rc != 0 || c1 != 0xFFFF || !(INFO..=DELETE).contains(&c2) || !keyed(AUTHKEY) || !keyed(SESSION_KEY) {
         return rc;
     }
     let decrypt: extern "C" fn(*mut u16, *const u8, u32, u32) -> *const u8 = unsafe { transmute(DECRYPT as usize) };
@@ -41,6 +45,10 @@ extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
     let size = handle(stub_ram(), c2, payload, &mut out);
     reply(stub_ram(), c2, &out[..size]);
     rc
+}
+
+fn keyed(addr: u32) -> bool {
+    unsafe { core::slice::from_raw_parts(addr as *const u8, 16) }.iter().any(|&b| b != 0)
 }
 
 fn reply(ram: &mut StubRam, c2: u16, plain: &[u8]) {
@@ -72,6 +80,9 @@ fn status(out: &mut [u8], s: Status) -> usize {
 }
 
 fn handle(ram: &mut StubRam, c2: u16, payload: &[u8], out: &mut [u8; MAX_REPLY]) -> usize {
+    if c2 == INFO || c2 == DELETE {
+        abort(ram); // a host only sends these between transfers, so an open one was abandoned
+    }
     match parse(c2, payload) {
         Err(s) => status(out, s),
         Ok(Request::Info(slot)) => info(slot, out),

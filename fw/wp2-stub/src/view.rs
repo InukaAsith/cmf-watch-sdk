@@ -1,6 +1,6 @@
 use core::ffi::c_void;
 use wp2_core::heap::{self, RES};
-use wp2_core::layout::{stub_ram, E_NOMEM, LOADER_SLOT};
+use wp2_core::layout::{stub_ram, StubRam, E_NOMEM, LOADER_SLOT};
 use wp2_core::load::load;
 
 const PRELOAD: u32 = 2;
@@ -14,8 +14,12 @@ pub extern "C" fn wp2_view_proc(view_id: u32, msg: u32, data: *mut c_void) -> i3
     ram.trace[ram.trace_head as usize % ram.trace.len()] = (msg << 16) | view_id;
     ram.trace_head = ram.trace_head.wrapping_add(1);
     if msg == PRELOAD {
-        release();
-        match load(LOADER_SLOT, &mut ram.file, &mut ram.scratch) {
+        if ram.loader_state == 1 {
+            // a second PRELOAD without DELETE: let the old instance free its framebuffer first
+            loader(ram)(view_id, DELETE, core::ptr::null_mut());
+        }
+        release(ram);
+        match load(LOADER_SLOT, &mut ram.load_file, &mut ram.load_scratch) {
             Ok((block, h)) => {
                 ram.loader_block = block as u32;
                 ram.loader_size = h.image_size;
@@ -29,22 +33,24 @@ pub extern "C" fn wp2_view_proc(view_id: u32, msg: u32, data: *mut c_void) -> i3
         return REFUSE;
     }
     ram.loader_active = 1;
-    let entry: Proc = unsafe { core::mem::transmute(((ram.loader_block + ram.loader_entry) | 1) as usize) };
-    let rc = entry(view_id, msg, data);
+    let rc = loader(ram)(view_id, msg, data);
     if msg == PRELOAD && rc < 0 {
-        release();
+        release(ram);
         ram.loader_state = 3;
         return REFUSE;
     }
     if msg == DELETE {
-        release();
+        release(ram);
         ram.loader_state = 0;
     }
     rc
 }
 
-fn release() {
-    let ram = stub_ram();
+fn loader(ram: &StubRam) -> Proc {
+    unsafe { core::mem::transmute(((ram.loader_block + ram.loader_entry) | 1) as usize) }
+}
+
+fn release(ram: &mut StubRam) {
     unsafe { heap::free(RES, ram.loader_block as *mut u8) };
     ram.loader_block = 0;
     ram.loader_active = 0;

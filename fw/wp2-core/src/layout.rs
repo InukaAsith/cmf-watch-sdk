@@ -50,6 +50,9 @@ pub struct StubRam {
     pub app_size: u32,
     pub alloc_limit: u32,
     pub loader_entry: u32,
+    // the loader load in view 0xF0 has its own file and scratch: `file`/`scratch` belong to the BLE transfer
+    pub load_file: [u8; 0x2C],
+    pub load_scratch: [u8; 0x200],
 }
 
 const _: () = assert!(core::mem::size_of::<StubRam>() <= 0xE00);
@@ -71,6 +74,8 @@ mod tests {
         assert_eq!(offset_of!(StubRam, app_block), 0x4F0);
         assert_eq!(offset_of!(StubRam, alloc_limit), 0x4F8);
         assert_eq!(offset_of!(StubRam, loader_entry), 0x4FC);
+        assert_eq!(offset_of!(StubRam, load_file), 0x500);
+        assert_eq!(offset_of!(StubRam, load_scratch), 0x52C);
         assert!(size_of::<StubRam>() <= 0xE00);
     }
 
