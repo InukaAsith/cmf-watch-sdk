@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["cmf-wp2-app", "examples/hello", "examples/vibration-lab", "examples/motor-hog", "examples/motor-hold"]
+members = ["cmf-wp2-app", "examples/hello", "examples/vibration-lab", "examples/motor-hog", "examples/motor-hold", "examples/agent-glow"]
 
 [workspace.package]
 edition = "2024"
