@@ -2,4 +2,8 @@
 target = "thumbv7em-none-eabi"
 
 [target.thumbv7em-none-eabi]
-rustflags = ["-C", "link-arg=-Tapp.ld", "-C", "link-arg=--emit-relocs", "-C", "target-feature=+no-movt"]
+rustflags = ["-C", "link-arg=-Tapp.ld", "-C", "link-arg=--emit-relocs", "-C", "target-feature=+no-movt", "--check-cfg=cfg(wp2_sim)"]
+
+# scripts/sim builds apps for the host with --cfg wp2_sim
+[target.'cfg(not(target_os = "none"))']
+rustflags = ["--check-cfg=cfg(wp2_sim)"]

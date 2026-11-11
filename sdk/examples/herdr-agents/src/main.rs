@@ -1,12 +1,12 @@
-#![cfg_attr(target_os = "none", no_std, no_main)]
+#![cfg_attr(any(target_os = "none", wp2_sim), no_main, cfg_attr(target_os = "none", no_std))]
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 mod model;
 
-#[cfg(not(target_os = "none"))]
+#[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}
 
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", wp2_sim))]
 mod device {
     use crate::model::*;
     use cmf_wp2_app::{Api, BUTTON, CROWN, MSG_MAX, PAUSE, RESUME, STORE_MAX, TOUCH_DOWN};

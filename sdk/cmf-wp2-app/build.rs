@@ -5,4 +5,5 @@ fn main() {
     fs::write(out.join("app.ld"), include_bytes!("app.ld")).unwrap();
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=app.ld");
+    println!("cargo::rustc-check-cfg=cfg(wp2_sim)");
 }
