@@ -7,6 +7,7 @@ The watch is never reflashed to add or remove an app.
 Status: everything runs in the emulator. Only `scan` has been tried on a real watch.
 
 - Design: [docs/specs/2026-11-10-wp2-app-loader-design.md](docs/specs/2026-11-10-wp2-app-loader-design.md)
+- App ABI 1.1 (host messages, storage, time, battery, screen on): [docs/abi-1.1.md](docs/abi-1.1.md)
 - Plan, part 1: [docs/plans/2026-11-10-wp2-app-loader-foundations.md](docs/plans/2026-11-10-wp2-app-loader-foundations.md)
 
 ## Relation to cmf-watch-utils
@@ -43,6 +44,8 @@ uv run --locked wp2apps install target/loader.wp2app --hci-port P
 uv run --locked wp2apps install target/vibration-lab.wp2app --hci-port P   # optional --slot N
 uv run --locked wp2apps list --hci-port P
 uv run --locked wp2apps remove --slot N --hci-port P
+uv run --locked wp2apps send '!time' --hci-port P     # a message to the running ABI 1.1 app
+uv run --locked wp2apps listen --count 1 --hci-port P   # its messages as JSON lines
 ```
 
 On the watch, the loader is the "Apps" row at the end of the stock app list. The row only shows up in
