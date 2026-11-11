@@ -1,7 +1,7 @@
 use core::ffi::c_void;
 use core::ptr::{addr_of_mut, null, null_mut};
-use core::sync::atomic::AtomicBool;
-use wp2_core::gfx::{Canvas, H, W};
+use core::sync::atomic::{AtomicU32, Ordering};
+use wp2_core::gfx::{self, Canvas, H, W};
 use wp2_core::heap::{self, FB};
 use wp2_core::layout::E_NOMEM;
 use wp2_core::stock::*;
@@ -19,8 +19,23 @@ pub const KNOB: u32 = 0x2D;
 pub type Cb = extern "C" fn(*mut c_void);
 type Obj = *mut c_void;
 
-// set by launch and the app's present(); the tick invalidates the image
-pub static DIRTY: AtomicBool = AtomicBool::new(false);
+// gfx dirty box of the app's draw calls since its last present(); app thread only
+pub static PENDING: AtomicU32 = AtomicU32::new(gfx::EMPTY);
+// boxes present() (or launch: FULL) published since the tick took the last one
+pub static PUBLISHED: AtomicU32 = AtomicU32::new(gfx::EMPTY);
+
+// e2e counters (tests/test_demo_e2e.py): presents, flushes, flushed bytes, invalidated pixels
+#[repr(C)]
+pub struct FlushStats([AtomicU32; 4]);
+pub static FLUSH_STATS: FlushStats = FlushStats([const { AtomicU32::new(0) }; 4]);
+
+fn count(i: usize, n: u32) {
+    FLUSH_STATS.0[i].fetch_add(n, Ordering::Relaxed);
+}
+
+pub fn count_present() {
+    count(0, 1);
+}
 
 #[repr(C)]
 struct ImgDsc {
@@ -68,7 +83,8 @@ pub fn layout(data: *mut c_void, input: Cb, tick: Cb) -> Obj {
     for filter in [PRESSED, RELEASED, KNOB] {
         stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, *mut c_void) -> *mut c_void)(u.img, input, filter, null_mut());
     }
-    u.timer = stock!(LV_TIMER_CREATE, fn(Cb, u32, *mut c_void) -> *mut c_void)(tick, 20, null_mut());
+    // 10 ms: at 20 ms, 4-10 % of agent-glow's presents (33 ms frames) were merged into the next flush
+    u.timer = stock!(LV_TIMER_CREATE, fn(Cb, u32, *mut c_void) -> *mut c_void)(tick, 10, null_mut());
     scr
 }
 
@@ -102,11 +118,28 @@ pub fn delete() {
 }
 
 pub fn invalidate() {
+    flush(gfx::FULL);
+}
+
+// Writes rows y0..=y1 of the box back from the PSRAM cache, then invalidates the box (the image is at 0, 0).
+pub fn flush(b: u32) {
     let u = ui();
-    if !u.img.is_null() {
-        wp2_core::load::sync_psram(u.fb, FB_BYTES);
-        stock!(LV_OBJ_INVALIDATE, fn(Obj))(u.img);
+    let Some([x0, y0, x1, y1]) = gfx::area(b) else { return };
+    if u.img.is_null() {
+        return;
     }
+    let len = ((y1 + 1 - y0) * W * 2) as u32;
+    wp2_core::load::sync_psram(unsafe { u.fb.add(y0 * W * 2) }, len);
+    let a = [x0, y0, x1, y1].map(|v| v as i32);
+    stock!(LV_OBJ_INVALIDATE_AREA, fn(Obj, *const i32))(u.img, a.as_ptr());
+    count(1, 1);
+    count(2, len);
+    count(3, ((x1 + 1 - x0) * (y1 + 1 - y0)) as u32);
+}
+
+// app thread: the part of the screen a draw call touched
+pub fn mark(b: u32) {
+    PENDING.store(gfx::merge(PENDING.load(Ordering::Relaxed), b), Ordering::Relaxed);
 }
 
 pub fn canvas() -> Canvas<'static> {

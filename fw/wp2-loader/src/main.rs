@@ -178,9 +178,7 @@ mod view {
             m.failed = None;
             restore(row);
         }
-        if ui::DIRTY.swap(false, Ordering::AcqRel) {
-            ui::invalidate();
-        }
+        ui::flush(ui::PUBLISHED.swap(wp2_core::gfx::EMPTY, Ordering::Acquire));
     }
 
     #[panic_handler]

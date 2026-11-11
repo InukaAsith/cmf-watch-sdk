@@ -80,6 +80,7 @@ image** (no class descriptor derives from `lv_obj_class`; the class scan covers 
 | `lv_obj_add_flag` / `lv_obj_clear_flag` / `lv_obj_has_flag` | `0x10128D38` / `0x10127E7C` / `0x101283DC` | high | `__func__` |
 | `lv_obj_add_state` / `lv_obj_clear_state` / `lv_obj_has_state` | `0x10128244` / `0x10128310` / `0x10128610` | high | `__func__` |
 | `lv_obj_invalidate`, `lv_obj_get_parent`, `lv_obj_get_child`, `lv_obj_get_child_cnt`, `lv_obj_get_screen` | `0x10129FD8`, `0x1012C19C`, `0x1012C3DC`, `0x1012C4AC`, `0x1012C210` | high | `__func__` |
+| `lv_obj_invalidate_area(obj, area)` | `0x10129EF0` | high | `__func__`; `lv_obj_invalidate` ends in `bl 0x10129EF0` with `obj->coords` (+0x14, i32 x1 y1 x2 y2 inclusive, absolute) grown by the ext draw size; body as upstream: `lv_disp_is_invalidation_enabled 0x1012576C`, `lv_obj_area_is_visible 0x101C5F90` (clips to the object), `_lv_inv_area(disp, area) 0x1012D388`. Emulator (loader tick, agent-glow): break on the entry with the loader image (coords `0, 0, 465, 465`) gets the app's dirty box, `_lv_inv_area` is reached from `0x10129FA6`, and the frames keep updating (`runs/dirty/check.log`, not tracked) |
 | `lv_obj_set_scrollbar_mode`; scroll getters | `0x1012AD38`; `0x1012AE08…0x1012B0B0` | high | `__func__` |
 | `lv_obj_scroll_to*`, `lv_obj_set_scroll_dir`, `lv_obj_set_scroll_snap_*` | not identified (no asserts); `lv_obj_get_scroll_dir` is `0x101C64DC` (shape) | low | — |
 | `lv_disp_get_scr_act` / `lv_disp_get_layer_top` / `_sys` | `0x101255E0` / `0x10125648` / `0x1012567C` | high | `__func__` |
