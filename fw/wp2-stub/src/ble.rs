@@ -4,8 +4,8 @@ use wp2_core::fs::{self, File};
 use wp2_core::chan::{listening, session_word, MSG_MAX};
 use wp2_core::layout::{data_path, slot_path, stub_ram, StubRam, APP_PAUSED, APP_SIZE, APP_V11, DIR, LOADER_SIZE, LOADER_SLOT};
 use wp2_core::pkg::{check_slot, crc32, parse_header, HEADER_SIZE};
-use wp2_core::proto::{parse, Request, Status, ANY_SLOT, DELETE, EVENT, INFO, MAX_DATA, MSG, PING};
-use wp2_core::stock::{AUTHKEY, OS_SLEEP, SESSION_KEY};
+use wp2_core::proto::{parse, Request, Status, ANY_SLOT, DELETE, EVENT, INFO, MAX_DATA, PING};
+use wp2_core::stock::{AUTHKEY, SESSION_KEY, STREAM_SPACE, WEWEAR_CTX};
 
 const READ_PAYLOAD: u32 = 0x100CC285;
 const DECRYPT: u32 = 0x101B608D;
@@ -43,10 +43,15 @@ extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
         return rc;
     }
     let payload = unsafe { core::slice::from_raw_parts(plain, n as usize) };
-    stub_ram().host_key = session_word();
+    let key = session_word();
+    if stub_ram().host_key != key {
+        stub_ram().outbox.clear();
+        stub_ram().host_key = key;
+    }
     let mut out = [0u8; MAX_REPLY];
     let size = handle(stub_ram(), c2, payload, &mut out);
-    reply(stub_ram(), c2, &out[..size]);
+    let _ = reply(stub_ram(), c2, &out[..size]);
+    drain(stub_ram());
     rc
 }
 
@@ -54,14 +59,15 @@ fn keyed(addr: u32) -> bool {
     unsafe { core::slice::from_raw_parts(addr as *const u8, 16) }.iter().any(|&b| b != 0)
 }
 
-fn reply(ram: &mut StubRam, c2: u16, plain: &[u8]) {
+// true once the frame is in the stream; the stock send waits up to 1 s for room and writes all or nothing
+fn reply(ram: &mut StubRam, c2: u16, plain: &[u8]) -> bool {
     let encrypt: extern "C" fn(*mut u16, *const u8, u32, u32) -> *const u8 = unsafe { transmute(ENCRYPT as usize) };
     let send: extern "C" fn(*const u8, u32) -> i32 = unsafe { transmute(SEND as usize) };
     let reply_c2 = c2 | 0xA000;
     let mut n = 0u16;
     let cipher = encrypt(&mut n, plain.as_ptr(), plain.len() as u32, reply_c2 as u32);
     if cipher.is_null() || HEADER_LEN + n as usize > ram.reply.len() {
-        return;
+        return false;
     }
     let r = &mut ram.reply;
     r[0] = 0xF5;
@@ -70,7 +76,7 @@ fn reply(ram: &mut StubRam, c2: u16, plain: &[u8]) {
     r[5..9].fill(0);
     r[9..11].copy_from_slice(&reply_c2.to_be_bytes());
     unsafe { core::ptr::copy_nonoverlapping(cipher, r[HEADER_LEN..].as_mut_ptr(), n as usize) };
-    send(r.as_ptr(), (HEADER_LEN + n as usize) as u32);
+    send(r.as_ptr(), (HEADER_LEN + n as usize) as u32) == 0
 }
 
 fn busy(ram: &StubRam, slot: u8) -> bool {
@@ -141,26 +147,34 @@ fn drop_data(slot: u8) {
     fs::unlink(&data_path(slot, true));
 }
 
-// Replaces `bl os_sleep` (r0 = 10 ms) in the idle pass of wewear_read, the thread that runs the stock dispatcher
-// and so wp2_ble_c: one EVENT per pass, from the thread that owns the stock encrypt buffers.
-pub extern "C" fn wp2_ble_idle(ms: u32) {
-    let ram = stub_ram();
-    if let Some(m) = ram.outbox.peek(0).copied() {
+// EVENT frames go out right after the reply to a host frame, from wewear_read: the thread that runs the stock
+// dispatcher and owns the stock encrypt buffers. That thread blocks in the stream read while a host is connected,
+// so the host polls (PING) to collect them. A new host key drops what an earlier host left queued.
+fn drain(ram: &mut StubRam) {
+    while let Some(m) = ram.outbox.peek(0).copied() {
         if listening(ram.host_key) && keyed(AUTHKEY) {
             let mut plain = [0u8; 2 + MSG_MAX];
             plain[0] = ram.out_seq;
             plain[1] = m.slot;
             let n = usize::from(m.len).min(MSG_MAX);
+            // the stream writes what fits: a frame only when all of it fits, else the next pass
+            let frame = HEADER_LEN + (2 + n + 4) / 16 * 16 + 16;
+            let stream = unsafe { *((*(WEWEAR_CTX as *const u32) + 0x18) as *const u32) };
+            let space: extern "C" fn(u32) -> i32 = unsafe { transmute(STREAM_SPACE as usize) };
+            if space(stream) < frame as i32 {
+                return;
+            }
             plain[2..2 + n].copy_from_slice(&m.data[..n]);
-            reply(ram, EVENT, &plain[..2 + n]);
+            // a full stream keeps the message for the next pass
+            if !reply(ram, EVENT, &plain[..2 + n]) {
+                return;
+            }
             ram.out_seq = ram.out_seq.wrapping_add(1);
             ram.outbox.pop();
         } else {
             ram.outbox.clear();
         }
     }
-    let sleep: extern "C" fn(u32) = unsafe { transmute(OS_SLEEP as usize) };
-    sleep(ms)
 }
 
 fn info(slot: u8, out: &mut [u8; MAX_REPLY]) -> usize {

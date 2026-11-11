@@ -88,10 +88,11 @@ pub const KEY_CROWN_PRESS: u32 = 0x0400_0001;
 pub const KEY_CROWN_CW: u32 = 0xFFFF_006F;
 pub const KEY_CROWN_CCW: u32 = 0xFFFF_006E;
 
-// ABI 1.1 (docs/abi-1.1.md, docs/recon.md "ABI 1.1"). wewear_read: os_sleep(10) between frames, its context
-// pointer (stream connected = bit 0 of byte +4) and the stock session key buffer.
-pub const WEWEAR_IDLE_CALL: u32 = 0x100CBFC8;
+// ABI 1.1 (docs/abi-1.1.md, docs/recon.md "ABI 1.1"): wewear_read's context (+0 the wewear_read thread, bit 0 of
+// byte +4 stream connected, +0x18 the BLE stream) and the stock key buffers.
 pub const WEWEAR_CTX: u32 = 0x3801_A658;
+// (stream) -> free bytes, negative when closed (0x100CC2D4 writes all or nothing)
+pub const STREAM_SPACE: u32 = 0x101CE411;
 pub const SESSION_KEY: u32 = 0x3800_29A6;
 pub const AUTHKEY: u32 = 0x3804_8E08;
 // (struct rtc_time *): {u8 sec, min, hour, mday, mon 1..12, wday 0 = Sunday, u16 year, u16 ms}, local time
@@ -102,7 +103,7 @@ pub const TIME_ZONE: u32 = 0x100C1459;
 pub const POWER_CAPACITY: u32 = 0x101CE6FD;
 pub const POWER_STATUS: u32 = 0x101CE703;
 pub const POWER_DC5V: u32 = 0x101CE70F;
-// per-id screen wake lock (stock views lock their own view id); release = unlock + recheck (AT SETWAKELOCK)
+// per-id screen wake lock (stock views lock their own view id). The last unlock restarts the auto-sleep timeout
+// (sys_wake_unlock stores the time); AT SETWAKELOCK 0 also calls 0x100C1739, which blanks at once if it ran out.
 pub const WAKE_LOCK: u32 = 0x101B59A9;
 pub const WAKE_UNLOCK: u32 = 0x100C1859;
-pub const WAKE_RECHECK: u32 = 0x100C1739;

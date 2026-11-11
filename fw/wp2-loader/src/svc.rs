@@ -72,7 +72,6 @@ fn wake(on: bool) {
         stock!(WAKE_LOCK, fn(u32))(WAKE_ID);
     } else {
         stock!(WAKE_UNLOCK, fn(u32))(WAKE_ID);
-        stock!(WAKE_RECHECK, fn())();
     }
 }
 
