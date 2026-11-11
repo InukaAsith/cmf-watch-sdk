@@ -183,6 +183,17 @@ macro_rules! entry {
     };
 }
 
+/// The app's menu icon, in front of the code (docs/app-icons.md). `scripts/build-app` renders the crate's
+/// `icon.svg` and passes the descriptor in `WP2_ICON`.
+#[macro_export]
+macro_rules! app_icon {
+    () => {
+        #[used]
+        #[unsafe(link_section = ".wp2info")]
+        static WP2_ICON: [u8; include_bytes!(env!("WP2_ICON")).len()] = *include_bytes!(env!("WP2_ICON"));
+    };
+}
+
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {

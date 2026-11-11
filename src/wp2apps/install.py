@@ -32,6 +32,8 @@ class Header:
     version: int
     kind: int
     abi_minor: int
+    # INFO returns only the header; the SDK puts an icon in front of the code, so the entry moves off 0
+    icon: bool = False
 
 
 def chunks(data: bytes) -> Iterator[tuple[int, bytes]]:
@@ -58,8 +60,9 @@ async def info(s, slot: int) -> Header | None:
         return None
     if len(raw) != package.HEADER_SIZE:
         raise ValueError(f"header is {len(raw)} bytes")
-    _, _, kind, abi_minor, name, version, *_ = package.HEADER.unpack(raw)
-    return Header(name.rstrip(b"\0").decode("utf-8", "replace"), version, kind, abi_minor)
+    _, _, kind, abi_minor, name, version, _, entry, *_ = package.HEADER.unpack(raw)
+    return Header(name.rstrip(b"\0").decode("utf-8", "replace"), version, kind, abi_minor,
+                  kind == package.KIND_APP and entry != 0)
 
 
 async def listing(s) -> dict[int, Header]:

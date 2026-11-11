@@ -101,6 +101,22 @@ pub fn relocate(image: &mut [u8], base: u32, relocs: &[u8], next: &mut usize) ->
     Ok(())
 }
 
+// App icon (src/wp2apps/icon.py): a descriptor at image offset 0, then LV_IMG_CF_TRUE_COLOR_ALPHA pixels.
+pub const ICON_DESC: usize = 16;
+pub const ICON_SIDE: u32 = 96;
+pub const ICON_BYTES: u32 = ICON_SIDE * ICON_SIDE * 3;
+
+pub fn icon_ok(desc: &[u8; ICON_DESC], image_size: u32) -> bool {
+    let half = |off: usize| u16::from_le_bytes([desc[off], desc[off + 1]]) as u32;
+    &desc[..4] == b"WP2I"
+        && desc[4..6] == [1, 5]
+        && half(6) == ICON_SIDE
+        && half(8) == ICON_SIDE
+        && half(10) == 0
+        && word(desc, 12) == ICON_BYTES
+        && ICON_DESC as u32 + ICON_BYTES <= image_size
+}
+
 // ponytail: bitwise, no table; add a 1 KiB table if verifying 128 KiB gets too slow
 pub fn crc32(init: u32, data: &[u8]) -> u32 {
     let mut c = !init;
@@ -163,6 +179,25 @@ mod tests {
         let mut raw: [u8; 0x40] = GOLDEN[..0x40].try_into().unwrap();
         raw[0x3A] = 1;
         assert!(parse_header(&raw).is_err());
+    }
+
+    #[test]
+    fn icon_descriptor() {
+        let mut d = [0u8; ICON_DESC];
+        d[..6].copy_from_slice(b"WP2I\x01\x05");
+        d[6] = 96;
+        d[8] = 96;
+        d[12..].copy_from_slice(&ICON_BYTES.to_le_bytes());
+        let fit = ICON_DESC as u32 + ICON_BYTES;
+        assert!(icon_ok(&d, fit));
+        assert!(!icon_ok(&d, fit - 1), "truncated");
+        for (i, v) in [(0, b'X'), (4, 2), (5, 4), (6, 128), (8, 95), (10, 1), (14, 1)] {
+            let mut bad = d;
+            bad[i] = v;
+            assert!(!icon_ok(&bad, APP_SIZE), "byte {i} = {v}");
+        }
+        let code = [0x80, 0xB5, 0x6F, 0x46, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(!icon_ok(&code, APP_SIZE));
     }
 
     #[test]

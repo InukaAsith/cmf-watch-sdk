@@ -68,6 +68,8 @@ class InstallFlowTest(unittest.IsolatedAsyncioTestCase):
         s = FakeSession({2: sample()[:64]})
         self.assertIsNone(await install.info(s, 0))
         self.assertEqual(await install.info(s, 2), install.Header("hello", 3, 0, 0))
+        s = FakeSession({2: package.pack(bytes(64), name="lab", version=3, entry=16)[:64]})
+        self.assertTrue((await install.info(s, 2)).icon)
 
 
 class CliTest(unittest.TestCase):
