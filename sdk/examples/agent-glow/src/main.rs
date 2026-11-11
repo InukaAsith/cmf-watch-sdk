@@ -7,7 +7,7 @@ fn main() {}
 
 #[cfg(any(target_os = "none", wp2_sim))]
 mod device {
-    use crate::glow::{App, Sink, SCENES};
+    use crate::glow::{App, SCENES, Surface};
     use cmf_wp2_app::{Api, BUTTON, CROWN, PAUSE, RESUME, TOUCH_DOWN};
     use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -24,12 +24,16 @@ mod device {
 
     struct Screen(&'static Api, u32);
 
-    impl Sink for Screen {
+    impl Surface for Screen {
         fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
             if w > 0 && h > 0 {
                 self.0.rect(x as i16, y as i16, w as u16, h as u16, c);
                 self.1 += 1;
             }
+        }
+
+        fn text(&mut self, x: i32, y: i32, s: &str, c: u16) {
+            self.0.text(x as i16, y as i16, s, c);
         }
     }
 
