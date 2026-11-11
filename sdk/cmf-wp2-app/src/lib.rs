@@ -85,6 +85,7 @@ impl Api {
         (self.fill_rect)(x, y, w, h, rgb565)
     }
 
+    /// 8x8 font at 2x, 16 px per char. ASCII and Cyrillic (А-я, Ё, ё) have glyphs, any other char draws as `?`.
     pub fn text(&self, x: i16, y: i16, text: &str, rgb565: u16) {
         (self.draw_text)(x, y, text.as_ptr(), text.len(), rgb565)
     }
