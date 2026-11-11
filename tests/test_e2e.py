@@ -142,7 +142,7 @@ class InstallTest(unittest.TestCase):
         reloc_byte = bytearray(self.hello)
         reloc_byte[-1] ^= 1
         minor = bytearray(self.hello)
-        minor[7] = 1
+        minor[7] = 2  # one above LOADER_ABI_MINOR (ABI 1.1)
         struct.pack_into("<I", minor, package.HEADER_CRC_SPAN, zlib.crc32(bytes(minor[:package.HEADER_CRC_SPAN])))
         for name, data in (("image", image_byte), ("relocs", reloc_byte), ("abi_minor", minor)):
             with self.subTest(name):
