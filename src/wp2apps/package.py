@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import struct
 import zlib
 
+from . import icon
+
 HEADER = struct.Struct("<4sHBB24sIIIIII8s")
 HEADER_CRC_SPAN = 0x34
 HEADER_SIZE = HEADER.size
@@ -48,6 +50,8 @@ def _check(image: bytes, name: bytes, kind: int, entry: int, relocs: Sequence[in
         if off <= previous or off + 4 > len(image):
             raise ValueError(f"relocation {off:#x} is out of order or outside the image")
         previous = off
+    if kind == KIND_APP:
+        icon.parse(image)
 
 
 def pack(image: bytes, *, name: str, version: int, entry: int = 0, kind: int = KIND_APP,
@@ -124,14 +128,16 @@ def relocations(elf: bytes) -> list[int]:
     return sorted(offsets)
 
 
-def check_elf(image: bytes, elf: bytes) -> None:
+def check_elf(image: bytes, elf: bytes) -> int:
+    """The entry offset; the SDK puts the app's icon in front of the code, so it need not be 0."""
     sections = _sections(elf)
     entry, = struct.unpack_from("<I", elf, 0x18)
     end = max((addr + size for _, _, flags, addr, _, size, *_ in sections if flags & 2), default=0)
-    if entry != 1:
-        raise ValueError(f"ELF entry is {entry:#x}; images must be linked at 0 with entry 1 (use app.ld)")
+    if not entry & 1 or entry > len(image):
+        raise ValueError(f"ELF entry is {entry:#x}; images must be linked at 0 with a Thumb entry (use app.ld)")
     if len(image) != end:
         raise ValueError(f"image is {len(image)} bytes but the ELF occupies {end}; .bss missing?")
+    return entry - 1
 
 
 def abi_minor(image: bytes, elf: bytes) -> int:

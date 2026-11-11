@@ -7,6 +7,7 @@ ENTRY(_start)
 
 SECTIONS
 {
+  .wp2info : { KEEP(*(.wp2info)) } > APP
   .entry : { KEEP(*(.entry)) } > APP
   .text : { *(.text .text.*) } > APP
   .rodata : { *(.rodata .rodata.*) } > APP

@@ -3,6 +3,17 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 name=$1
 version=$2
+svg=$root/sdk/examples/$name/icon.svg
+if [ -f "$svg" ]; then
+    export WP2_ICON=$root/sdk/target/icons/$name.wp2icon
+    mkdir -p "$(dirname "$WP2_ICON")"
+    if command -v resvg >/dev/null; then
+        resvg -w 96 -h 96 "$svg" "${WP2_ICON%.wp2icon}.png"
+    else
+        nix-shell -p resvg --run "resvg -w 96 -h 96 '$svg' '${WP2_ICON%.wp2icon}.png'"
+    fi
+    (cd "$root" && uv run --locked python -m wp2apps.icon "${WP2_ICON%.wp2icon}.png" "$WP2_ICON")
+fi
 (cd "$root/sdk" && cargo build --release -p "$name")
 mkdir -p "$root/target"
 llvm-objcopy -O binary --set-section-flags .data=alloc,load,contents "$root/sdk/target/thumbv7em-none-eabi/release/$name" "$root/target/$name.bin"

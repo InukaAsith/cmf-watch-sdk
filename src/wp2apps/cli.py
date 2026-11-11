@@ -9,15 +9,15 @@ import zlib
 
 from bleak.exc import BleakError
 
-from . import blegatt, channel, firmware, h4, install, link, package, paths
+from . import blegatt, channel, firmware, h4, icon, install, link, package, paths
 
 
 def cmd_pack(args):
     image = args.image.read_bytes()
     elf = args.elf.read_bytes()
-    package.check_elf(image, elf)
+    entry = package.check_elf(image, elf)
     kind = package.KIND_LOADER if args.kind == "loader" else package.KIND_APP
-    data = package.pack(image, name=args.name, version=args.version, kind=kind,
+    data = package.pack(image, name=args.name, version=args.version, kind=kind, entry=entry,
                         relocs=package.relocations(elf), abi_minor=package.abi_minor(image, elf))
     with args.output.open("xb") as out:
         out.write(data)
@@ -29,6 +29,7 @@ def cmd_info(args):
         "name": pkg.name, "version": pkg.version, "kind": pkg.kind, "abi": pkg.abi, "abi_minor": pkg.abi_minor,
         "relocs": len(pkg.relocs), "entry": pkg.entry,
         "image_size": len(pkg.image), "crc32": f"{zlib.crc32(pkg.image):#010x}",
+        "icon": icon.parse(pkg.image) is not None,
     }, indent=2))
 
 
@@ -111,7 +112,8 @@ def cmd_remove(args):
 def cmd_list(args):
     found = asyncio.run(with_watch(args, install.listing))
     print(json.dumps({"slots": {slot_name(n): {"name": h.name, "version": h.version, "kind": h.kind,
-                                               "abi_minor": h.abi_minor} for n, h in found.items()}}))
+                                               "abi_minor": h.abi_minor, "icon": h.icon}
+                                for n, h in found.items()}}))
 
 
 def cmd_send(args):
