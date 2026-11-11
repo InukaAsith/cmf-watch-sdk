@@ -12,6 +12,7 @@ mod device {
     use core::sync::atomic::{AtomicU32, Ordering};
 
     cmf_wp2_app::entry!(main);
+    cmf_wp2_app::app_icon!();
 
     const FRAME_MS: u32 = 33;
     // a light tick: one short pulse at the stock 31 Hz PWM, far inside the 2 s cap

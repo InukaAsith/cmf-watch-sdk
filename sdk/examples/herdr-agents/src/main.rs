@@ -12,6 +12,7 @@ mod device {
     use cmf_wp2_app::{Api, BUTTON, CROWN, MSG_MAX, PAUSE, RESUME, STORE_MAX, TOUCH_DOWN};
 
     cmf_wp2_app::entry!(main);
+    cmf_wp2_app::app_icon!();
 
     const BG: u16 = 0x0000;
     const FG: u16 = 0xFFFF;

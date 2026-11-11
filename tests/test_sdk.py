@@ -4,7 +4,7 @@ import struct
 import subprocess
 import unittest
 
-from wp2apps import package
+from wp2apps import icon, package
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,13 +16,15 @@ class SdkTest(unittest.TestCase):
             with self.subTest(name):
                 subprocess.run([str(ROOT / "scripts" / "build-app"), name, "1"], check=True, capture_output=True)
                 pkg = package.parse((ROOT / "target" / f"{name}.wp2app").read_bytes())
-                self.assertEqual((pkg.name, pkg.entry), (name, 0))
+                lab = name == "vibration-lab"  # has icon.svg: the descriptor sits in front of the code
+                self.assertEqual((pkg.name, icon.parse(pkg.image) is not None), (name, lab))
+                self.assertEqual(pkg.entry, icon.DESC.size + icon.SIDE ** 2 * 3 if lab else 0)
                 self.assertTrue(pkg.relocs)
                 for off in pkg.relocs:
                     self.assertLess(struct.unpack_from("<I", pkg.image, off)[0] & ~1, len(pkg.image))
-                self.assertTrue(0 < len(pkg.image) < 16 * 1024)
+                self.assertTrue(0 < len(pkg.image) - pkg.entry < 16 * 1024)
                 elf = ROOT / f"sdk/target/thumbv7em-none-eabi/release/{name}"
-                package.check_elf(pkg.image, elf.read_bytes())
+                self.assertEqual(package.check_elf(pkg.image, elf.read_bytes()), pkg.entry)
 
 
 if __name__ == "__main__":

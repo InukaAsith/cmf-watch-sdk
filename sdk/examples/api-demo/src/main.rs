@@ -7,6 +7,7 @@ use cmf_wp2_app::{Api, BUTTON, MESSAGE, MSG_MAX, RESUME, STORE_MAX, TOUCH_UP};
 use core::fmt::Write;
 
 cmf_wp2_app::entry!(main);
+cmf_wp2_app::app_icon!();
 
 const BG: u16 = 0x0000;
 const FG: u16 = 0xFFFF;
