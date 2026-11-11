@@ -101,7 +101,7 @@ class ApiTest(unittest.TestCase):
 
     def setUp(self):
         if self._testMethodName in ("test_1_channel_and_wake_lock", "test_2_statuses", "test_3_time_and_battery",
-                                    "test_4_storage", "test_5_screen_lock_effect"):
+                                    "test_4_storage", "test_4b_cyrillic_text", "test_5_screen_lock_effect"):
             self.launch(0)
 
     def launch(self, slot: int):
@@ -257,6 +257,39 @@ class ApiTest(unittest.TestCase):
                 self.assertEqual(await ask(s, "!count"), f"count {count}")
 
         self.run_async(second())
+
+    def test_4b_cyrillic_text(self):
+        text = "привет ПРИВЕТ Ёё ъЩ€"
+        src = (paths.ROOT / "fw/wp2-core/src/font8x8.rs").read_text()
+        rows = [[int(h, 16) for h in re.findall(r"0x([0-9A-F]{2})", r)] for r in re.findall(r"\[(0x[^\]]*)\]", src)]
+        ascii_, cyr = rows[:95], rows[95:]
+        def glyph(ch):
+            if ch == "Ё":
+                return cyr[64]
+            if ch == "ё":
+                return cyr[65]
+            return cyr[ord(ch) - 0x410] if "А" <= ch <= "я" else ascii_[(ord(ch) if " " <= ch <= "~" else 63) - 32]
+        want = set()
+        for i, ch in enumerate(text):
+            for row, bits in enumerate(glyph(ch)):
+                for col in range(8):
+                    if bits >> col & 1:
+                        want |= {(40 + 16 * i + 2 * col + dx, 290 + 2 * row + dy) for dx in (0, 1) for dy in (0, 1)}
+
+        async def run():
+            async with session(self.port) as s:
+                self.assertEqual(await ask(s, text), text)
+
+        self.run_async(run())
+        time.sleep(2)
+        w, h, rgb = self.emu.frame()
+        got = {(x, y) for y in range(282, 314) for x in range(40, 40 + 16 * len(text))
+               if any(rgb[(y * w + x) * 3:][:3])}
+        out = paths.ROOT / "runs" / "cyrillic"
+        out.mkdir(parents=True, exist_ok=True)
+        from tests.test_demo_e2e import save_png
+        save_png(out / "frame.png", w, h, rgb)
+        self.assertEqual(got, want)
 
     def autosleep(self, ms: int):
         self.emu.gdb(f"set *(unsigned *)*(unsigned *){harness.AWAKE_PTR:#x} = {ms}")

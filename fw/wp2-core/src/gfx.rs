@@ -1,7 +1,17 @@
-use crate::font8x8::GLYPHS;
+use crate::font8x8::{CYRILLIC, GLYPHS};
 
 pub const W: usize = 466;
 pub const H: usize = 466;
+
+fn glyph(ch: char) -> &'static [u8; 8] {
+    match ch {
+        ' '..='~' => &GLYPHS[ch as usize - 0x20],
+        '\u{410}'..='\u{44F}' => &CYRILLIC[ch as usize - 0x410],
+        '\u{401}' => &CYRILLIC[64],
+        '\u{451}' => &CYRILLIC[65],
+        _ => &GLYPHS[usize::from(b'?' - 0x20)],
+    }
+}
 
 pub struct Canvas<'a> {
     pub px: &'a mut [u16],
@@ -22,26 +32,35 @@ impl Canvas<'_> {
         }
     }
 
+    // UTF-8: ASCII and Cyrillic have glyphs, everything else and every invalid byte is one `?` cell.
     pub fn text(&mut self, x: i16, y: i16, s: &[u8], c: u16) -> i16 {
         let mut cx = i32::from(x);
-        for &ch in s {
-            let ch = if (0x20..=0x7E).contains(&ch) { ch } else { b'?' };
-            for (row, bits) in GLYPHS[usize::from(ch - 0x20)].iter().enumerate() {
-                for col in 0..8 {
-                    if bits >> col & 1 != 0 {
-                        let px = i16::try_from(cx + 2 * col);
-                        let py = i16::try_from(i32::from(y) + 2 * row as i32);
-                        if let (Ok(px), Ok(py)) = (px, py) {
-                            self.fill_rect(px, py, 2, 2, c);
-                        }
-                    }
-                }
+        for chunk in s.utf8_chunks() {
+            for ch in chunk.valid().chars() {
+                self.glyph(cx, i32::from(y), glyph(ch), c);
+                cx += 16;
             }
-            cx += 16;
+            for _ in chunk.invalid() {
+                self.glyph(cx, i32::from(y), glyph('?'), c);
+                cx += 16;
+            }
         }
         cx.clamp(i16::MIN.into(), i16::MAX.into()) as i16
     }
-}
+
+    fn glyph(&mut self, cx: i32, y: i32, g: &[u8; 8], c: u16) {
+        for (row, bits) in g.iter().enumerate() {
+            for col in 0..8 {
+                if bits >> col & 1 != 0 {
+                    let px = i16::try_from(cx + 2 * col);
+                    let py = i16::try_from(y + 2 * row as i32);
+                    if let (Ok(px), Ok(py)) = (px, py) {
+                        self.fill_rect(px, py, 2, 2, c);
+                    }
+                }
+            }
+        }
+    }}
 
 // Dirty box of draw calls, packed into a u32 so it fits one atomic: bytes x0, y0, x1, y1 (inclusive)
 // in 2 px units. ponytail: the 2 px grid flushes at most 1 extra px per side; exact needs 36 bits.
@@ -92,6 +111,50 @@ mod tests {
         assert_eq!(c.text(100, 100, b"A\xD0", 0xFFFF), 132);
         assert!(px.iter().any(|&p| p != 0));
         assert!(px.iter().enumerate().all(|(i, &p)| p == 0 || (100..132).contains(&(i % W)) && (100..116).contains(&(i / W))));
+    }
+
+    fn render(s: &[u8]) -> (i16, Vec<u16>) {
+        let mut px = vec![0u16; W * H];
+        let end = Canvas { px: &mut px }.text(10, 10, s, 1);
+        (end, px)
+    }
+
+    fn expect(cells: &[char]) -> Vec<u16> {
+        let mut px = vec![0u16; W * H];
+        let mut c = Canvas { px: &mut px };
+        for (i, &ch) in cells.iter().enumerate() {
+            c.glyph(10 + 16 * i as i32, 10, glyph(ch), 1);
+        }
+        px
+    }
+
+    #[test]
+    fn cyrillic_mixed_advance_and_pixels() {
+        let (end, px) = render("aЖб Ёё?".as_bytes());
+        assert_eq!(end, 10 + 7 * 16);
+        assert_eq!(px, expect(&['a', 'Ж', 'б', ' ', 'Ё', 'ё', '?']));
+        assert_ne!(glyph('Ж'), glyph('?'));
+        assert_ne!(glyph('ё'), glyph('е'));
+        assert!((0x410..=0x44F).chain([0x401, 0x451]).all(|u| glyph(char::from_u32(u).unwrap()) != glyph('?')));
+    }
+
+    #[test]
+    fn other_scripts_are_one_question_mark() {
+        let (end, px) = render("é€😀".as_bytes());
+        assert_eq!(end, 10 + 3 * 16);
+        assert_eq!(px, expect(&['?', '?', '?']));
+    }
+
+    #[test]
+    fn invalid_utf8_is_one_question_mark_per_byte() {
+        let (end, px) = render(b"a\xFF\xC3(\x80");
+        assert_eq!(end, 10 + 5 * 16);
+        assert_eq!(px, expect(&['a', '?', '?', '(', '?']));
+        // truncated at the end: lead byte of a 3-byte sequence plus one continuation
+        let (end, px) = render(b"\xD0\xBF\xE2\x82");
+        assert_eq!(end, 10 + 3 * 16);
+        assert_eq!(px, expect(&['п', '?', '?']));
+        assert_eq!(render(b"").0, 10);
     }
 
     #[test]
