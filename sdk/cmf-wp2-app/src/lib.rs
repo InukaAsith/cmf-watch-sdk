@@ -198,7 +198,7 @@ macro_rules! entry {
     };
 }
 
-// `scripts/sim` builds apps for the host with `--cfg wp2_sim` (docs/simulator.md). Keep it below the code with
+// `scripts/sim` builds apps for the host with `--cfg wp2_sim` (docs/app-guide.md). Keep it below the code with
 // panics: their line numbers are in the watch build.
 #[cfg(wp2_sim)]
 extern crate std;

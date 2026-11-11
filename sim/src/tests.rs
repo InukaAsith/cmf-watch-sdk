@@ -125,8 +125,8 @@ fn button_force_stops_after_a_second() {
 fn messages_inbox_of_4_and_outbox_poll() {
     let s = sim("m a\nm bb\nm ccc\nm dddd\nm eeeee");
     let mut buf = [0u8; MSG_MAX];
-    let lens: Vec<i16> = (0..4).map(|_| s.next_event(0).unwrap()).map(|e| { assert_eq!(e.kind, MESSAGE); e.x }).collect();
-    assert_eq!(lens, [1, 2, 3, 4]);
+    let got: Vec<(u8, i16)> = (0..4).map(|_| s.next_event(0).map(|e| (e.kind, e.x)).unwrap()).collect();
+    assert_eq!(got, [(MESSAGE, 1), (MESSAGE, 2), (MESSAGE, 3), (MESSAGE, 4)]);
     // the fifth waits for room, like a FULL reply the host retries
     assert_eq!(s.next_event(0), None);
     assert_eq!(s.lock().recv(&mut [0u8; 1]), 1);
@@ -220,5 +220,6 @@ fn panel_mask_is_round() {
 
 #[test]
 fn json_escapes() {
-    assert_eq!(out::json(5, "send", &[("text", V::S("a\"\n")), ("n", V::I(-1))]), r#"{"t":5,"ev":"send","text":"a\"\u000a","n":-1}"#);
+    let line = out::json(5, "send", &[("text", V::S("a\"\n")), ("n", V::I(-1))]);
+    assert_eq!(line, r#"{"t":5,"ev":"send","text":"a\"\u000a","n":-1}"#);
 }

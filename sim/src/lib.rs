@@ -1,4 +1,4 @@
-//! Host simulator for wp2-apps apps (docs/simulator.md). The app, built for the host with `--cfg wp2_sim`, calls
+//! Host simulator for wp2-apps apps (docs/app-guide.md). The app, built for the host with `--cfg wp2_sim`, calls
 //! `wp2_sim_run` from its `main`; this crate fills in the ABI 1.1 `Api` table with the loader's semantics.
 use cmf_wp2_app::{Api, Event, Time, ABI, ABI_MINOR, BUTTON, CROWN, MESSAGE, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use std::collections::VecDeque;
@@ -144,7 +144,11 @@ impl Config {
                 "--script" => {
                     let path = val()?;
                     let mut s = String::new();
-                    let r = if path == "-" { io::stdin().read_to_string(&mut s) } else { fs::File::open(&path).and_then(|mut f| f.read_to_string(&mut s)) };
+                    let r = if path == "-" {
+                        io::stdin().read_to_string(&mut s)
+                    } else {
+                        fs::File::open(&path).and_then(|mut f| f.read_to_string(&mut s))
+                    };
                     r.map_err(|e| format!("{path}: {e}"))?;
                     script += &(s + "\n");
                 }
@@ -236,7 +240,8 @@ pub struct State {
 impl State {
     pub fn new(cfg: Config) -> State {
         let log = out::Log::open(cfg.log.as_deref());
-        let base_ms = cfg.epoch_ms.unwrap_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64));
+        let now = || SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let base_ms = cfg.epoch_ms.unwrap_or_else(now);
         State {
             timeline: cfg.timeline.clone().into(),
             cfg,
@@ -544,7 +549,8 @@ impl State {
         let r = (|| {
             let _ = fs::remove_file(&new);
             if data.is_empty() {
-                return fs::remove_file(&dat).or_else(|e| if e.kind() == io::ErrorKind::NotFound { Ok(()) } else { Err(e) });
+                let gone = |e: io::Error| if e.kind() == io::ErrorKind::NotFound { Ok(()) } else { Err(e) };
+                return fs::remove_file(&dat).or_else(gone);
             }
             fs::create_dir_all(&self.cfg.store)?;
             let mut f = fs::File::create(&new)?;

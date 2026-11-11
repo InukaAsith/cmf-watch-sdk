@@ -33,15 +33,16 @@ emulator (colour, crown, a 30 ms motor tick, pause/resume under the charger popu
 `src/main.rs`:
 
 ```rust
-#![cfg_attr(target_os = "none", no_std, no_main)]
+// wp2_sim: the same device code runs in the host simulator (section 6)
+#![cfg_attr(any(target_os = "none", wp2_sim), no_main, cfg_attr(target_os = "none", no_std))]
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 mod logic;
 
-#[cfg(not(target_os = "none"))]
+#[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}
 
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", wp2_sim))]
 mod device {
     use crate::logic::{label, turn, COLOURS};
     use cmf_wp2_app::{Api, BUTTON, CROWN, PAUSE, RESUME, TOUCH_DOWN};
@@ -157,6 +158,7 @@ The two-module layout is how `vibration-lab`, `agent-glow` and `herdr-agents` ar
 
 ```bash
 (cd sdk && cargo test -p <name> --target aarch64-apple-darwin)   # host unit tests
+scripts/sim <name>                                               # run it in a window on the Mac (section 6)
 nix-shell -p llvm --run 'scripts/build-app <name> <version>'     # -> target/<name>.wp2app
 uv run --locked wp2apps info target/<name>.wp2app                # name, version, abi_minor, image_size, icon
 ```
@@ -594,6 +596,39 @@ Put logic that does not need `Api` (protocol, model, layout, maths, patterns) in
 `#[cfg(test)]` on the Mac: `(cd sdk && cargo test -p <name> --target aarch64-apple-darwin)`. For drawing, write
 against a trait like agent-glow's `Sink { fn rect(...) }` and test with a framebuffer in a `Vec<u16>`
 (`agent-glow/src/glow.rs` tests). Before a commit run the three suites from AGENTS.md.
+
+### Simulator
+
+`scripts/sim <name> [options]` builds the app for the Mac with `--cfg wp2_sim` and runs it against `sim/`, a host
+implementation of the whole ABI 1.1 table: the loader's `fill_rect`/`text` (wp2-core `gfx`, so text is pixel-exact),
+the round panel mask, its event queue (15 events, input dropped while paused), `PAUSE`/`RESUME`, the 2 s motor
+cap and lock, the 1 s button escape, storage (`runs/sim/<name>/data.dat`, same format, limit and atomic replace),
+local time (`TZ`), a configurable battery, and the channel (`send` is a stdout line, collected every 250 ms like
+a PING poll). Build and launch take ~2 s cold, ~0.3 s warm. A no_std app with the `entry!` at the crate root
+(hello, api-demo) needs no change; an app with a `device` module needs the cfg lines of the template above.
+
+- **Window** (default): mouse = touch, wheel or arrows = crown, Esc or B = button, P = pause/resume, M = type a
+  message (Enter sends), lines on stdin = messages. The status bar shows shows/s, the motor, keep-on and sent
+  messages. `--scale 2` doubles it.
+- **Headless** (`--headless`): a virtual clock that jumps to the next due time, so a 5 s script runs in ~0.2 s.
+  Input as `--do 't 233 300; wait 500; c -1; b'` or `--script FILE`: `t X Y [MS]` (tap, up after 80 ms),
+  `down X Y`, `up X Y`, `c N` (N detents), `b`, `p`, `m TEXT`, `mx HEX`, `wait MS`, `shot NAME`.
+  `--frames DIR` writes `NAME.png` per `shot`, `at-MS.png` for `--at MS,…`, every frame with `--every-show`, and
+  `last.png`; the JSON lines log (`DIR/log.jsonl`) has `input`, `vibrate`, `motor_cut`, `msg`, `send`, `save`,
+  `load`, `keep_screen_on`, `pause`/`resume`, `shot` and `end` (`exit`, `killed` by the escape, `timeout`, `idle`).
+  The run ends 2 s after the last input unless `--until MS`. Exit status: 0, 1 for a non-zero app code, 2 killed.
+- **Daemons**: `--tcp PORT` puts the channel on `127.0.0.1:PORT` (hex lines; `send` is `-107` until a client
+  connects). `wp2apps herdr --sim PORT` drives herdr-agents there; `wp2apps.channel.SimChannel(port)` has the
+  `send`/`recv` of `Channel`.
+
+```bash
+scripts/sim herdr-agents --headless --frames runs/sim/x --do 'wait 300; t 233 141; wait 200; shot tap; b'
+scripts/sim api-demo --epoch 1794000000 --battery 15c            # window, fixed clock, charging
+```
+
+Not modelled: speed (draw calls are free, `now()` advances 1 µs per call on the virtual clock), the 8 KiB app
+stack, tearing and the dirty-box flush, the brightness of the panel (the emulator capture is ×0.627 darker),
+the loader menu and the bind popup. `tests/test_sim.py` runs every example this way.
 
 ### Emulator e2e
 
