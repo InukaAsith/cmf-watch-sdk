@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <defs>
+    <linearGradient id="bg" x1="0.15" y1="0.05" x2="0.85" y2="0.95"><stop offset="0" stop-color="#5B7CFF"/><stop offset="0.5" stop-color="#9A5CF5"/><stop offset="1" stop-color="#E04BD6"/></linearGradient>
+    <radialGradient id="sheen" cx="0.32" cy="0.18" r="0.75">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.32"/>
+      <stop offset="0.6" stop-color="#fff" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="1.6" stdDeviation="1.4" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <circle cx="48" cy="48" r="48" fill="url(#bg)"/>
+  <circle cx="48" cy="48" r="48" fill="url(#sheen)"/>
+  <circle cx="48" cy="48" r="47" fill="none" stroke="#fff" stroke-opacity="0.14" stroke-width="2"/>
+  <g filter="url(#shadow)" transform="translate(48 48) scale(0.86) translate(-48 -48)">
+    <path d="M45 28 Q48.68 47.32 68 51 Q48.68 54.68 45 74 Q41.32 54.68 22 51 Q41.32 47.32 45 28Z" fill="#fff"/>
+    <path d="M67 19 Q68.44 26.56 76 28 Q68.44 29.44 67 37 Q65.56 29.44 58 28 Q65.56 26.56 67 19Z" fill="#fff" fill-opacity="0.85"/>
+    <circle cx="69" cy="64" r="3.2" fill="#fff" fill-opacity="0.7"/>
+  </g>
+</svg>

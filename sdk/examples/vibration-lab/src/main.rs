@@ -12,6 +12,7 @@ mod device {
     use core::fmt::Write;
 
     cmf_wp2_app::entry!(main);
+    cmf_wp2_app::app_icon!();
 
     const FIELDS: [Field; 4] = [Field::Strength, Field::Frequency, Field::Pattern, Field::Pulse];
     const ROW_TOP: i16 = 110;
