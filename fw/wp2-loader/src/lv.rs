@@ -1,0 +1,336 @@
+//! ABI 1.2 executor: the app thread hands a command buffer to the UI thread, which validates it and runs it
+//! (docs/specs/2026-11-11-lvgl-apps-design.md). Everything but `submit` runs on ui_service.
+
+use crate::{app, ui};
+use core::ffi::c_void;
+use core::ptr::{addr_of_mut, null_mut};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
+use wp2_core::events::{Event, CROWN, LV};
+use wp2_core::layout::stub_ram;
+use wp2_core::lvcmd::{self, Class, Rec, Table, MAX_FONTS, MAX_OBJS, MAX_OPTIONS};
+use wp2_core::stock::*;
+
+type Obj = *mut c_void;
+
+const BATCH_MAX: usize = 2048;
+const E_ARG: i32 = -1;
+const E_FONT: i32 = -2;
+
+const FLAG_CLICKABLE: u32 = 2;
+const FLAG_SCROLLABLE: u32 = 1 << 4;
+// LV_OBJ_FLAG_USER_4: the crown scrolls the object (docs/recon-lvgl.md, Input)
+const FLAG_KNOB: u32 = 1 << 30;
+const ALIGN_CENTER: u32 = 9;
+const VALUE_CHANGED: u32 = 28;
+// lv event code per EVENTS mask bit: PRESSED, CLICKED, LONG_PRESSED, RELEASED, VALUE_CHANGED
+const CODES: [u32; 5] = [1, 7, 5, 8, VALUE_CHANGED];
+// events[h] bit: the crown callback is registered
+const KNOB_CB: u8 = 0x80;
+const FONT_NAMES: [&[u8; 3]; lvcmd::FONT_FILES as usize] = [
+    b"18M", b"24L", b"24M", b"24R", b"28M", b"28R", b"30R", b"32M", b"32R", b"34R", b"36L", b"36M", b"36N", b"36R",
+    b"44L", b"48M",
+];
+
+// mailbox: one batch in flight, the app thread waits for it
+const IDLE: u8 = 0;
+const PENDING: u8 = 1;
+const DONE: u8 = 2;
+static STATE: AtomicU8 = AtomicU8::new(IDLE);
+static REQ_PTR: AtomicU32 = AtomicU32::new(0);
+static REQ_LEN: AtomicU32 = AtomicU32::new(0);
+static RESULT: AtomicI32 = AtomicI32::new(0);
+
+// repr(C), objs first: an e2e probe reads the root at LV_STATE + 0
+#[repr(C)]
+struct Lv {
+    // handle -> object; 0 is the root, null until the first submit
+    objs: [Obj; MAX_OBJS + 1],
+    // EVENTS bits with a callback, plus KNOB_CB
+    events: [u8; MAX_OBJS + 1],
+    // roller option count, 0 = OPTIONS never set
+    options: [u8; MAX_OBJS + 1],
+    // lv_font_t (0x20 B) per slot: styles point here, so it lives as long as the loader block
+    fonts: [[u32; 8]; MAX_FONTS as usize],
+    fonts_open: u8,
+    table: Table,
+}
+
+// Lives in the loader block: zero again on every open of the view. Table::new() is not const: the zeroed table is
+// reset on the first submit (no root yet).
+static mut LV_STATE: Lv = Lv {
+    objs: [null_mut(); MAX_OBJS + 1],
+    events: [0; MAX_OBJS + 1],
+    options: [0; MAX_OBJS + 1],
+    fonts: [[0; 8]; MAX_FONTS as usize],
+    fonts_open: 0,
+    table: unsafe { core::mem::zeroed() },
+};
+
+fn st() -> &'static mut Lv {
+    unsafe { &mut *addr_of_mut!(LV_STATE) }
+}
+
+pub fn root() -> Obj {
+    st().objs[0]
+}
+
+/// App thread (Api.lv_submit): waits until the UI tick ran the batch.
+pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
+    let ram = stub_ram();
+    let (p, block) = (buf as usize, ram.app_block as usize);
+    if buf.is_null() || len > BATCH_MAX || p < block || p + len > block + ram.app_size as usize {
+        return E_ARG;
+    }
+    REQ_PTR.store(p as u32, Ordering::Relaxed);
+    REQ_LEN.store(len as u32, Ordering::Relaxed);
+    STATE.store(PENDING, Ordering::Release);
+    while STATE.load(Ordering::Acquire) != DONE {
+        stock!(OS_SLEEP, fn(u32))(5);
+    }
+    let r = RESULT.load(Ordering::Relaxed);
+    STATE.store(IDLE, Ordering::Release);
+    r
+}
+
+/// UI tick: runs a pending batch. The app thread is blocked in `submit`, so the buffer holds still.
+pub fn tick() {
+    if STATE.load(Ordering::Acquire) != PENDING {
+        return;
+    }
+    let buf = unsafe {
+        core::slice::from_raw_parts(REQ_PTR.load(Ordering::Relaxed) as *const u8, REQ_LEN.load(Ordering::Relaxed) as usize)
+    };
+    RESULT.store(run(buf), Ordering::Relaxed);
+    STATE.store(DONE, Ordering::Release);
+}
+
+fn run(buf: &[u8]) -> i32 {
+    if root().is_null() {
+        st().table.reset();
+    }
+    if let Err(e) = lvcmd::validate(buf, &st().table, st().fonts_open) {
+        return e.code();
+    }
+    if root().is_null() {
+        make_root();
+    }
+    for r in lvcmd::records(buf) {
+        // validated: every record decodes
+        let Ok(r) = r else { return -22 };
+        if let Err(code) = exec(&r) {
+            return code;
+        }
+        lvcmd::apply(&mut st().table, &r);
+    }
+    0
+}
+
+// 466x466, black, not scrollable; touch and crown on its background go to the app as on the image
+fn make_root() {
+    let root = stock!(LV_OBJ_CREATE, fn(Obj) -> Obj)(ui::screen());
+    stock!(LV_OBJ_SET_SIZE, fn(Obj, i32, i32))(root, 466, 466);
+    style(root, LV_STYLE_BG_COLOR, 0, 0);
+    style(root, LV_STYLE_BG_OPA, 0xFF, 0);
+    stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(root, FLAG_SCROLLABLE);
+    stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(root, FLAG_CLICKABLE);
+    for filter in [ui::PRESSED, ui::RELEASED, ui::KNOB] {
+        add_cb(root, ui::input(), filter, 0);
+    }
+    st().objs[0] = root;
+    st().events[0] = KNOB_CB;
+    // the image hides, the root takes the knob
+    ui::show(true);
+}
+
+fn style(obj: Obj, prop: u32, value: u32, sel: u32) {
+    stock!(LV_OBJ_SET_LOCAL_STYLE_PROP, fn(Obj, u32, u32, u32))(obj, prop, value, sel)
+}
+
+fn add_cb(obj: Obj, cb: ui::Cb, filter: u32, h: usize) {
+    stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, ui::Cb, u32, usize) -> *mut c_void)(obj, cb, filter, h);
+}
+
+// a copy with a trailing NUL: TEXT and OPTIONS payloads are not terminated, LVGL copies the string
+fn cstr(s: &[u8], out: &mut [u8; MAX_OPTIONS + 1]) -> *const u8 {
+    out[..s.len()].copy_from_slice(s);
+    out[s.len()] = 0;
+    out.as_ptr()
+}
+
+fn exec(r: &Rec) -> Result<(), i32> {
+    let s = st();
+    let o = |h: u16| s.objs[h as usize];
+    let mut tmp = [0u8; MAX_OPTIONS + 1];
+    match *r {
+        Rec::Create { h, class, parent } => {
+            let create = match class {
+                Class::Obj => LV_OBJ_CREATE,
+                Class::Label => LV_LABEL_CREATE,
+                Class::Btn => LV_BTN_CREATE,
+                Class::Arc => LV_ARC_CREATE,
+                Class::Bar => LV_BAR_CREATE,
+                Class::Slider => LV_SLIDER_CREATE,
+                Class::Roller => LV_ROLLER_CREATE,
+                Class::ScrollBar => return Err(-22),
+            };
+            let obj = stock!(create, fn(Obj) -> Obj)(o(parent));
+            let h = h as usize;
+            (s.objs[h], s.events[h], s.options[h]) = (obj, 0, 0);
+        }
+        Rec::Del(h) => {
+            stock!(LV_OBJ_DEL, fn(Obj))(o(h));
+            // scroll bars targeting the subtree sit on the root: deleted after their target, as stock lists do
+            for x in lvcmd::freed_by_del(&s.table, h) {
+                let x = x as usize;
+                if x != h as usize && s.table.class(x as u16) == Some(Class::ScrollBar) {
+                    stock!(LV_OBJ_DEL, fn(Obj))(s.objs[x]);
+                }
+                s.objs[x] = null_mut();
+            }
+        }
+        Rec::Size { h, w, hh } => stock!(LV_OBJ_SET_SIZE, fn(Obj, i32, i32))(o(h), w, hh),
+        Rec::Align { h, align, x, y } => stock!(LV_OBJ_ALIGN, fn(Obj, u32, i32, i32))(o(h), align.into(), x.into(), y.into()),
+        Rec::Flags { h, set, clear } => {
+            if set != 0 {
+                stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(o(h), set);
+            }
+            if clear != 0 {
+                stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(o(h), clear);
+            }
+        }
+        Rec::Style { h, prop, sel, value } => {
+            let v = if u32::from(prop) == LV_STYLE_TEXT_FONT { s.fonts[value as usize].as_ptr() as u32 } else { value as u32 };
+            style(o(h), prop.into(), v, sel);
+        }
+        Rec::Font { slot, font } => open_font(slot as usize, font as usize)?,
+        Rec::Text { h, s: t } => stock!(LV_LABEL_SET_TEXT, fn(Obj, *const u8))(o(h), cstr(t, &mut tmp)),
+        Rec::Value { h, v, anim } => match s.table.class(h) {
+            // validated: arc values fit i16, roller indices u16
+            Some(Class::Arc) => stock!(LV_ARC_SET_VALUE, fn(Obj, i16))(o(h), v as i16),
+            Some(Class::Roller) => {
+                let n = s.options[h as usize];
+                if n != 0 {
+                    let sel = (v as u32).min(u32::from(n) - 1) as u16;
+                    stock!(LV_ROLLER_SET_SELECTED, fn(Obj, u16, u32))(o(h), sel, anim.into());
+                }
+            }
+            _ => stock!(LV_BAR_SET_VALUE, fn(Obj, i32, u32))(o(h), v, anim.into()),
+        },
+        Rec::Range { h, min, max } => stock!(LV_BAR_SET_RANGE, fn(Obj, i32, i32))(o(h), min, max),
+        Rec::Options { h, mode, s: t } => {
+            stock!(LV_ROLLER_SET_OPTIONS, fn(Obj, *const u8, u32))(o(h), cstr(t, &mut tmp), mode.into());
+            // ≤ 240 B: at most 121 options
+            s.options[h as usize] = (t.iter().filter(|&&c| c == b'\n').count() + 1) as u8;
+        }
+        Rec::Events { h, mask } => {
+            let new = mask & !s.events[h as usize];
+            for (bit, &code) in CODES.iter().enumerate() {
+                if new >> bit & 1 != 0 {
+                    add_cb(o(h), on_event, code, h as usize);
+                }
+            }
+            s.events[h as usize] |= mask;
+        }
+        Rec::Flex { h, flow, main, cross, track } => {
+            stock!(LV_OBJ_SET_FLEX_FLOW, fn(Obj, u32))(o(h), flow.into());
+            stock!(LV_OBJ_SET_FLEX_ALIGN, fn(Obj, u32, u32, u32))(o(h), main.into(), cross.into(), track.into());
+        }
+        Rec::ScrollBar { h, target } => {
+            // the stock call order (docs/recon-lvgl.md, Vendor components)
+            let bar = stock!(JX_SCROLL_BAR_CREATE, fn(Obj) -> Obj)(o(0));
+            stock!(LV_OBJ_SET_SIZE, fn(Obj, i32, i32))(bar, 462, 462);
+            stock!(JX_SCROLL_BAR_SET_SCROLL_OBJ, fn(Obj, Obj))(bar, o(target));
+            stock!(JX_SCROLL_BAR_SET_KNOB, fn(Obj, bool))(bar, true);
+            stock!(LV_OBJ_ALIGN, fn(Obj, u32, i32, i32))(bar, ALIGN_CENTER, 0, 0);
+            let h = h as usize;
+            (s.objs[h], s.events[h], s.options[h]) = (bar, 0, 0);
+        }
+        Rec::Knob(h) => {
+            let obj = o(h);
+            if stock!(LV_OBJ_HAS_FLAG, fn(Obj, u32) -> bool)(obj, FLAG_SCROLLABLE) {
+                // the crown scrolls it; the flag registers it as the knob object
+                stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(obj, FLAG_KNOB);
+            } else {
+                // crown events (CROWN to the app); a KNOB filter registers the knob object too
+                if s.events[h as usize] & KNOB_CB == 0 {
+                    add_cb(obj, on_event, ui::KNOB, h as usize);
+                    s.events[h as usize] |= KNOB_CB;
+                }
+                stock!(LV_DISP_ADD_KNOB_OBJ, fn(Obj))(obj);
+            }
+        }
+        Rec::Angles { h, start, end, rot } => {
+            stock!(LV_ARC_SET_BG_ANGLES, fn(Obj, u16, u16))(o(h), start, end);
+            stock!(LV_ARC_SET_ROTATION, fn(Obj, u16))(o(h), rot);
+        }
+    }
+    Ok(())
+}
+
+// A failed open leaves the built-in font in the slot (styles may already point at it) and the slot closed.
+fn open_font(slot: usize, font: usize) -> Result<(), i32> {
+    let s = st();
+    let f = s.fonts[slot].as_mut_ptr();
+    if s.fonts_open >> slot & 1 != 0 {
+        stock!(LVGL_BITMAP_FONT_CLOSE, fn(*mut u32))(f);
+        s.fonts_open &= !(1 << slot);
+    }
+    let mut path = *b"/NAND:A/fontXXX.font\0";
+    path[12..15].copy_from_slice(FONT_NAMES[font]);
+    if stock!(LVGL_BITMAP_FONT_OPEN, fn(*mut u32, *const u8) -> i32)(f, path.as_ptr()) != 0 {
+        s.fonts[slot] = unsafe { (LV_FONT_DEFAULT as *const [u32; 8]).read() };
+        return Err(E_FONT);
+    }
+    s.fonts_open |= 1 << slot;
+    Ok(())
+}
+
+// user_data = handle
+extern "C" fn on_event(e: *mut c_void) {
+    if !app::running() || app::paused() {
+        return;
+    }
+    let code = ui::event_code(e);
+    let h = stock!(LV_EVENT_GET_USER_DATA, fn(*mut c_void) -> usize)(e) as u16;
+    if code == ui::KNOB {
+        let step = ui::knob_step(e).signum() as i16;
+        if step != 0 {
+            app::QUEUE.push(Event { kind: CROWN, delta: step, ..Event::default() });
+        }
+        return;
+    }
+    let mut ev = Event { kind: LV, x: h as i16, y: code as i16, ..Event::default() };
+    if code != VALUE_CHANGED {
+        app::QUEUE.push(ev);
+        return;
+    }
+    let obj = st().objs[h as usize];
+    let v = match st().table.class(h) {
+        Some(Class::Arc) => stock!(LV_ARC_GET_VALUE, fn(Obj) -> i16)(obj).into(),
+        Some(Class::Bar | Class::Slider) => stock!(LV_BAR_GET_VALUE, fn(Obj) -> i32)(obj),
+        Some(Class::Roller) => stock!(LV_ROLLER_GET_SELECTED, fn(Obj) -> u16)(obj).into(),
+        _ => 0,
+    };
+    ev.delta = v.clamp(i16::MIN.into(), i16::MAX.into()) as i16;
+    app::QUEUE.coalesce(ev);
+}
+
+/// UI thread, app thread aborted, before the app block is freed: nothing of the app is left in LVGL.
+pub fn teardown() {
+    let s = st();
+    if !s.objs[0].is_null() {
+        // children first, scroll bars after their targets (created later)
+        stock!(LV_OBJ_DEL, fn(Obj))(s.objs[0]);
+    }
+    for slot in 0..MAX_FONTS as usize {
+        if s.fonts_open >> slot & 1 != 0 {
+            stock!(LVGL_BITMAP_FONT_CLOSE, fn(*mut u32))(s.fonts[slot].as_mut_ptr());
+        }
+    }
+    s.fonts_open = 0;
+    s.objs = [null_mut(); MAX_OBJS + 1];
+    s.events = [0; MAX_OBJS + 1];
+    s.options = [0; MAX_OBJS + 1];
+    s.table.reset();
+    STATE.store(IDLE, Ordering::Release);
+}

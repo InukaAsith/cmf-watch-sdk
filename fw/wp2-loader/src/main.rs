@@ -9,6 +9,8 @@ macro_rules! stock {
 
 #[cfg(target_os = "none")]
 mod app;
+#[cfg(target_os = "none")]
+mod lv;
 mod menu;
 #[cfg(target_os = "none")]
 mod motor;
@@ -124,7 +126,7 @@ mod view {
         }
     }
 
-    // the image: only shown while an app runs
+    // the image or the LVGL root (ABI 1.2): only shown while an app runs
     extern "C" fn input_cb(e: *mut c_void) {
         let code = ui::event_code(e);
         if code == ui::KNOB {
@@ -159,6 +161,7 @@ mod view {
     }
 
     extern "C" fn tick(_timer: *mut c_void) {
+        crate::lv::tick();
         let m = st();
         app::pause_tick();
         motor::watchdog();
