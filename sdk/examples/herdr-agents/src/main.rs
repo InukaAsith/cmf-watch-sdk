@@ -22,6 +22,8 @@ mod device {
     const AWAKE_MS: u32 = 20_000;
     const ANIM_MS: u32 = 80;
     static mut STORE: [u8; STORE_MAX] = [0; STORE_MAX];
+    // ~3 KB: off the 8 KiB app stack
+    static mut UI: Ui = Ui::new();
 
     fn after(now: u32, t: u32) -> bool {
         (now.wrapping_sub(t) as i32) >= 0
@@ -45,7 +47,7 @@ mod device {
     }
 
     fn main(api: &'static Api) -> i32 {
-        let mut ui = Ui::new();
+        let ui = unsafe { &mut *&raw mut UI };
         let buf = unsafe { &mut *&raw mut STORE };
         let n = api.load(buf);
         if n > 0 {

@@ -173,12 +173,18 @@ pub const MAX_BANDS: usize = 24;
 /// Concentric bands (ascending `r`) around (cx, cy), every pixel written once, edges blended per `soft`.
 /// `clear`: [x0, y0, x1, y1), containing the disc; the rest of each of its rows is painted `under`.
 /// `under`: the colour below a pixel, for Skip bands and the outside of the last band.
+/// Takes up to [`MAX_BANDS`] bands and ~2.5 KB of stack (the app has 8 KiB); [`radial_n`] sizes it to fewer.
 pub fn radial(s: &mut impl Surface, cx: i32, cy: i32, bands: &[Band], clear: Option<[i32; 4]>, under: impl Fn(i32, i32) -> Rgb) {
-    let n = bands.len().min(MAX_BANDS);
+    radial_n::<MAX_BANDS>(s, cx, cy, bands, clear, under);
+}
+
+/// [`radial`] for at most `N` bands (more are ignored): about 100 B of stack per band.
+pub fn radial_n<const N: usize>(s: &mut impl Surface, cx: i32, cy: i32, bands: &[Band], clear: Option<[i32; 4]>, under: impl Fn(i32, i32) -> Rgb) {
+    let n = bands.len().min(N);
     if n == 0 {
         return;
     }
-    let mut e = [Edge { inner: Paint::Skip, outer: Paint::Skip, conic: false, kept: false, fill: 0, lo: 0, hi: 0 }; MAX_BANDS];
+    let mut e = [Edge { inner: Paint::Skip, outer: Paint::Skip, conic: false, kept: false, fill: 0, lo: 0, hi: 0 }; N];
     let mut prev = 0;
     for i in 0..n {
         let b = bands[i];
@@ -194,9 +200,9 @@ pub fn radial(s: &mut impl Surface, cx: i32, cy: i32, bands: &[Band], clear: Opt
     }
     let reach = isqrt(e[n - 1].hi / 4);
     let (y0, y1) = clear.map_or((cy - reach, cy + reach + 1), |b| (b[1], b[3]));
-    let mut h = [[0i32; 2]; MAX_BANDS];
-    let mut tints = [[NO_TINT; 2]; MAX_BANDS];
-    let (mut a, mut b) = ([0i32; MAX_BANDS], [0i32; MAX_BANDS]);
+    let mut h = [[0i32; 2]; N];
+    let mut tints = [[NO_TINT; 2]; N];
+    let (mut a, mut b) = ([0i32; N], [0i32; N]);
     for y in y0..y1 {
         let dy2 = (y - cy) * (y - cy);
         for i in 0..n {
@@ -233,13 +239,13 @@ pub fn radial(s: &mut impl Surface, cx: i32, cy: i32, bands: &[Band], clear: Opt
 
 /// Antialiased filled disc of radius `r` (edge blended over `bg`).
 pub fn disc(s: &mut impl Surface, cx: i32, cy: i32, r: i32, c: Rgb, bg: Rgb) {
-    radial(s, cx, cy, &[Band { r, paint: Paint::Solid(c), soft: 1 }], None, |_, _| bg);
+    radial_n::<1>(s, cx, cy, &[Band { r, paint: Paint::Solid(c), soft: 1 }], None, |_, _| bg);
 }
 
 /// Antialiased ring between radii `r0` and `r1`; the hole is not touched.
 pub fn ring(s: &mut impl Surface, cx: i32, cy: i32, r0: i32, r1: i32, c: Rgb, bg: Rgb) {
     let bands = [Band { r: r0, paint: Paint::Skip, soft: 1 }, Band { r: r1, paint: Paint::Solid(c), soft: 1 }];
-    radial(s, cx, cy, &bands, None, |_, _| bg);
+    radial_n::<2>(s, cx, cy, &bands, None, |_, _| bg);
 }
 
 /// Antialiased stroke `w` px wide from `r0` to `r1` px along the Q14 unit vector (ux, uy) from (ox, oy), butt ends,
