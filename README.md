@@ -21,7 +21,8 @@ fixes go upstream, and this repository pins the commit it needs.
 
 ## Running in the emulator
 
-Host tools `llvm-objcopy`, `tk` and `gdb` come from `nix-shell -p …`.
+Host tools `llvm-objcopy`, `tk` and `gdb` come from `nix-shell -p …`. `make help` lists shortcuts
+for the commands below.
 
 Build the patched `app.bin` with the stub and heap reservation, the loader package and an app package:
 
