@@ -145,6 +145,11 @@ def cmd_listen(args):
     asyncio.run(with_watch(args, listen, resume=True))
 
 
+def cmd_herdr(args):
+    from . import herdr
+    return herdr.main(args)
+
+
 def cmd_scan(args):
     found = asyncio.run(blegatt.scan(args.timeout))
     print(json.dumps({"devices": [
@@ -200,6 +205,14 @@ def parser():
         where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
         where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
         sub.set_defaults(handler=handler)
+    herdr = commands.add_parser("herdr", help="Daemon for the herdr-agents app (docs/herdr-agents.md)")
+    where = herdr.add_mutually_exclusive_group(required=True)
+    where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
+    where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
+    herdr.add_argument("--herdr", default="herdr", help="herdr executable")
+    herdr.add_argument("--period", type=float, default=1.0, help="seconds between `herdr agent list` polls")
+    herdr.add_argument("-v", "--verbose", action="store_true", help="log what is sent, titles included")
+    herdr.set_defaults(handler=cmd_herdr)
     scan = commands.add_parser("scan", help="List nearby CMF watches (read-only; address redacted by default)")
     scan.add_argument("--timeout", type=float, default=5.0)
     scan.add_argument("--show-address", action="store_true")
