@@ -248,8 +248,10 @@ fn exec(r: &Rec) -> Result<(), i32> {
         Rec::Knob(h) => {
             let obj = o(h);
             if stock!(LV_OBJ_HAS_FLAG, fn(Obj, u32) -> bool)(obj, FLAG_SCROLLABLE) {
-                // the crown scrolls it; the flag registers it as the knob object
+                // the crown scrolls it; the flag registers it as the knob object. A flag set before (by its
+                // SCROLLBAR) registers nothing, and a roller created since holds the knob: make it current
                 stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(obj, FLAG_KNOB);
+                stock!(LV_DISP_ADD_KNOB_OBJ, fn(Obj))(obj);
             } else {
                 // crown events (CROWN to the app); a KNOB filter registers the knob object too
                 if s.events[h as usize] & KNOB_CB == 0 {
