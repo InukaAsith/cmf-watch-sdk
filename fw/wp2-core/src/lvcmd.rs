@@ -1,0 +1,680 @@
+//! ABI 1.2 LVGL command buffer: decode, validate, handle table (docs/specs/2026-11-11-lvgl-apps-design.md).
+//! Pure logic, no heap, no LVGL calls. The loader validates a whole batch before the first LVGL call.
+
+use crate::stock::{LV_STYLE_TEXT_FONT, STYLE_PROPS};
+
+pub const MAX_OBJS: usize = 192;
+pub const MAX_FONTS: u8 = 4;
+pub const FONT_FILES: u8 = 16;
+pub const MAX_TEXT: usize = 128;
+pub const MAX_OPTIONS: usize = 240;
+
+const FREE: u8 = 0xFF;
+// HIDDEN 0, CLICKABLE 1, CHECKABLE 3, SCROLLABLE 4, SCROLL_ELASTIC 5, SCROLL_MOMENTUM 6
+const FLAG_MASK: u32 = 0x7B;
+const EVENT_MASK: u8 = 0x1F;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Class {
+    Obj = 0,
+    Label = 1,
+    Btn = 2,
+    Arc = 3,
+    Bar = 4,
+    Slider = 5,
+    Roller = 6,
+    /// Loader-internal (SCROLLBAR record); CREATE with class 7 is `BadValue`.
+    ScrollBar = 7,
+}
+
+impl Class {
+    fn from_u8(v: u8) -> Option<Class> {
+        Some(match v {
+            0 => Class::Obj,
+            1 => Class::Label,
+            2 => Class::Btn,
+            3 => Class::Arc,
+            4 => Class::Bar,
+            5 => Class::Slider,
+            6 => Class::Roller,
+            7 => Class::ScrollBar,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    Malformed,
+    BadHandle,
+    BadClass,
+    BadValue,
+    Budget,
+}
+
+impl Error {
+    pub fn code(self) -> i32 {
+        match self {
+            Error::Budget => -12,
+            _ => -22,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rec<'a> {
+    Create { h: u16, class: Class, parent: u16 },
+    Del(u16),
+    Size { h: u16, w: i32, hh: i32 },
+    Align { h: u16, align: u8, x: i16, y: i16 },
+    Flags { h: u16, set: u32, clear: u32 },
+    Style { h: u16, prop: u16, sel: u32, value: i32 },
+    Font { slot: u8, font: u8 },
+    Text { h: u16, s: &'a [u8] },
+    Value { h: u16, v: i32, anim: bool },
+    Range { h: u16, min: i32, max: i32 },
+    Options { h: u16, mode: u8, s: &'a [u8] },
+    Events { h: u16, mask: u8 },
+    Flex { h: u16, flow: u8, main: u8, cross: u8, track: u8 },
+    ScrollBar { h: u16, target: u16 },
+    Knob(u16),
+    Angles { h: u16, start: u16, end: u16, rot: u16 },
+}
+
+/// Handle table: class per handle (`0xFF` = free; 0 is the root, class Obj) and the parent
+/// (for a ScrollBar: its scroll target). ~580 B, cheap to copy for a dry run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Table {
+    class: [u8; MAX_OBJS + 1],
+    parent: [u16; MAX_OBJS + 1],
+}
+
+impl Default for Table {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Table {
+    pub fn new() -> Table {
+        let mut t = Table { class: [FREE; MAX_OBJS + 1], parent: [0; MAX_OBJS + 1] };
+        t.class[0] = Class::Obj as u8;
+        t
+    }
+
+    pub fn reset(&mut self) {
+        *self = Table::new();
+    }
+
+    pub fn class(&self, h: u16) -> Option<Class> {
+        match self.class.get(h as usize) {
+            Some(&c) if c != FREE => Class::from_u8(c),
+            _ => None,
+        }
+    }
+
+    fn live(&self) -> usize {
+        self.class[1..].iter().filter(|&&c| c != FREE).count()
+    }
+}
+
+// --- decoding ---
+
+fn u16le(p: &[u8]) -> u16 {
+    u16::from_le_bytes([p[0], p[1]])
+}
+fn i16le(p: &[u8]) -> i16 {
+    i16::from_le_bytes([p[0], p[1]])
+}
+fn u32le(p: &[u8]) -> u32 {
+    u32::from_le_bytes([p[0], p[1], p[2], p[3]])
+}
+fn i32le(p: &[u8]) -> i32 {
+    i32::from_le_bytes([p[0], p[1], p[2], p[3]])
+}
+
+fn decode<'a>(buf: &mut &'a [u8]) -> Result<Rec<'a>, Error> {
+    if buf.len() < 4 {
+        return Err(Error::Malformed);
+    }
+    let (op, len, h) = (buf[0], buf[1] as usize, u16le(&buf[2..]));
+    if buf.len() < 4 + len {
+        return Err(Error::Malformed);
+    }
+    let p = &buf[4..4 + len];
+    *buf = &buf[4 + len..];
+    let need = |n: usize| if p.len() == n { Ok(()) } else { Err(Error::Malformed) };
+    Ok(match op {
+        0x01 => {
+            need(3)?;
+            let class = match Class::from_u8(p[0]) {
+                Some(c) if c != Class::ScrollBar => c,
+                _ => return Err(Error::BadValue),
+            };
+            Rec::Create { h, class, parent: u16le(&p[1..]) }
+        }
+        0x02 => {
+            need(0)?;
+            Rec::Del(h)
+        }
+        0x03 => {
+            need(8)?;
+            Rec::Size { h, w: i32le(p), hh: i32le(&p[4..]) }
+        }
+        0x04 => {
+            need(5)?;
+            Rec::Align { h, align: p[0], x: i16le(&p[1..]), y: i16le(&p[3..]) }
+        }
+        0x05 => {
+            need(8)?;
+            Rec::Flags { h, set: u32le(p), clear: u32le(&p[4..]) }
+        }
+        0x06 => {
+            need(10)?;
+            Rec::Style { h, prop: u16le(p), sel: u32le(&p[2..]), value: i32le(&p[6..]) }
+        }
+        0x07 => {
+            need(2)?;
+            if h != 0 {
+                return Err(Error::BadHandle);
+            }
+            Rec::Font { slot: p[0], font: p[1] }
+        }
+        0x08 => Rec::Text { h, s: p },
+        0x09 => {
+            need(5)?;
+            Rec::Value { h, v: i32le(p), anim: p[4] != 0 }
+        }
+        0x0A => {
+            need(8)?;
+            Rec::Range { h, min: i32le(p), max: i32le(&p[4..]) }
+        }
+        0x0B => {
+            if p.is_empty() {
+                return Err(Error::Malformed);
+            }
+            Rec::Options { h, mode: p[0], s: &p[1..] }
+        }
+        0x0C => {
+            need(1)?;
+            Rec::Events { h, mask: p[0] }
+        }
+        0x0D => {
+            need(4)?;
+            Rec::Flex { h, flow: p[0], main: p[1], cross: p[2], track: p[3] }
+        }
+        0x0E => {
+            need(2)?;
+            Rec::ScrollBar { h, target: u16le(p) }
+        }
+        0x0F => {
+            need(0)?;
+            Rec::Knob(h)
+        }
+        0x10 => {
+            need(6)?;
+            Rec::Angles { h, start: u16le(p), end: u16le(&p[2..]), rot: u16le(&p[4..]) }
+        }
+        _ => return Err(Error::Malformed),
+    })
+}
+
+struct Records<'a> {
+    buf: &'a [u8],
+    done: bool,
+}
+
+impl<'a> Iterator for Records<'a> {
+    type Item = Result<Rec<'a>, Error>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done || self.buf.is_empty() {
+            return None;
+        }
+        let r = decode(&mut self.buf);
+        self.done = r.is_err();
+        Some(r)
+    }
+}
+
+/// Decodes records back to back; stops after the first error.
+pub fn records(buf: &[u8]) -> impl Iterator<Item = Result<Rec<'_>, Error>> {
+    Records { buf, done: false }
+}
+
+// --- validation ---
+
+fn cls(t: &Table, h: u16) -> Result<Class, Error> {
+    t.class(h).ok_or(Error::BadHandle)
+}
+
+/// Any live handle except the root.
+fn child(t: &Table, h: u16) -> Result<Class, Error> {
+    if h == 0 {
+        return Err(Error::BadHandle);
+    }
+    cls(t, h)
+}
+
+fn want(t: &Table, h: u16, ok: &[Class]) -> Result<(), Error> {
+    if ok.contains(&cls(t, h)?) {
+        Ok(())
+    } else {
+        Err(Error::BadClass)
+    }
+}
+
+/// A handle about to be created (CREATE, SCROLLBAR). Handles above `MAX_OBJS` are the 193rd object: `Budget`
+/// when all 192 are live, `BadHandle` otherwise.
+fn fresh(t: &Table, h: u16) -> Result<(), Error> {
+    if h == 0 {
+        return Err(Error::BadHandle);
+    }
+    if h as usize > MAX_OBJS {
+        return Err(if t.live() == MAX_OBJS { Error::Budget } else { Error::BadHandle });
+    }
+    if t.class[h as usize] != FREE {
+        return Err(Error::BadHandle);
+    }
+    Ok(())
+}
+
+fn utf8(s: &[u8], max: usize) -> Result<(), Error> {
+    if s.len() <= max && core::str::from_utf8(s).is_ok() {
+        Ok(())
+    } else {
+        Err(Error::BadValue)
+    }
+}
+
+fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
+    let bad = |c: bool| if c { Err(Error::BadValue) } else { Ok(()) };
+    match *r {
+        Rec::Create { h, parent, .. } => {
+            fresh(t, h)?;
+            if cls(t, parent)? == Class::ScrollBar {
+                return Err(Error::BadClass);
+            }
+        }
+        Rec::Del(h) => {
+            child(t, h)?;
+        }
+        Rec::Size { h, .. } => {
+            child(t, h)?;
+        }
+        Rec::Align { h, align, .. } => {
+            child(t, h)?;
+            bad(align > 21)?;
+        }
+        Rec::Flags { h, set, clear } => {
+            cls(t, h)?;
+            bad((set | clear) & !FLAG_MASK != 0)?;
+        }
+        Rec::Style { h, prop, value, .. } => {
+            cls(t, h)?;
+            bad(STYLE_PROPS.binary_search(&prop).is_err())?;
+            if prop as u32 == LV_STYLE_TEXT_FONT {
+                bad(!(0..MAX_FONTS as i32).contains(&value) || *fonts >> value & 1 == 0)?;
+            }
+        }
+        Rec::Font { slot, font } => {
+            bad(slot >= MAX_FONTS || font >= FONT_FILES)?;
+            *fonts |= 1 << slot;
+        }
+        Rec::Text { h, s } => {
+            want(t, h, &[Class::Label])?;
+            utf8(s, MAX_TEXT)?;
+        }
+        Rec::Value { h, v, .. } => match cls(t, h)? {
+            Class::Arc => bad(i16::try_from(v).is_err())?,
+            Class::Bar | Class::Slider => {}
+            Class::Roller => bad(u16::try_from(v).is_err())?,
+            _ => return Err(Error::BadClass),
+        },
+        Rec::Range { h, min, max } => {
+            want(t, h, &[Class::Bar, Class::Slider])?;
+            bad(min >= max)?;
+        }
+        Rec::Options { h, mode, s } => {
+            want(t, h, &[Class::Roller])?;
+            bad(mode > 1)?;
+            utf8(s, MAX_OPTIONS)?;
+        }
+        Rec::Events { h, mask } => {
+            child(t, h)?;
+            bad(mask & !EVENT_MASK != 0)?;
+        }
+        Rec::Flex { h, flow, main, cross, track } => {
+            cls(t, h)?;
+            // LV_FLEX_FLOW: ROW 0, COLUMN 1, +WRAP 4, +REVERSE 8; LV_FLEX_ALIGN 0..=5
+            bad(flow > 13 || flow & 2 != 0 || main > 5 || cross > 5 || track > 5)?;
+        }
+        Rec::ScrollBar { h, target } => {
+            fresh(t, h)?;
+            if child(t, target)? == Class::ScrollBar {
+                return Err(Error::BadClass);
+            }
+        }
+        Rec::Knob(h) => {
+            if cls(t, h)? == Class::ScrollBar {
+                return Err(Error::BadClass);
+            }
+        }
+        Rec::Angles { h, start, end, rot } => {
+            want(t, h, &[Class::Arc])?;
+            bad(start > 360 || end > 360 || rot > 360)?;
+        }
+    }
+    Ok(())
+}
+
+/// Dry run of a whole batch on a copy of `t`; `fonts_open` has bit `slot` set for every open font slot.
+pub fn validate(buf: &[u8], t: &Table, fonts_open: u8) -> Result<(), Error> {
+    let mut t = t.clone();
+    let mut fonts = fonts_open;
+    for r in records(buf) {
+        let r = r?;
+        check(&t, &mut fonts, &r)?;
+        apply(&mut t, &r);
+    }
+    Ok(())
+}
+
+// --- table updates ---
+
+fn get(s: &[u64; 4], x: usize) -> bool {
+    x < 256 && s[x / 64] >> (x % 64) & 1 != 0
+}
+
+/// `h` and everything under it (children, and scroll bars targeting a member), as a bitset.
+fn doomed(t: &Table, h: u16) -> [u64; 4] {
+    let mut s = [0u64; 4];
+    s[h as usize / 64] |= 1 << (h % 64);
+    loop {
+        let mut changed = false;
+        for x in 1..=MAX_OBJS {
+            if t.class[x] != FREE && !get(&s, x) && get(&s, t.parent[x] as usize) {
+                s[x / 64] |= 1 << (x % 64);
+                changed = true;
+            }
+        }
+        if !changed {
+            return s;
+        }
+    }
+}
+
+/// Updates the table for CREATE, DEL and SCROLLBAR (the loader calls it per record after the LVGL call).
+/// The record must have passed `validate`.
+pub fn apply(t: &mut Table, r: &Rec) {
+    match *r {
+        Rec::Create { h, class, parent } => {
+            t.class[h as usize] = class as u8;
+            t.parent[h as usize] = parent;
+        }
+        Rec::ScrollBar { h, target } => {
+            t.class[h as usize] = Class::ScrollBar as u8;
+            t.parent[h as usize] = target;
+        }
+        Rec::Del(h) if h != 0 => {
+            let s = doomed(t, h);
+            for x in 1..=MAX_OBJS {
+                if get(&s, x) {
+                    t.class[x] = FREE;
+                    t.parent[x] = 0;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+struct Freed<'a> {
+    t: &'a Table,
+    s: [u64; 4],
+}
+
+impl Iterator for Freed<'_> {
+    type Item = u16;
+    fn next(&mut self) -> Option<u16> {
+        // a member with no member below it: children come before their parent
+        let x = (1..=MAX_OBJS)
+            .find(|&x| get(&self.s, x) && !(1..=MAX_OBJS).any(|y| y != x && get(&self.s, y) && self.t.parent[y] as usize == x))?;
+        self.s[x / 64] &= !(1 << (x % 64));
+        Some(x as u16)
+    }
+}
+
+/// The handles `DEL h` frees: descendants in post-order, scroll bars whose target is among them, then `h`.
+pub fn freed_by_del(t: &Table, h: u16) -> impl Iterator<Item = u16> + '_ {
+    let mut s = doomed(t, h);
+    if h == 0 {
+        s[0] &= !1;
+    }
+    Freed { t, s }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stock::STYLE_PROPS;
+
+    const TEXT_FONT: u16 = 87;
+
+    fn r(op: u8, h: u16, p: &[u8]) -> Vec<u8> {
+        let mut v = vec![op, p.len() as u8];
+        v.extend_from_slice(&h.to_le_bytes());
+        v.extend_from_slice(p);
+        v
+    }
+    fn create(h: u16, class: u8, parent: u16) -> Vec<u8> {
+        let mut p = vec![class];
+        p.extend_from_slice(&parent.to_le_bytes());
+        r(1, h, &p)
+    }
+    fn del(h: u16) -> Vec<u8> {
+        r(2, h, &[])
+    }
+    fn align(h: u16, a: u8) -> Vec<u8> {
+        r(4, h, &[a, 0, 0, 0, 0])
+    }
+    fn flags(h: u16, set: u32, clear: u32) -> Vec<u8> {
+        let mut p = set.to_le_bytes().to_vec();
+        p.extend_from_slice(&clear.to_le_bytes());
+        r(5, h, &p)
+    }
+    fn style(h: u16, prop: u16, value: i32) -> Vec<u8> {
+        let mut p = prop.to_le_bytes().to_vec();
+        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&value.to_le_bytes());
+        r(6, h, &p)
+    }
+    fn font(slot: u8, f: u8) -> Vec<u8> {
+        r(7, 0, &[slot, f])
+    }
+    fn text(h: u16, s: &[u8]) -> Vec<u8> {
+        r(8, h, s)
+    }
+    fn value(h: u16, v: i32) -> Vec<u8> {
+        let mut p = v.to_le_bytes().to_vec();
+        p.push(0);
+        r(9, h, &p)
+    }
+    fn range(h: u16, min: i32, max: i32) -> Vec<u8> {
+        let mut p = min.to_le_bytes().to_vec();
+        p.extend_from_slice(&max.to_le_bytes());
+        r(0x0A, h, &p)
+    }
+    fn options(h: u16, s: &[u8]) -> Vec<u8> {
+        let mut p = vec![0];
+        p.extend_from_slice(s);
+        r(0x0B, h, &p)
+    }
+    fn events(h: u16, mask: u8) -> Vec<u8> {
+        r(0x0C, h, &[mask])
+    }
+    fn scrollbar(h: u16, target: u16) -> Vec<u8> {
+        r(0x0E, h, &target.to_le_bytes())
+    }
+
+    fn check(batch: &[Vec<u8>]) -> Result<(), Error> {
+        validate(&batch.concat(), &Table::new(), 0)
+    }
+    fn built(batch: &[Vec<u8>]) -> Table {
+        let mut t = Table::new();
+        for rec in records(&batch.concat()) {
+            apply(&mut t, &rec.unwrap());
+        }
+        t
+    }
+
+    #[test]
+    fn style_props_are_sorted_unique_48() {
+        assert_eq!(STYLE_PROPS.len(), 48);
+        assert!(STYLE_PROPS.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn golden_batch_decodes() {
+        let buf = [
+            create(1, 1, 0),
+            font(0, 7),
+            style(1, TEXT_FONT, 0),
+            text(1, "Привет".as_bytes()),
+            align(1, 9),
+            events(1, 2),
+        ]
+        .concat();
+        let got: Vec<_> = records(&buf).collect::<Result<_, _>>().unwrap();
+        assert_eq!(
+            got,
+            [
+                Rec::Create { h: 1, class: Class::Label, parent: 0 },
+                Rec::Font { slot: 0, font: 7 },
+                Rec::Style { h: 1, prop: TEXT_FONT, sel: 0, value: 0 },
+                Rec::Text { h: 1, s: "Привет".as_bytes() },
+                Rec::Align { h: 1, align: 9, x: 0, y: 0 },
+                Rec::Events { h: 1, mask: 2 },
+            ]
+        );
+        assert_eq!(validate(&buf, &Table::new(), 0), Ok(()));
+    }
+
+    #[test]
+    fn truncated_and_unknown_records_are_malformed() {
+        let bad: [&[u8]; 6] = [
+            &[1, 3, 1],                // header cut
+            &[1, 3, 1, 0, 1],          // len past the end
+            &[0x11, 0, 1, 0],          // unknown op
+            &[0x00, 0, 1, 0],          // unknown op
+            &[1, 2, 1, 0, 1, 0],       // CREATE payload must be 3
+            &[2, 1, 1, 0, 0],          // DEL has no payload
+        ];
+        for b in bad {
+            assert_eq!(records(b).next(), Some(Err(Error::Malformed)), "{b:?}");
+            assert_eq!(validate(b, &Table::new(), 0), Err(Error::Malformed), "{b:?}");
+        }
+        assert_eq!(Error::Malformed.code(), -22);
+        assert_eq!(Error::BadValue.code(), -22);
+        assert_eq!(Error::Budget.code(), -12);
+    }
+
+    #[test]
+    fn handles_are_checked() {
+        assert_eq!(check(&[create(1, 0, 0), create(1, 0, 0)]), Err(Error::BadHandle));
+        assert_eq!(check(&[create(0, 0, 0)]), Err(Error::BadHandle));
+        assert_eq!(check(&[create(193, 0, 0)]), Err(Error::BadHandle));
+        assert_eq!(check(&[create(1, 0, 9)]), Err(Error::BadHandle));
+        assert_eq!(check(&[style(5, TEXT_FONT, 0)]), Err(Error::BadHandle));
+        assert_eq!(check(&[text(5, b"x")]), Err(Error::BadHandle));
+        assert_eq!(check(&[del(5)]), Err(Error::BadHandle));
+        assert_eq!(check(&[del(0)]), Err(Error::BadHandle));
+        assert_eq!(check(&[create(1, 1, 0), value(1, 5)]), Err(Error::BadClass));
+        assert_eq!(check(&[create(1, 4, 0), options(1, b"a\nb")]), Err(Error::BadClass));
+        assert_eq!(check(&[create(1, 3, 0), text(1, b"x")]), Err(Error::BadClass));
+        // RANGE only on bar and slider
+        assert_eq!(check(&[create(1, 3, 0), range(1, 0, 10)]), Err(Error::BadClass));
+        assert_eq!(check(&[create(1, 4, 0), range(1, 0, 10)]), Ok(()));
+        assert_eq!(check(&[create(1, 5, 0), range(1, 0, 10)]), Ok(()));
+    }
+
+    #[test]
+    fn values_are_checked() {
+        let bv = Err(Error::BadValue);
+        assert_eq!(check(&[create(1, 0, 0), style(1, 2, 0)]), bv);
+        assert_eq!(check(&[create(1, 0, 0), flags(1, 1 << 2, 0)]), bv);
+        assert_eq!(check(&[create(1, 0, 0), flags(1, 0, 1 << 7)]), bv);
+        assert_eq!(check(&[create(1, 0, 0), flags(1, 0x7B, 0)]), Ok(()));
+        assert_eq!(check(&[create(1, 0, 0), align(1, 22)]), bv);
+        assert_eq!(check(&[create(1, 0, 0), align(1, 21)]), Ok(()));
+        assert_eq!(check(&[font(4, 0)]), bv);
+        assert_eq!(check(&[font(0, 16)]), bv);
+        assert_eq!(check(&[create(1, 7, 0)]), bv);
+        assert_eq!(check(&[create(1, 1, 0), text(1, &[b'a'; 129])]), bv);
+        assert_eq!(check(&[create(1, 1, 0), text(1, &[b'a'; 128])]), Ok(()));
+        assert_eq!(check(&[create(1, 1, 0), text(1, &[0xFF, 0xFE])]), bv);
+        assert_eq!(check(&[create(1, 6, 0), options(1, &[b'a'; 241])]), bv);
+        assert_eq!(check(&[create(1, 6, 0), options(1, &[b'a'; 240])]), Ok(()));
+        // arc value is i16, roller index >= 0
+        assert_eq!(check(&[create(1, 3, 0), value(1, 40000)]), bv);
+        assert_eq!(check(&[create(1, 3, 0), value(1, -5)]), Ok(()));
+        assert_eq!(check(&[create(1, 6, 0), value(1, -1)]), bv);
+        // TEXT_FONT needs an opened slot
+        let tf = [create(1, 1, 0), style(1, TEXT_FONT, 0)];
+        assert_eq!(check(&tf), bv);
+        assert_eq!(check(&[font(0, 3), tf[0].clone(), tf[1].clone()]), Ok(()));
+        assert_eq!(validate(&tf.concat(), &Table::new(), 1), Ok(()));
+        assert_eq!(validate(&[create(1, 1, 0), style(1, TEXT_FONT, 2)].concat(), &Table::new(), 1), bv);
+        assert_eq!(validate(&[create(1, 1, 0), style(1, TEXT_FONT, 4)].concat(), &Table::new(), 0xFF), bv);
+    }
+
+    #[test]
+    fn budget() {
+        let full: Vec<_> = (1..=192).map(|h| create(h, 0, 0)).collect();
+        assert_eq!(check(&full), Ok(()));
+        let t = built(&full);
+        assert_eq!(validate(&create(193, 0, 0), &t, 0), Err(Error::Budget));
+        assert_eq!(validate(&create(1, 0, 0), &t, 0), Err(Error::BadHandle));
+        assert_eq!(check(&[font(0, 1), font(0, 2)]), Ok(()));
+    }
+
+    #[test]
+    fn del_frees_descendants_and_bars() {
+        let t = built(&[
+            create(1, 0, 0),
+            create(2, 0, 1),
+            create(3, 0, 2),
+            scrollbar(4, 1),
+            create(5, 0, 0),
+        ]);
+        let freed: Vec<u16> = freed_by_del(&t, 1).collect();
+        assert_eq!(freed.len(), 4);
+        let pos = |h| freed.iter().position(|&x| x == h).unwrap();
+        assert!(pos(3) < pos(2) && pos(2) < pos(1) && pos(4) < pos(1));
+        assert!(!freed.contains(&5));
+
+        let mut t2 = t.clone();
+        apply(&mut t2, &Rec::Del(1));
+        assert_eq!(t2.class(1), None);
+        assert_eq!(t2.class(3), None);
+        assert_eq!(t2.class(4), None);
+        assert_eq!(t2.class(5), Some(Class::Obj));
+        assert_eq!(validate(&style(3, TEXT_FONT, 0), &t2, 1), Err(Error::BadHandle));
+        // inside one batch too
+        assert_eq!(
+            validate(&[del(1), style(3, TEXT_FONT, 0)].concat(), &t, 1),
+            Err(Error::BadHandle)
+        );
+        assert_eq!(validate(&style(5, TEXT_FONT, 0), &t2, 1), Ok(()));
+        assert_eq!(t.class(4), Some(Class::ScrollBar));
+    }
+
+    #[test]
+    fn invalid_batch_changes_nothing() {
+        let t = built(&[create(1, 0, 0)]);
+        let before = t.clone();
+        let batch = [create(2, 0, 1), create(3, 1, 2), del(1), create(4, 0, 0), style(3, 2, 0)].concat();
+        assert_eq!(validate(&batch, &t, 0), Err(Error::BadHandle));
+        assert_eq!(t, before);
+    }
+}
