@@ -17,16 +17,17 @@ mod device {
     // a light tick: one short pulse at the stock 31 Hz PWM, far inside the 2 s cap
     const TICK: (u16, u16, u32) = (250, 31, 20);
 
-    // per scene: frames, draw ms, frame period ms (sums); read by tests/test_demo_e2e.py
+    // per scene: frames, draw ms, frame period ms, rect calls (sums); read by tests/test_demo_e2e.py
     #[unsafe(no_mangle)]
-    static STATS: [AtomicU32; SCENES * 3] = [const { AtomicU32::new(0) }; SCENES * 3];
+    static STATS: [AtomicU32; SCENES * 4] = [const { AtomicU32::new(0) }; SCENES * 4];
 
-    struct Screen(&'static Api);
+    struct Screen(&'static Api, u32);
 
     impl Sink for Screen {
         fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
             if w > 0 && h > 0 {
                 self.0.rect(x as i16, y as i16, w as u16, h as u16, c);
+                self.1 += 1;
             }
         }
     }
@@ -48,16 +49,18 @@ mod device {
 
     fn main(api: &'static Api) -> i32 {
         let mut app = App::new();
-        let mut screen = Screen(api);
+        let mut screen = Screen(api, 0);
         let mut buzz: Option<u32> = None;
         let mut last: Option<u32> = None;
         loop {
             let t0 = api.now();
+            screen.1 = 0;
             app.frame(t0, &mut screen);
             api.show();
-            let s = app.scene() * 3;
+            let s = app.scene() * 4;
             STATS[s].fetch_add(1, Ordering::Relaxed);
             STATS[s + 1].fetch_add(api.now().wrapping_sub(t0), Ordering::Relaxed);
+            STATS[s + 3].fetch_add(screen.1, Ordering::Relaxed);
             if let Some(l) = last {
                 STATS[s + 2].fetch_add(t0.wrapping_sub(l), Ordering::Relaxed);
             }

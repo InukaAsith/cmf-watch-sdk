@@ -34,7 +34,7 @@ class AgentGlowTest(unittest.TestCase):
         with harness.installed(["loader", "agent-glow"]) as (emu, port):
             harness.open_app(emu, row=0)
             stats_at = harness.u32(emu, START + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
-            stats = lambda: struct.unpack("<12I", emu.peek(stats_at, 48))
+            stats = lambda: struct.unpack("<16I", emu.peek(stats_at, 64))  # per scene: frames, draw, period, rects
             flush_at = harness.u32(emu, START + harness.LOADER_BLOCK_OFF) + harness.symbol(LOADER_ELF, "FLUSH_STATS")
             flush = lambda: struct.unpack("<4I", emu.peek(flush_at, 16))  # presents, flushes, bytes, pixels
             f0 = flush()
@@ -56,9 +56,10 @@ class AgentGlowTest(unittest.TestCase):
             self.assertLess(nbytes / flushes, 0.8 * FULL, "dirty box flush")
             s = stats()
             for scene, name in enumerate(SCENES):
-                frames, draw, period = s[3 * scene:3 * scene + 3]
+                frames, draw, period, rects = s[4 * scene:4 * scene + 4]
                 self.assertGreater(frames, 10, name)
-                print(f"\n{name}: {frames} frames, draw {draw / frames:.1f} ms, period {period / max(frames - 1, 1):.1f} ms")
+                print(f"\n{name}: {frames} frames, draw {draw / frames:.1f} ms, period {period / max(frames - 1, 1):.1f} ms, "
+                      f"{rects / frames:.0f} rects/frame")
             taps = emu.motor()[n:]
             print(f"tap motor.log {taps}")
             on = [i for i, e in enumerate(taps) if e[1] > 0]
@@ -70,12 +71,12 @@ class AgentGlowTest(unittest.TestCase):
 
             harness.popup(emu)
             emu.sleep(1)
-            paused = sum(stats()[::3])
+            paused = sum(stats()[::4])
             emu.sleep(1)
-            self.assertEqual(sum(stats()[::3]), paused, "frames while paused")
+            self.assertEqual(sum(stats()[::4]), paused, "frames while paused")
             harness.close_popup(emu)
             emu.sleep(1.5)
-            self.assertGreater(sum(stats()[::3]), paused, "no frames after RESUME")
+            self.assertGreater(sum(stats()[::4]), paused, "no frames after RESUME")
             self.assertEqual(emu.peek(START + 6, 1), b"\x00")
 
             emu.send("c 1", "c 0", pause=2)  # BUTTON: main returns 0
