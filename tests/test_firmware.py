@@ -12,8 +12,8 @@ except (FileNotFoundError, ImportError):
 HAVE_STOCK = STOCK is not None
 
 
-def fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100, applist=0, idle=0):
-    return b"WP2S" + struct.pack("<IIIIIII", 1, boot, ble, view_proc, view_name, applist, idle) + bytes(0x100)
+def fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100, applist=0):
+    return b"WP2S" + struct.pack("<IIIIIII", 1, boot, ble, view_proc, view_name, applist, 0) + bytes(0x100)
 
 
 class FirmwareTest(unittest.TestCase):
@@ -121,17 +121,6 @@ class FirmwareTest(unittest.TestCase):
         self.assertEqual(diff, {desc + 0xC})
 
     @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
-    def test_ble_idle_patch(self):
-        out = firmware.patch(STOCK, fake_stub(idle=0x1025A141))
-        at = firmware.BLE_IDLE_CALL - 0x10000000
-        self.assertEqual(STOCK[at:at + 4], firmware.thumb_bl(firmware.BLE_IDLE_CALL, firmware.STOCK_OS_SLEEP))
-        self.assertEqual(out[at:at + 4], firmware.thumb_bl(firmware.BLE_IDLE_CALL, 0x1025A140))
-        base = firmware.patch(STOCK, fake_stub())
-        self.assertEqual({i & ~3 for i in range(0x200, 0x25A080) if out[i] != base[i]}, {at & ~3})
-        with self.assertRaisesRegex(ValueError, "stub"):
-            firmware.patch(STOCK, fake_stub(idle=0x1025A140))
-
-    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
     def test_applist_needs_thumb(self):
         with self.assertRaisesRegex(ValueError, "stub"):
             firmware.patch(STOCK, fake_stub(applist=0x1025A120))
@@ -147,7 +136,7 @@ class FirmwareTest(unittest.TestCase):
             firmware.patch(STOCK, b"XXXX" + fake_stub()[4:])
         with self.assertRaisesRegex(ValueError, "stub"):
             firmware.patch(STOCK, fake_stub(boot=0x1025A0A0))
-        for bad in (dict(ble=0x1025A0C0), dict(view_proc=0x10000001), dict(view_name=0x1025A1A0),
+        for bad in (dict(ble=0x1025A0C0), dict(view_proc=0x10000001), dict(view_name=0x1025A080 + len(fake_stub())),
                     dict(applist=0x1025A081 + 0x4000)):
             with self.subTest(**bad), self.assertRaisesRegex(ValueError, "stub"):
                 firmware.patch(STOCK, fake_stub(**bad))

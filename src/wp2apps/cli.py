@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -61,11 +62,38 @@ def slot_name(slot):
     return "L" if slot == install.LOADER_SLOT else str(slot)
 
 
-async def with_watch(args, action):
+SESSIONS = Path(os.environ.get("WP2APPS_SESSIONS") or Path.home() / ".cache/wp2apps/sessions.json")
+
+
+def cached_key(target: str) -> bytes | None:
+    try:
+        return bytes.fromhex(json.loads(SESSIONS.read_text())[target])
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def cache_key(target: str, key: bytes) -> None:
+    # the session key is personal data (AGENTS.md): user-only file outside the repository
+    try:
+        known = json.loads(SESSIONS.read_text())
+    except (OSError, ValueError):
+        known = {}
+    known[target] = key.hex()
+    SESSIONS.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(SESSIONS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as out:
+        json.dump(known, out)
+
+
+async def with_watch(args, action, resume: bool = False):
+    """resume: reuse the cached session key of this watch (send, listen), so a running app sees no bind popup."""
     transport = blegatt.gatt_over_ble(args.address) if args.address else h4.gatt_over_h4(args.hci_port)
+    target = f"ble:{args.address}" if args.address else f"hci:{args.hci_port}"
     async with transport as gatt:
         session = link.Session()
-        await session.handshake(gatt)
+        await session.handshake(gatt, key=cached_key(target) if resume else None)
+        if resume:
+            cache_key(target, session.key)
         return await action(session)
 
 
@@ -88,7 +116,7 @@ def cmd_list(args):
 
 def cmd_send(args):
     data = bytes.fromhex(args.data) if args.hex else args.data.encode()
-    asyncio.run(with_watch(args, lambda s: channel.send(s, data, args.slot, args.wait)))
+    asyncio.run(with_watch(args, lambda s: channel.send(s, data, args.slot, args.wait), resume=True))
     print(json.dumps({"sent": len(data)}))
 
 
@@ -107,7 +135,6 @@ def cmd_listen(args):
             try:
                 m = await channel.recv(s, 5.0 if left is None else min(left, 5.0))
             except TimeoutError:
-                await channel.ping(s)  # keeps the link and the stub's host key alive
                 continue
             if args.slot not in (channel.ANY, m.slot):
                 continue
@@ -115,7 +142,7 @@ def cmd_listen(args):
             print(json.dumps({"seq": m.seq, "slot": m.slot, "data": m.data.hex(), "text": channel.text(m.data)}),
                   flush=True)
 
-    asyncio.run(with_watch(args, listen))
+    asyncio.run(with_watch(args, listen, resume=True))
 
 
 def cmd_scan(args):

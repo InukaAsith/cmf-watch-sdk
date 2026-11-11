@@ -162,8 +162,21 @@ class Session:
             await self._auth_request(0x8049, PHONE, 0x0049, auth)
         return auth, await self._auth_request(0x804B, b"\xa5", 0x004C, auth)
 
-    async def handshake(self, gatt, attempts: int = 3) -> None:
+    async def resume(self, key: bytes) -> bool:
+        """Reuses a session key of this boot: no bind, so no stock "Paired" popup (closing it jumps to the clock and
+        ends a running app). False if the stub does not answer with it."""
+        self.key = key
+        try:
+            await self.request(SYSTEM, STUB_INFO, b"\xff", STUB_INFO | 0xA000, timeout=2.0)
+            return True
+        except (TimeoutError, ValueError):
+            self.key = None
+            return False
+
+    async def handshake(self, gatt, attempts: int = 3, key: bytes | None = None) -> None:
         await self.attach(gatt)
+        if key and await self.resume(key):
+            return
         secret = bytes.fromhex(await self._shell_value("GETSECRET"))
         for _ in range(attempts):
             try:

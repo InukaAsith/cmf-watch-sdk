@@ -48,7 +48,8 @@ class ChannelTest(unittest.IsolatedAsyncioTestCase):
         s.events.put_nowait(link.encrypt(KEY, bytes([7, 2]) + b"pong"))
         self.assertEqual(await channel.recv(s, 1), channel.Message(7, 2, b"pong"))
         with self.assertRaises(TimeoutError):
-            await channel.recv(s, 0.05)
+            await channel.recv(s, 0.05, poll=0.01)
+        self.assertTrue(s.calls and all(c[0] == channel.PING for c in s.calls))
 
     async def test_ping(self):
         self.assertEqual(await channel.ping(FakeSession([])), channel.State(3, 1))

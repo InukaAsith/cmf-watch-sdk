@@ -17,7 +17,7 @@ pub struct StubHeader {
     view_proc: extern "C" fn(u32, u32, *mut c_void) -> i32,
     view_name: *const u8,
     applist_layout: extern "C" fn(*mut u8) -> i32,
-    ble_idle: extern "C" fn(u32),
+    _r: u32,
 }
 
 unsafe impl Sync for StubHeader {}
@@ -32,7 +32,7 @@ static HEADER: StubHeader = StubHeader {
     view_proc: view::wp2_view_proc,
     view_name: b"wp2_view\0".as_ptr(),
     applist_layout: applist::wp2_applist_layout,
-    ble_idle: ble::wp2_ble_idle,
+    _r: 0,
 };
 
 // Replaces `bl 0x10146AA4` (ResFbHeap init, 4 of its 8 arguments on the stack) at 0x101884FA.

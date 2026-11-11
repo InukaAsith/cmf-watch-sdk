@@ -13,7 +13,7 @@ APP_VBASE = 0x10000000
 NOR_APP_OFFSET = 0x24000
 NOR_APP_SIZE = 0x34B000
 STUB_MAX = 0x4000
-STUB_HEADER = struct.Struct("<4sIIIIIII")
+STUB_HEADER = struct.Struct("<4sIIIIII4s")
 VIEW_TABLE, VIEW_TABLE_END = 0x100004B8, 0x100013E8
 # 0x101461AC and 0x10055458 hold the same values but bound neighbouring tables (docs/recon.md)
 VIEW_START_LITERALS = (0x1018BC24, 0x1018DF3C)
@@ -26,9 +26,6 @@ STOCK_BLE_READ = 0x100CC284
 # list style descriptor +0xC: its layout; waterfall (0x101EB184) is not covered
 APPLIST_LAYOUT = 0x101EB160
 STOCK_APPLIST_LAYOUT = 0x1005EEE5
-# os_sleep(10) in the idle pass of wewear_read, the thread that runs the stock BLE dispatcher (docs/abi-1.1.md)
-BLE_IDLE_CALL = 0x100CBFC8
-STOCK_OS_SLEEP = 0x101BE1EC
 
 
 def sum32(data: bytes) -> int:
@@ -103,9 +100,9 @@ def patch(app: bytes, stub: bytes | None = None, *, _verify: bool = True) -> byt
 
 
 def add_stub(out: bytearray, stub: bytes) -> None:
-    magic, version, boot, ble, view_proc, view_name, applist, idle = STUB_HEADER.unpack_from(stub)
+    magic, version, boot, ble, view_proc, view_name, applist, _ = STUB_HEADER.unpack_from(stub)
     base = APP_VBASE + STUB_OFFSET
-    code = (boot, view_proc) + tuple(p for p in (ble, applist, idle) if p)
+    code = (boot, view_proc) + tuple(p for p in (ble, applist) if p)
     if (magic != b"WP2S" or version != 1 or not all(p & 1 for p in code)
             or not all(base <= p & ~1 < base + len(stub) for p in (*code, view_name))):
         raise ValueError("bad stub header")
@@ -125,8 +122,6 @@ def add_stub(out: bytearray, stub: bytes) -> None:
     put(out, BOOT_CALL, thumb_bl(BOOT_CALL, STOCK_HEAP_INIT), thumb_bl(BOOT_CALL, boot & ~1))
     if ble:
         put(out, BLE_CALL, thumb_bl(BLE_CALL, STOCK_BLE_READ), thumb_bl(BLE_CALL, ble & ~1))
-    if idle:
-        put(out, BLE_IDLE_CALL, thumb_bl(BLE_IDLE_CALL, STOCK_OS_SLEEP), thumb_bl(BLE_IDLE_CALL, idle & ~1))
     if applist:
         put(out, APPLIST_LAYOUT, struct.pack("<I", STOCK_APPLIST_LAYOUT), struct.pack("<I", applist))
 

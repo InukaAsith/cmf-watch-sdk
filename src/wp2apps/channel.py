@@ -68,22 +68,31 @@ async def send(session, data: bytes, slot: int = ANY, wait: float = 10.0) -> Non
         delay = min(delay * 2, 0.5)
 
 
-async def recv(session, timeout: float | None = None) -> Message:
+async def recv(session, timeout: float | None = None, poll: float = 0.25) -> Message:
+    """Next EVENT; the watch sends them after a host frame, so this PINGs every `poll` s while it waits."""
     async with asyncio.timeout(timeout):
-        body = await session.events.get()
+        while True:
+            try:
+                async with asyncio.timeout(poll):
+                    body = await session.events.get()
+                break
+            except TimeoutError:
+                await ping(session)
     return message(session.key, body)
 
 
 class Channel:
     """Reconnecting link to the running app, for daemons. A lost link (BLE error, timeout) is dropped and the next
-    call reconnects with backoff 1, 2, 4 ... 30 s and a fresh handshake."""
+    call reconnects with backoff 1, 2, 4 ... 30 s, first with the last session key (no bind popup), else a fresh
+    handshake. The watch sends app messages only after a host frame, so recv() polls with PING every `poll` s."""
 
     def __init__(self, address: str | None = None, hci_port: int | None = None, slot: int = ANY,
-                 keepalive: float = 5.0):
+                 poll: float = 0.25):
         if (address is None) == (hci_port is None):
             raise ValueError("give exactly one of address and hci_port")
-        self.address, self.hci_port, self.slot, self.keepalive = address, hci_port, slot, keepalive
+        self.address, self.hci_port, self.slot, self.poll = address, hci_port, slot, poll
         self.session = None
+        self.key = None  # session key of the last link, tried first on reconnect (no bind popup)
         self._stack = None
         self._backoff = 1.0
 
@@ -97,13 +106,13 @@ class Channel:
             try:
                 gatt = await stack.enter_async_context(self._transport())
                 session = link.Session()
-                await session.handshake(gatt)
+                await session.handshake(gatt, key=self.key)
             except (*LOST, ValueError):
                 await stack.aclose()
                 await asyncio.sleep(self._backoff)
                 self._backoff = min(self._backoff * 2, 30.0)
                 continue
-            self.session, self._stack, self._backoff = session, stack, 1.0
+            self.session, self._stack, self._backoff, self.key = session, stack, 1.0, session.key
         return self.session
 
     async def drop(self):
@@ -136,7 +145,8 @@ class Channel:
                     raise TimeoutError("link lost and not back in time") from None
 
     async def recv(self, timeout: float | None = None) -> Message:
-        """Next EVENT of the app (of `slot` unless ANY); a PING after `keepalive` idle seconds notices a dead link."""
+        """Next EVENT of the app (of `slot` unless ANY); each idle `poll` a PING collects queued ones and notices a
+        dead link."""
         loop = asyncio.get_running_loop()
         deadline = None if timeout is None else loop.time() + timeout
         while True:
@@ -145,7 +155,7 @@ class Channel:
             if left is not None and left <= 0:
                 raise TimeoutError("no message")
             try:
-                m = await recv(session, self.keepalive if left is None else min(left, self.keepalive))
+                m = await recv(session, self.poll if left is None else min(left, self.poll))
             except TimeoutError:
                 try:
                     await ping(session)
