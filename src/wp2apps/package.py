@@ -51,11 +51,13 @@ def _check(image: bytes, name: bytes, kind: int, entry: int, relocs: Sequence[in
 
 
 def pack(image: bytes, *, name: str, version: int, entry: int = 0, kind: int = KIND_APP,
-         relocs: Sequence[int] = ()) -> bytes:
+         relocs: Sequence[int] = (), abi_minor: int = ABI_MINOR) -> bytes:
     encoded = name.encode("utf-8")
     _check(image, encoded, kind, entry, relocs)
+    if not 0 <= abi_minor <= 0xFF:
+        raise ValueError(f"abi_minor {abi_minor} does not fit the header")
     table = struct.pack(f"<{len(relocs)}I", *relocs)
-    fields = [MAGIC, ABI, kind, ABI_MINOR, encoded, version, len(image), entry, len(relocs),
+    fields = [MAGIC, ABI, kind, abi_minor, encoded, version, len(image), entry, len(relocs),
               zlib.crc32(image + table), 0, b""]
     fields[10] = zlib.crc32(HEADER.pack(*fields)[:HEADER_CRC_SPAN])
     return HEADER.pack(*fields) + image + table
@@ -130,3 +132,20 @@ def check_elf(image: bytes, elf: bytes) -> None:
         raise ValueError(f"ELF entry is {entry:#x}; images must be linked at 0 with entry 1 (use app.ld)")
     if len(image) != end:
         raise ValueError(f"image is {len(image)} bytes but the ELF occupies {end}; .bss missing?")
+
+
+def abi_minor(image: bytes, elf: bytes) -> int:
+    """The SDK's WP2_ABI_MINOR (u16 in the image at its symbol), 0 for an image without it (loader, old SDK)."""
+    sections = _sections(elf)
+    for _, kind, _, _, off, size, link, _, _, entsize in sections:
+        if kind != 2:
+            continue
+        strtab = sections[link][4]
+        for sym in range(off, off + size, entsize or 16):
+            name_off, value = struct.unpack_from("<II", elf, sym)
+            end = elf.index(b"\0", strtab + name_off)
+            if elf[strtab + name_off:end] == b"WP2_ABI_MINOR":
+                if value + 2 > len(image):
+                    raise ValueError("WP2_ABI_MINOR lies outside the image")
+                return struct.unpack_from("<H", image, value)[0]
+    return 0

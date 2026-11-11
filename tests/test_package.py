@@ -141,5 +141,33 @@ def fake_elf(entry, sections, rels=()):
     return bytes(header) + b"".join(shdrs) + symtab + relsec
 
 
+def symbol_elf(name: bytes, value: int) -> bytes:
+    strtab = b"\0" + name + b"\0"
+    symtab = bytes(16) + struct.pack("<IIIBBH", 1, value, 2, 0x11, 0, 1)
+    off = 0x34 + 40 * 3
+    shdrs = [bytes(40), struct.pack("<IIIIIIIIII", 0, 2, 0, 0, off, len(symtab), 2, 0, 0, 16),
+             struct.pack("<IIIIIIIIII", 0, 3, 0, 0, off + len(symtab), len(strtab), 0, 0, 0, 0)]
+    header = bytearray(0x34)
+    header[:4] = b"\x7fELF"
+    struct.pack_into("<I", header, 0x20, 0x34)
+    struct.pack_into("<HH", header, 0x2E, 40, 3)
+    return bytes(header) + b"".join(shdrs) + symtab + strtab
+
+
+class AbiMinorTest(unittest.TestCase):
+    def test_read_from_symbol(self):
+        image = bytes(8) + struct.pack("<H", 1) + bytes(6)
+        self.assertEqual(package.abi_minor(image, symbol_elf(b"WP2_ABI_MINOR", 8)), 1)
+        self.assertEqual(package.abi_minor(image, symbol_elf(b"OTHER", 8)), 0)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            package.abi_minor(image, symbol_elf(b"WP2_ABI_MINOR", 15))
+
+    def test_header_carries_it(self):
+        pkg = package.parse(package.pack(bytes(16), name="x", version=1, abi_minor=1))
+        self.assertEqual(pkg.abi_minor, 1)
+        with self.assertRaisesRegex(ValueError, "abi_minor"):
+            package.pack(bytes(16), name="x", version=1, abi_minor=256)
+
+
 if __name__ == "__main__":
     unittest.main()

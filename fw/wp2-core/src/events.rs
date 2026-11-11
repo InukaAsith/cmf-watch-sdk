@@ -11,6 +11,8 @@ pub const CROWN: u8 = 3;
 pub const BUTTON: u8 = 4;
 pub const PAUSE: u8 = 5;
 pub const RESUME: u8 = 6;
+// ABI 1.1: a host message is in the inbox, x = its length
+pub const MESSAGE: u8 = 7;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -92,6 +94,28 @@ pub struct Api {
     pub motor: extern "C" fn(u16, u16) -> i32,
     pub millis: extern "C" fn() -> u32,
     pub exit: extern "C" fn(i32) -> !,
+    // ABI 1.1 (docs/abi-1.1.md)
+    pub send_msg: extern "C" fn(*const u8, usize) -> i32,
+    pub recv_msg: extern "C" fn(*mut u8, usize) -> i32,
+    pub load_data: extern "C" fn(*mut u8, usize) -> i32,
+    pub save_data: extern "C" fn(*const u8, usize) -> i32,
+    pub get_time: extern "C" fn(*mut Time) -> i32,
+    pub get_battery: extern "C" fn() -> i32,
+    pub screen_on: extern "C" fn(bool) -> i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct Time {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    pub weekday: u8,
+    pub millis: u16,
+    pub utc_offset_min: i16,
 }
 
 #[cfg(test)]
@@ -133,6 +157,10 @@ mod tests {
         assert_eq!(size_of::<Api>(), size_of::<cmf_wp2_app::Api>());
         assert_eq!(offset_of!(Api, motor), offset_of!(cmf_wp2_app::Api, motor));
         assert_eq!(offset_of!(Api, exit), offset_of!(cmf_wp2_app::Api, exit));
+        assert_eq!(offset_of!(Api, send_msg), offset_of!(cmf_wp2_app::Api, send_msg));
+        assert_eq!(offset_of!(Api, screen_on), offset_of!(cmf_wp2_app::Api, screen_on));
+        assert_eq!(size_of::<Time>(), size_of::<cmf_wp2_app::Time>());
+        assert_eq!(offset_of!(Time, utc_offset_min), offset_of!(cmf_wp2_app::Time, utc_offset_min));
         assert_eq!(size_of::<Event>(), size_of::<cmf_wp2_app::Event>());
     }
 }

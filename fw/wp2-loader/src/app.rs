@@ -1,4 +1,4 @@
-use crate::{motor, ui};
+use crate::{motor, svc, ui};
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use wp2_core::gfx;
@@ -30,7 +30,7 @@ pub static DEFOCUSED: AtomicBool = AtomicBool::new(false);
 
 static API: Api = Api {
     abi: 1,
-    abi_minor: 0,
+    abi_minor: 1,
     width: 466,
     height: 466,
     fill_rect,
@@ -40,6 +40,13 @@ static API: Api = Api {
     motor: motor::motor,
     millis,
     exit,
+    send_msg: svc::send,
+    recv_msg: svc::recv,
+    load_data: svc::load,
+    save_data: svc::save,
+    get_time: svc::time,
+    get_battery: svc::battery,
+    screen_on: svc::keep_screen_on,
 };
 
 type Entry = extern "C" fn(*const Api) -> i32;
@@ -64,6 +71,7 @@ pub fn launch(slot: u8) -> Result<(), i32> {
     EXITED.store(false, Ordering::Release);
     motor::reset();
     QUEUE.clear();
+    svc::start(h.abi_minor);
     ui::canvas().fill_rect(0, 0, 466, 466, 0);
     ui::PENDING.store(gfx::EMPTY, Ordering::Relaxed);
     ui::PUBLISHED.store(gfx::FULL, Ordering::Release);
@@ -75,6 +83,7 @@ pub fn launch(slot: u8) -> Result<(), i32> {
         buf.0.as_mut_ptr(), buf.0.len() as u32, app_thread, entry, &API, 0, APP_PRIO, 0, 0,
     );
     if tid == 0 {
+        svc::stop();
         unsafe { heap::free(RES, block) };
         ram.app_block = 0;
         ram.app_size = 0;
@@ -92,6 +101,7 @@ pub fn stop_app() {
     // abort first: the app thread cannot start the motor again
     stock!(K_THREAD_ABORT, fn(*mut u8))(addr_of_mut!(THREAD_BUF) as *mut u8);
     motor::off();
+    svc::stop();
     let ram = stub_ram();
     unsafe { heap::free(RES, ram.app_block as *mut u8) };
     ram.app_block = 0;
@@ -110,6 +120,7 @@ pub fn pause_tick() {
     if paused == motor::PAUSED.swap(paused, Ordering::AcqRel) {
         return;
     }
+    svc::set_paused(paused);
     if paused {
         // no motor::off() here: the popup may already buzz the motor itself (charge popup: 300 ms);
         // the watchdog right after this cuts the motor only if the app left it on
@@ -170,6 +181,12 @@ extern "C" fn next_event(ev: *mut Event, timeout_ms: u32) -> bool {
     let start = millis();
     loop {
         if let Some(e) = QUEUE.pop() {
+            if !ev.is_null() {
+                unsafe { ev.write(e) };
+            }
+            return true;
+        }
+        if let Some(e) = svc::announce() {
             if !ev.is_null() {
                 unsafe { ev.write(e) };
             }

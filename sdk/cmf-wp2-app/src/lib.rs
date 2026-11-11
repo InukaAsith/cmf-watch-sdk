@@ -3,7 +3,10 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub const ABI: u16 = 1;
-pub const ABI_MINOR: u16 = 0;
+pub const ABI_MINOR: u16 = 1;
+/// The package header's `abi_minor`: `wp2apps pack` reads this symbol from the ELF.
+#[unsafe(no_mangle)]
+pub static WP2_ABI_MINOR: u16 = ABI_MINOR;
 
 pub const TOUCH_DOWN: u8 = 1;
 pub const TOUCH_UP: u8 = 2;
@@ -11,6 +14,13 @@ pub const CROWN: u8 = 3;
 pub const BUTTON: u8 = 4;
 pub const PAUSE: u8 = 5;
 pub const RESUME: u8 = 6;
+/// ABI 1.1: a host message is in the inbox, `x` = its length; read it with [`Api::recv`].
+pub const MESSAGE: u8 = 7;
+
+/// Longest message in either direction.
+pub const MSG_MAX: usize = 128;
+/// Largest blob [`Api::save`] keeps.
+pub const STORE_MAX: usize = 4096;
 
 /// `x`, `y`: touch point for `TOUCH_DOWN`/`TOUCH_UP`. `delta`: for `CROWN`, the direction of one detent,
 /// `+1` or `-1` per event, never a magnitude (a fast turn is several events); 0 otherwise.
@@ -37,6 +47,37 @@ pub struct Api {
     pub motor: extern "C" fn(duty_permille: u16, freq_hz: u16) -> i32,
     pub millis: extern "C" fn() -> u32,
     pub exit: extern "C" fn(code: i32) -> !,
+    // ABI 1.1 (docs/abi-1.1.md)
+    pub send_msg: extern "C" fn(data: *const u8, len: usize) -> i32,
+    pub recv_msg: extern "C" fn(buf: *mut u8, cap: usize) -> i32,
+    pub load_data: extern "C" fn(buf: *mut u8, cap: usize) -> i32,
+    pub save_data: extern "C" fn(data: *const u8, len: usize) -> i32,
+    pub get_time: extern "C" fn(out: *mut Time) -> i32,
+    pub get_battery: extern "C" fn() -> i32,
+    pub screen_on: extern "C" fn(on: bool) -> i32,
+}
+
+/// Local wall-clock time as the watch shows it. `weekday` 0 = Sunday; `utc_offset_min` as set by the phone app.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Time {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+    pub weekday: u8,
+    pub millis: u16,
+    pub utc_offset_min: i16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Battery {
+    pub percent: u8,
+    pub charging: bool,
+    pub full: bool,
+    pub charger: bool,
 }
 
 impl Api {
@@ -68,6 +109,50 @@ impl Api {
     pub fn now(&self) -> u32 {
         (self.millis)()
     }
+
+    /// Queues a message (1..=[`MSG_MAX`] bytes) for the host. `0`, or `-1` bad length, `-11` outbox full
+    /// (4 queued), `-107` no wp2apps host connected.
+    pub fn send(&self, data: &[u8]) -> i32 {
+        (self.send_msg)(data.as_ptr(), data.len())
+    }
+
+    /// Takes the oldest host message into `buf`. `None` if the inbox is empty or `buf` is shorter than the message
+    /// (then it stays queued; [`MSG_MAX`] always fits).
+    pub fn recv<'a>(&self, buf: &'a mut [u8]) -> Option<&'a [u8]> {
+        let n = (self.recv_msg)(buf.as_mut_ptr(), buf.len());
+        (n > 0).then(|| &buf[..n as usize])
+    }
+
+    /// The app's stored blob: its length (`0` = nothing stored), `-1` if `buf` is too short, `-5` I/O error.
+    pub fn load(&self, buf: &mut [u8]) -> i32 {
+        (self.load_data)(buf.as_mut_ptr(), buf.len())
+    }
+
+    /// Replaces the stored blob atomically (at most [`STORE_MAX`] bytes; empty deletes it). Writes NAND: call on
+    /// change, not per frame. `0`, `-1` too long, `-5` I/O error.
+    pub fn save(&self, data: &[u8]) -> i32 {
+        (self.save_data)(data.as_ptr(), data.len())
+    }
+
+    pub fn time(&self) -> Option<Time> {
+        let mut t = Time::default();
+        ((self.get_time)(&mut t) == 0).then_some(t)
+    }
+
+    pub fn battery(&self) -> Option<Battery> {
+        let b = (self.get_battery)();
+        (b >= 0).then(|| Battery {
+            percent: b as u8,
+            charging: b & 0x100 != 0,
+            full: b & 0x200 != 0,
+            charger: b & 0x400 != 0,
+        })
+    }
+
+    /// Keeps the display on while this app runs in the foreground; the loader drops it on pause and exit.
+    pub fn keep_screen_on(&self, on: bool) {
+        (self.screen_on)(on);
+    }
 }
 
 static API: AtomicPtr<Api> = AtomicPtr::new(core::ptr::null_mut());
@@ -78,7 +163,8 @@ pub fn api() -> Option<&'static Api> {
 
 #[doc(hidden)]
 pub fn __start(api: &'static Api, main: fn(&'static Api) -> i32) -> i32 {
-    if api.abi != ABI || api.abi_minor < ABI_MINOR {
+    // the volatile read keeps WP2_ABI_MINOR in the linked image for the packager
+    if api.abi != ABI || api.abi_minor < unsafe { core::ptr::read_volatile(&WP2_ABI_MINOR) } {
         return -2;
     }
     API.store(api as *const Api as *mut Api, Ordering::Relaxed);
@@ -127,11 +213,27 @@ mod tests {
     extern "C" fn exit(_: i32) -> ! {
         panic!("exit")
     }
+    extern "C" fn bytes(_: *const u8, _: usize) -> i32 {
+        0
+    }
+    extern "C" fn bytes_mut(_: *mut u8, _: usize) -> i32 {
+        0
+    }
+    extern "C" fn time(_: *mut Time) -> i32 {
+        0
+    }
+    extern "C" fn battery() -> i32 {
+        0x1_40
+    }
+    extern "C" fn screen(_: bool) -> i32 {
+        0
+    }
 
     fn table(abi: u16, abi_minor: u16) -> &'static Api {
         Box::leak(Box::new(Api {
             abi, abi_minor, width: 466, height: 466, fill_rect: rect, draw_text: text, present,
-            next_event: next, motor, millis, exit,
+            next_event: next, motor, millis, exit, send_msg: bytes, recv_msg: bytes_mut, load_data: bytes_mut,
+            save_data: bytes, get_time: time, get_battery: battery, screen_on: screen,
         }))
     }
 
@@ -147,5 +249,16 @@ mod tests {
     #[test]
     fn rejects_other_major() {
         assert_eq!(__start(table(ABI + 1, ABI_MINOR), app), -2);
+    }
+
+    #[test]
+    fn rejects_older_minor() {
+        assert_eq!(__start(table(ABI, ABI_MINOR - 1), app), -2);
+    }
+
+    #[test]
+    fn battery_bits() {
+        let b = table(ABI, ABI_MINOR).battery().unwrap();
+        assert_eq!((b.percent, b.charging, b.full, b.charger), (0x40, true, false, false));
     }
 }

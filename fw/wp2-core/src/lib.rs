@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 
+pub mod chan;
 pub mod events;
 pub mod font8x8;
 #[cfg(target_os = "none")]

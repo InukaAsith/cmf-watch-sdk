@@ -171,7 +171,7 @@ mod tests {
         assert!(check_slot(&h, 0).is_ok());
         assert_eq!(check_slot(&h, LOADER_SLOT), Err(PkgError::Kind));
         let mut newer = h;
-        newer.abi_minor = 1;
+        newer.abi_minor = LOADER_ABI_MINOR as u8 + 1;
         assert_eq!(check_slot(&newer, 0), Err(PkgError::Abi));
         let mut big = h;
         big.image_size = APP_SIZE + 1;
