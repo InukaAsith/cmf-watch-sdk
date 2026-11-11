@@ -1,0 +1,12 @@
+[package]
+name = "herdr-agents"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+cmf-wp2-app = { path = "../../cmf-wp2-app" }
+
+[[bin]]
+name = "herdr-agents"
+bench = false
