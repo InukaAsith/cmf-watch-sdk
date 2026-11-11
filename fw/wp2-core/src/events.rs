@@ -1,6 +1,6 @@
 use core::{
     cell::UnsafeCell,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicU32, AtomicU8, Ordering},
 };
 
 use crate::stock::{KEY_BACK, KEY_CROWN_CCW, KEY_CROWN_CW, KEY_CROWN_PRESS};
@@ -13,6 +13,8 @@ pub const PAUSE: u8 = 5;
 pub const RESUME: u8 = 6;
 // ABI 1.1: a host message is in the inbox, x = its length
 pub const MESSAGE: u8 = 7;
+// ABI 1.2: an LVGL object event, x = handle, y = lv event code, delta = value (VALUE_CHANGED)
+pub const LV: u8 = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -28,46 +30,71 @@ const LEN: u8 = 16;
 
 pub struct Queue {
     buf: UnsafeCell<[Event; LEN as usize]>,
-    head: AtomicU8,
+    // low byte: index; above: bumped by every coalesce, so a pop that read a slot coalesce then rewrote retries
+    head: AtomicU32,
     tail: AtomicU8,
 }
 
-// one producer (push, clear) and one consumer (pop)
+// one producer (push, coalesce, clear) and one consumer (pop)
 unsafe impl Sync for Queue {}
 
 impl Queue {
     pub const fn new() -> Self {
         const EMPTY: Event = Event { kind: 0, _pad: 0, x: 0, y: 0, delta: 0 };
-        Queue { buf: UnsafeCell::new([EMPTY; LEN as usize]), head: AtomicU8::new(0), tail: AtomicU8::new(0) }
+        Queue { buf: UnsafeCell::new([EMPTY; LEN as usize]), head: AtomicU32::new(0), tail: AtomicU8::new(0) }
+    }
+
+    fn slot(&self, i: u8) -> *mut Event {
+        unsafe { (self.buf.get() as *mut Event).add(usize::from(i)) }
     }
 
     pub fn push(&self, e: Event) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
         let next = (tail + 1) % LEN;
-        if next == self.head.load(Ordering::Acquire) {
+        if next == self.head.load(Ordering::Acquire) as u8 {
             return false;
         }
-        unsafe { (self.buf.get() as *mut Event).add(usize::from(tail)).write(e) };
+        unsafe { self.slot(tail).write(e) };
         self.tail.store(next, Ordering::Release);
         true
+    }
+
+    /// Replaces a queued event with the same `kind`, `x` and `y` (the app sees only the latest value), else pushes.
+    pub fn coalesce(&self, e: Event) -> bool {
+        let tail = self.tail.load(Ordering::Relaxed);
+        let mut i = self.head.load(Ordering::Acquire) as u8;
+        while i != tail {
+            let s = self.slot(i);
+            let q = unsafe { s.read() };
+            if (q.kind, q.x, q.y) == (e.kind, e.x, e.y) {
+                unsafe { s.write(e) };
+                self.head.fetch_add(0x100, Ordering::AcqRel);
+                return true;
+            }
+            i = (i + 1) % LEN;
+        }
+        self.push(e)
     }
 
     pub fn pop(&self) -> Option<Event> {
         loop {
             let head = self.head.load(Ordering::Acquire);
-            if head == self.tail.load(Ordering::Acquire) {
+            let i = head as u8;
+            if i == self.tail.load(Ordering::Acquire) {
                 return None;
             }
-            let e = unsafe { (self.buf.get() as *const Event).add(usize::from(head)).read() };
-            // a clear() that preempted us moved head: drop e and read again
-            if self.head.compare_exchange(head, (head + 1) % LEN, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            let e = unsafe { self.slot(i).read() };
+            // a clear() or coalesce() that preempted us changed head: drop e and read again
+            let next = head & !0xFF | u32::from((i + 1) % LEN);
+            if self.head.compare_exchange(head, next, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                 return Some(e);
             }
         }
     }
 
     pub fn clear(&self) {
-        self.head.store(self.tail.load(Ordering::Acquire), Ordering::Release);
+        let tail = self.tail.load(Ordering::Acquire);
+        let _ = self.head.fetch_update(Ordering::AcqRel, Ordering::Acquire, |h| Some((h & !0xFF).wrapping_add(0x100) | u32::from(tail)));
     }
 }
 
@@ -104,6 +131,8 @@ pub struct Api {
     pub get_time: extern "C" fn(*mut Time) -> i32,
     pub get_battery: extern "C" fn() -> i32,
     pub screen_on: extern "C" fn(bool) -> i32,
+    // ABI 1.2 (docs/specs/2026-11-11-lvgl-apps-design.md)
+    pub lv_submit: extern "C" fn(*const u8, usize) -> i32,
 }
 
 #[repr(C)]
@@ -147,6 +176,31 @@ mod tests {
     }
 
     #[test]
+    fn value_events_coalesce() {
+        let q = Queue::new();
+        for v in 0..40 {
+            q.coalesce(Event { kind: LV, x: 3, y: 28, delta: v, ..Event::default() });
+        }
+        q.push(Event { kind: BUTTON, ..Event::default() });
+        assert_eq!(q.pop(), Some(Event { kind: LV, x: 3, y: 28, delta: 39, ..Event::default() }));
+        assert_eq!(q.pop().map(|e| e.kind), Some(BUTTON));
+        assert_eq!(q.pop(), None);
+        // another handle is its own event; a popped event is not replaced
+        q.coalesce(Event { kind: LV, x: 3, delta: 1, ..Event::default() });
+        q.coalesce(Event { kind: LV, x: 4, delta: 2, ..Event::default() });
+        assert_eq!(q.pop().map(|e| e.delta), Some(1));
+        q.coalesce(Event { kind: LV, x: 3, delta: 5, ..Event::default() });
+        assert_eq!(q.pop().map(|e| (e.x, e.delta)), Some((4, 2)));
+        assert_eq!(q.pop().map(|e| (e.x, e.delta)), Some((3, 5)));
+        // same handle, another event code: PRESSED stays, VALUE_CHANGED queues behind it
+        q.push(Event { kind: LV, x: 3, y: 1, ..Event::default() });
+        q.coalesce(Event { kind: LV, x: 3, y: 28, delta: 7, ..Event::default() });
+        assert_eq!(q.pop().map(|e| (e.y, e.delta)), Some((1, 0)));
+        assert_eq!(q.pop().map(|e| (e.y, e.delta)), Some((28, 7)));
+        assert_eq!(q.pop(), None);
+    }
+
+    #[test]
     fn key_mapping() {
         assert_eq!(map_key(0xFFFF_006F).map(|e| (e.kind, e.delta)), Some((3, 1)));
         assert_eq!(map_key(0xFFFF_006E).map(|e| (e.kind, e.delta)), Some((3, -1)));
@@ -162,6 +216,7 @@ mod tests {
         assert_eq!(offset_of!(Api, exit), offset_of!(cmf_wp2_app::Api, exit));
         assert_eq!(offset_of!(Api, send_msg), offset_of!(cmf_wp2_app::Api, send_msg));
         assert_eq!(offset_of!(Api, screen_on), offset_of!(cmf_wp2_app::Api, screen_on));
+        assert_eq!(offset_of!(Api, lv_submit), offset_of!(cmf_wp2_app::Api, lv_submit));
         assert_eq!(size_of::<Time>(), size_of::<cmf_wp2_app::Time>());
         assert_eq!(offset_of!(Time, utc_offset_min), offset_of!(cmf_wp2_app::Time, utc_offset_min));
         assert_eq!(size_of::<Event>(), size_of::<cmf_wp2_app::Event>());

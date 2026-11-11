@@ -3,6 +3,7 @@ __pycache__/
 /target/
 /runs/
 *.bin
+!tests/fixtures/*.bin
 *.wp2app
 .DS_Store
 /sdk/target/

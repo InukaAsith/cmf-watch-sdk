@@ -46,12 +46,14 @@ struct ImgDsc {
 
 struct Ui {
     fb: *mut u8,
+    scr: Obj,
+    input: Option<Cb>,
     img: Obj,
     timer: *mut c_void,
     dsc: ImgDsc,
 }
 
-static mut UI: Ui = Ui { fb: null_mut(), img: null_mut(), timer: null_mut(), dsc: ImgDsc { header: 0, data_size: 0, data: null() } };
+static mut UI: Ui = Ui { fb: null_mut(), scr: null_mut(), input: None, img: null_mut(), timer: null_mut(), dsc: ImgDsc { header: 0, data_size: 0, data: null() } };
 
 fn ui() -> &'static mut Ui {
     unsafe { &mut *addr_of_mut!(UI) }
@@ -85,20 +87,36 @@ pub fn layout(data: *mut c_void, input: Cb, tick: Cb) -> Obj {
     }
     // 10 ms: at 20 ms, 4-10 % of agent-glow's presents (33 ms frames) were merged into the next flush
     u.timer = stock!(LV_TIMER_CREATE, fn(Cb, u32, *mut c_void) -> *mut c_void)(tick, 10, null_mut());
+    (u.scr, u.input) = (scr, Some(input));
     scr
 }
 
-// shown: touch and crown go to the image (the app)
+pub fn screen() -> Obj {
+    ui().scr
+}
+
+// touch and crown of the image, also on the LVGL root; set by layout() before any app runs
+pub fn input() -> Cb {
+    ui().input.unwrap()
+}
+
+// shown: touch and crown go to the image (the app), or to the LVGL root once the app made one (the image stays hidden)
 pub fn show(on: bool) {
-    let img = ui().img;
+    let (img, root) = (ui().img, crate::lv::root());
     if img.is_null() {
         return;
     }
-    if on {
-        stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(img, FLAG_HIDDEN);
-        stock!(LV_DISP_ADD_KNOB_OBJ, fn(Obj))(img);
+    let obj = if root.is_null() {
+        img
     } else {
         stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(img, FLAG_HIDDEN);
+        root
+    };
+    if on {
+        stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(obj, FLAG_HIDDEN);
+        stock!(LV_DISP_ADD_KNOB_OBJ, fn(Obj))(obj);
+    } else {
+        stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(obj, FLAG_HIDDEN);
     }
 }
 
@@ -113,6 +131,8 @@ pub fn delete() {
     }
     unsafe { heap::free(FB, u.fb) };
     u.fb = null_mut();
+    u.scr = null_mut();
+    u.input = None;
     u.img = null_mut();
     u.timer = null_mut();
 }

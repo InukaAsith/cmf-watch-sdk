@@ -1,0 +1,322 @@
+"""lv-demo (ABI 1.2, stock LVGL widgets) in the emulator: the screen, LV events, crown scrolling with the round
+scroll bar, a rejected batch, DEL of the list, GUI heap after exit and a force stop while the app sits in lv_submit.
+Needs target/{loader,lv-demo}.wp2app. WP2_NETSIM_INSTANCE=93."""
+import asyncio
+from contextlib import ExitStack
+import struct
+import unittest
+from unittest import skipUnless
+
+from scripts.recon.gui_heap_probe import GUI_HEAP, GUI_SIZE, walk_heap
+from tests.e2e import harness
+from tests.test_api_e2e import session, unpaused
+from tests.test_demo_e2e import save_png
+from wp2apps import channel, paths
+
+S = harness.STUB_RAM
+RUNNING = S + 6
+ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/lv-demo"
+LOADER_ELF = paths.ROOT / "fw/target/thumbv7em-none-eabi/release/wp2-loader"
+OUT = paths.ROOT / "runs" / "lv"
+# sdk/examples/lv-demo/src/screen.rs
+LIST_Y, ROW_H, ROW_GAP = 76, 50, 8
+SLIDER_Y = 298  # centre line
+ARC_BOX = (103, 322, 223, 442)
+CLICKED, VALUE_CHANGED = 7, 28
+# STATS indices (lv-demo main.rs)
+(FONT_RC, SCREEN_RC, MSG_RC, EVENTS, LAST_H, LAST_CODE, LAST_DELTA, ARC_VALUE, SLIDER, ARC, BAR, SPINS, LIST, MSGS,
+ ROWS) = range(15)
+N_STATS = ROWS + 12
+COORDS, FLAGS = 0x14, 0x24  # lv_obj_t: i32 x1 y1 x2 y2; flags (bit 0 HIDDEN), docs/recon-lvgl.md
+CROWN_DOWN = "r -80"  # one detent
+
+
+def cyan(p) -> bool:
+    r, g, b = p
+    return g > r + 60 and b > r + 60
+
+
+def widgets_drawn(px) -> list[str]:
+    """What is missing of the slider (cyan indicator, left of its value) and the arc (cyan indicator)."""
+    x0, y0, x1, y1 = ARC_BOX
+    missing = []
+    if not cyan(px(110, SLIDER_Y)):
+        missing.append("slider indicator")
+    if not any(cyan(px(x, y)) for x in range(x0, x1, 2) for y in range(y0, y1, 2)):
+        missing.append("arc indicator")
+    return missing
+
+
+def row_y(i: int) -> int:
+    return LIST_Y + i * (ROW_H + ROW_GAP) + ROW_H // 2
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd, gdb and llvm-nm)")
+class LvDemoTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        OUT.mkdir(parents=True, exist_ok=True)
+        cls.stack = ExitStack()
+        cls.emu, cls.port = cls.stack.enter_context(harness.installed(["loader", "lv-demo"], name="lv"))
+
+        async def bind():  # before the app opens: harness.ready closes the "Paired" popup of this bind
+            async with session(cls.port):
+                pass
+
+        asyncio.run(bind())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stack.close()
+
+    def tearDown(self):
+        uart = self.emu.uart()
+        self.assertNotIn("MllcFailedHook", uart)
+        self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+        self.assertNotIn("unsupported API", uart)
+        self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
+
+    # --- helpers ---
+
+    def running(self) -> int:
+        return self.emu.peek(RUNNING, 1)[0]
+
+    def in_menu(self) -> bool:
+        return self.emu.peek(S + 4, 3) == b"\x01\x01\xff"
+
+    def to_menu(self):
+        if self.running() != 0xFF:
+            self.emu.send("c 1", "c 0", pause=2)
+        if not self.in_menu():
+            harness.open_menu(self.emu)
+        self.emu.sleep(1)
+
+    def launch(self):
+        """Fresh lv-demo from the menu (row 0); waits for its screen batch."""
+        self.to_menu()
+        self.emu.send("t 1 200 180", "t 0 200 180", pause=1.5)
+        self.assertEqual(self.running(), 0, "lv-demo did not start")
+        # FONT_RC and SCREEN_RC start at 1 in the app; SLIDER is set after the screen submit returned
+        for _ in range(20):
+            s = self.stats()
+            if s[SLIDER]:
+                break
+            self.emu.sleep(0.25)
+        self.assertEqual((s[FONT_RC], s[SCREEN_RC]), (0, 0), f"font and screen batches: STATS {s}")
+        self.assertTrue(s[SLIDER], f"screen batch never returned: STATS {s}")
+        self.assertEqual((s[EVENTS], s[MSG_RC], s[SPINS], s[MSGS]), (0, 0, 0, 0), f"STATS of a previous run: {s}")
+        return s
+
+    def stats(self):
+        at = harness.u32(self.emu, S + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
+        return struct.unpack(f"<{N_STATS}i", self.emu.peek(at, 4 * N_STATS))
+
+    def obj(self, h: int) -> int:
+        lv = harness.u32(self.emu, S + harness.LOADER_BLOCK_OFF) + harness.symbol(LOADER_ELF, "LV_STATE")
+        return harness.u32(self.emu, lv + 4 * h)
+
+    def coords(self, h: int):
+        return struct.unpack("<4i", self.emu.peek(self.obj(h) + COORDS, 16))
+
+    def hidden(self, h: int) -> bool:
+        return bool(harness.u32(self.emu, self.obj(h) + FLAGS) & 1)
+
+    def gui_free(self) -> int:
+        ptr = harness.u32(self.emu, GUI_HEAP)
+        return walk_heap(self.emu.peek(ptr, GUI_SIZE), ptr)["free"]
+
+    def frame(self, name: str):
+        w, h, rgb = self.emu.frame()
+        save_png(OUT / name, w, h, rgb)
+        return rgb, lambda x, y: tuple(rgb[(y * w + x) * 3:][:3])
+
+    def message(self, text: bytes):
+        async def run():
+            async with session(self.port) as s:
+                await unpaused(s)
+                await channel.send(s, text)
+
+        asyncio.run(run())
+
+    def wait_stat(self, i: int, pred, what: str):
+        for _ in range(40):
+            if pred(self.stats()[i]):
+                return self.stats()
+            self.emu.sleep(0.25)
+        self.fail(f"{what}: STATS {self.stats()}")
+
+    # --- tests ---
+
+    def test_screen_events_crown(self):
+        s = self.launch()
+        rgb, px = self.frame("screen.png")
+        title = {px(x, y) for x in range(130, 336) for y in range(28, 70)}
+        grey = {p for p in title if 30 < p[0] < 220 and max(p) - min(p) < 24}
+        print(f"\ntitle: {len(grey)} grey levels")
+        self.assertGreaterEqual(len(grey), 3, "title is not drawn with an anti-aliased stock font")
+        for i in (0, 1, 2):
+            r, g, b = px(110, row_y(i))
+            self.assertGreater(b, r + 40, f"row {i} background")
+        self.assertEqual(px(110, row_y(0) + ROW_H // 2 + ROW_GAP // 2), (0, 0, 0), "gap between rows 0 and 1")
+        self.assertEqual(widgets_drawn(px), [])
+
+        # tap on row 2: CLICKED for its handle, one motor tick
+        n = len(self.emu.motor())
+        self.emu.send(f"t 1 233 {row_y(2)}", f"t 0 233 {row_y(2)}", pause=1)
+        s = self.stats()
+        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[ROWS + 2], CLICKED), s)
+        tick = self.emu.motor()[n:]
+        print(f"row tap motor.log {tick}")
+        self.assertEqual([d for _, d, _ in tick], [250, 0], tick)
+        self.assertLessEqual(tick[1][0] - tick[0][0], 60)
+
+        # crown: the list scrolls, row 0 moves up, the round scroll bar shows
+        row0 = s[ROWS]
+        y0 = self.coords(row0)[1]
+        self.assertEqual(y0, LIST_Y, "row 0 top before the crown")
+        self.assertTrue(self.hidden(s[BAR]), "scroll bar before the crown")
+        self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
+        shown = not self.hidden(s[BAR])
+        self.frame("crown.png")
+        y1 = self.coords(row0)[1]
+        print(f"crown x4: row 0 top {y0} -> {y1}, scroll bar shown {shown}")
+        self.assertLess(y1, y0, "crown did not scroll the list")
+        self.assertTrue(shown, "round scroll bar not shown while scrolling")
+        self.emu.sleep(1.5)
+        self.assertTrue(self.hidden(s[BAR]), "scroll bar did not hide again")
+
+        # slider: drag leftward (a rightward drag is the stock back gesture: the app gets BUTTON and exits)
+        _, before = self.frame("before-slider.png")
+        arc_before = self.stats()[ARC_VALUE]
+        harness.swipe(self.emu, 330, SLIDER_Y, 150, SLIDER_Y, steps=4, pause=1)
+        s = self.stats()
+        _, after = self.frame("after-slider.png")
+        print(f"slider: arc {arc_before} -> {s[ARC_VALUE]}, last event {s[LAST_H]} {s[LAST_CODE]} {s[LAST_DELTA]}")
+        self.assertEqual(self.running(), 0, "the drag exited the app")
+        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[SLIDER], VALUE_CHANGED), s)
+        self.assertEqual(s[ARC_VALUE], s[LAST_DELTA])
+        self.assertLess(s[ARC_VALUE], arc_before)
+        x0, y0, x1, y1 = ARC_BOX
+        self.assertNotEqual([before(x, y) for x in range(x0, x1, 3) for y in range(y0, y1, 3)],
+                            [after(x, y) for x in range(x0, x1, 3) for y in range(y0, y1, 3)], "arc did not change")
+
+        self.emu.send("c 1", "c 0", pause=2)
+        self.assertTrue(self.in_menu(), "BUTTON did not exit to the menu")
+
+    def test_invalid_batch_changes_nothing(self):
+        self.launch()
+        self.emu.sleep(1)
+        before, _ = self.frame("before-bad.png")
+        self.message(b"!bad")
+        s = self.wait_stat(MSG_RC, lambda v: v != 0, "no result for !bad")
+        self.assertEqual(s[MSG_RC], -22)
+        self.emu.sleep(1)
+        after, _ = self.frame("after-bad.png")
+        self.assertEqual(self.running(), 0)
+        self.assertTrue(before == after, "a rejected batch changed the screen")
+        self.emu.send("c 1", "c 0", pause=2)
+        self.assertTrue(self.in_menu())
+
+    def handled(self, text: bytes, n: int):
+        """Sends a host message and waits until lv-demo has handled its n-th one; returns STATS."""
+        self.message(text)
+        return self.wait_stat(MSGS, lambda v: v >= n, f"no result for {text}")
+
+    def test_del_list(self):
+        """DEL of a subtree on the device: the list, its 12 rows, their labels and the list's scroll bar."""
+        s = self.launch()
+        self.emu.sleep(1)
+        doomed = range(s[LIST], s[BAR] + 1)  # list, rows and labels, bar: created in one run
+        kept = (1, s[SLIDER], s[ARC])  # title, slider, arc
+        self.assertEqual(len(doomed), 26)
+        self.assertTrue(all(self.obj(h) for h in [*doomed, *kept]), "objects before DEL")
+        with_list = self.gui_free()
+
+        s = self.handled(b"!del", 1)
+        self.assertEqual(s[MSG_RC], 0, s)
+        self.emu.sleep(0.5)
+        gone = self.gui_free()
+        _, px = self.frame("after-del.png")
+        print(f"\nGUI heap free: with the list {with_list}, after DEL {gone} (the list cost {gone - with_list})")
+        self.assertEqual([h for h in doomed if self.obj(h)], [], "LV_STATE.objs of freed handles")
+        self.assertTrue(all(self.obj(h) for h in kept), "DEL took objects outside the list")
+        self.assertGreater(gone - with_list, 2000, "DEL freed too little GUI heap")
+        for i in (0, 1, 2):
+            self.assertEqual(px(110, row_y(i)), (0, 0, 0), f"row {i} still drawn")
+        self.assertEqual(widgets_drawn(px), [])
+
+        # the crown's knob was the list: turning it must not touch the freed list or bar
+        self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
+        self.emu.sleep(1.5)  # past the bar's 1 s hide timer
+        self.assertEqual(self.running(), 0, "crown after DEL")
+        # touch still works: the slider reports
+        harness.swipe(self.emu, 330, SLIDER_Y, 150, SLIDER_Y, steps=4, pause=1)
+        s = self.stats()
+        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[SLIDER], VALUE_CHANGED), s)
+
+        # the same list again: the same handles, and the GUI heap of the first list (DEL leaked nothing)
+        s = self.handled(b"!list", 2)
+        self.assertEqual(s[MSG_RC], 0, s)
+        self.assertEqual(range(s[LIST], s[BAR] + 1), doomed)
+        self.emu.sleep(0.5)
+        again = self.gui_free()
+        print(f"GUI heap free with the list again: {again}")
+        self.assertLessEqual(abs(again - with_list), 256)
+        self.assertEqual(self.coords(s[ROWS])[1], LIST_Y, "rebuilt row 0 at the top")
+        y0 = self.coords(s[ROWS])[1]
+        self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
+        self.assertLess(self.coords(s[ROWS])[1], y0, "crown does not scroll the rebuilt list")
+        self.emu.send("c 1", "c 0", pause=2)
+        self.assertTrue(self.in_menu())
+
+    def test_exit_frees_gui_heap(self):
+        self.to_menu()
+        menu = self.gui_free()
+        self.launch()
+        self.emu.sleep(1)
+        app = self.gui_free()
+        self.emu.send("c 1", "c 0", pause=2)
+        self.assertTrue(self.in_menu(), "menu not back after BUTTON")
+        self.emu.sleep(1)
+        back = self.gui_free()
+        self.frame("menu-after-exit.png")
+        print(f"\nGUI heap free: menu {menu}, lv-demo {app} (uses {menu - app}), after exit {back}")
+        self.assertLessEqual(abs(menu - back), 256)
+
+    def test_stop_inside_submit(self):
+        self.to_menu()
+        menu = self.gui_free()
+        self.launch()
+        self.message(b"!spin")
+        self.wait_stat(SPINS, lambda v: v > 5, "!spin did not start submitting")
+        spins = self.stats()[SPINS]
+        self.emu.send("c 1", "c 0", pause=0)  # the spinning app never reads its BUTTON
+        start = self.emu.clock()
+        while self.running() != 0xFF and self.emu.clock() - start < 3:
+            self.emu.sleep(0.125)
+        took = self.emu.clock() - start
+        print(f"\nforce stop after {took:.3f} s ({spins}+ submits)")
+        self.assertEqual(self.running(), 0xFF, "app not stopped")
+        self.assertLessEqual(took, 2)
+        self.assertGreaterEqual(took, 0.875, "stopped before the 1000 ms force stop")
+        self.emu.sleep(1)
+        self.assertTrue(self.in_menu())
+        back = self.gui_free()
+        print(f"GUI heap free: menu {menu}, after force stop {back}")
+        self.assertLessEqual(abs(menu - back), 256)
+        self.assertEqual(self.emu.motor()[-1][1], 0)
+        # the mailbox is idle again: a new launch builds its screen (launch asserts both submits returned 0)
+        self.launch()
+        self.emu.sleep(1)
+        _, px = self.frame("relaunch.png")
+        self.assertEqual(widgets_drawn(px), [], "relaunched screen")
+        for i in (0, 1):
+            r, g, b = px(110, row_y(i))
+            self.assertGreater(b, r + 40, f"relaunch: row {i} background")
+        self.assertEqual(self.coords(self.stats()[ROWS])[1], LIST_Y, "relaunch: row 0 at the top")
+        self.emu.send("c 1", "c 0", pause=2)
+        self.assertTrue(self.in_menu())
+
+
+if __name__ == "__main__":
+    unittest.main()

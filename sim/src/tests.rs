@@ -223,3 +223,10 @@ fn json_escapes() {
     let line = out::json(5, "send", &[("text", V::S("a\"\n")), ("n", V::I(-1))]);
     assert_eq!(line, r#"{"t":5,"ev":"send","text":"a\"\u000a","n":-1}"#);
 }
+
+#[test]
+fn lv_submit_is_not_supported() {
+    assert!(API.abi_minor >= 2);
+    assert_eq!((API.lv_submit)(std::ptr::null(), 0), -95);
+    assert_eq!(API.lv().unwrap().submit(&[1, 3, 1, 0, 1, 0, 0]), -95);
+}
