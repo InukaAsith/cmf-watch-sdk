@@ -1,4 +1,3 @@
-use wp2_core::gfx::Canvas;
 use wp2_core::layout::SLOTS;
 use wp2_core::pkg::{check_slot, parse_header, HEADER_SIZE};
 
@@ -9,23 +8,14 @@ pub struct Entry {
     pub slot: u8,
     pub name: [u8; 24],
     pub len: u8,
+    pub version: u32,
 }
-
-const X: i16 = 90;
-const TOP: i16 = 120;
-const ROW_H: i16 = 60;
-const TEXT_DY: i16 = 12;
-const WHITE: u16 = 0xFFFF;
-// rows on the round screen; the menu pages by VISIBLE so the selected row is shown
-pub const VISIBLE: usize = 5;
-// press-to-release distance (px, per axis) still counted as a tap; the emulator reports a 125 ms tap ~40 px off
-const DRAG: i32 = 80;
 
 pub fn entry(slot: u8, raw: &[u8; HEADER_SIZE]) -> Option<Entry> {
     let h = parse_header(raw).ok()?;
     check_slot(&h, slot).ok()?;
     let len = h.name.iter().position(|&b| b == 0).unwrap_or(h.name.len()) as u8;
-    Some(Entry { slot, name: h.name, len })
+    Some(Entry { slot, name: h.name, len, version: h.version })
 }
 
 // Entries are packed from index 0; row i shows entries[i].
@@ -50,73 +40,239 @@ pub fn scan() -> [Option<Entry>; ROWS] {
     out
 }
 
-pub fn first(selected: usize) -> usize {
-    selected - selected % VISIBLE
+// Label texts, NUL-terminated for lv_label_set_text.
+pub type Text = [u8; 26];
+
+pub fn name_text(e: &Entry) -> Text {
+    let mut t = [0; 26];
+    t[..usize::from(e.len)].copy_from_slice(&e.name[..usize::from(e.len)]);
+    t
 }
 
-pub fn is_tap(press: (i32, i32), release: (i32, i32)) -> bool {
-    (press.0 - release.0).abs() <= DRAG && (press.1 - release.1).abs() <= DRAG
+// first character of the name (ASCII upper-cased) for the row icon
+pub fn initial(e: &Entry) -> Text {
+    let mut t = [0; 26];
+    let n = e.name[1..usize::from(e.len).max(1)].iter().take_while(|&&b| b & 0xC0 == 0x80).count() + 1;
+    t[..n].copy_from_slice(&e.name[..n]);
+    t[0] = t[0].to_ascii_uppercase();
+    t
 }
 
-// `failed`: (row, code) shows "Error <code>" in place of that row's name
-pub fn draw(c: &mut Canvas, entries: &[Option<Entry>; ROWS], selected: usize, failed: Option<(usize, i32)>) {
-    use wp2_core::gfx::{H, W};
-    c.fill_rect(0, 0, W as u16, H as u16, 0);
-    c.text((W as i16 - 4 * 16) / 2, 60, b"Apps", WHITE);
-    let mut shown = 0;
-    let mut buf = [0u8; 18];
-    let top = first(selected);
-    for (i, e) in entries.iter().flatten().enumerate().skip(top).take(VISIBLE) {
-        let y = TOP + ROW_H * (i - top) as i16 + TEXT_DY;
-        if i == selected {
-            c.text(X - 24, y, b">", WHITE);
-        }
-        let text = match failed {
-            Some((row, code)) if row == i => error(code, &mut buf),
-            _ => &e.name[..usize::from(e.len)],
-        };
-        c.text(X, y, text, WHITE);
-        shown += 1;
-    }
-    if shown == 0 {
-        c.text(X, TOP + TEXT_DY, b"No apps", WHITE);
-    }
+pub fn error_text(code: i32) -> Text {
+    num(b"Error ", code < 0, code.unsigned_abs())
 }
 
-pub fn error(code: i32, buf: &mut [u8; 18]) -> &[u8] {
-    buf[..6].copy_from_slice(b"Error ");
-    let mut n = 6;
-    if code < 0 {
-        buf[n] = b'-';
+pub fn version_text(v: u32) -> Text {
+    num(b"v", false, v)
+}
+
+fn num(prefix: &[u8], neg: bool, mut v: u32) -> Text {
+    let mut t = [0; 26];
+    t[..prefix.len()].copy_from_slice(prefix);
+    let mut n = prefix.len();
+    if neg {
+        t[n] = b'-';
         n += 1;
     }
-    let mut digits = [0u8; 10];
-    let mut v = code.unsigned_abs();
-    let mut d = 0;
+    let start = n;
     loop {
-        digits[d] = b'0' + (v % 10) as u8;
-        d += 1;
+        t[n] = b'0' + (v % 10) as u8;
+        n += 1;
         v /= 10;
         if v == 0 {
             break;
         }
     }
-    for &b in digits[..d].iter().rev() {
-        buf[n] = b;
-        n += 1;
-    }
-    &buf[..n]
+    t[start..n].reverse();
+    t
 }
 
-pub fn hit(y: i16) -> Option<usize> {
-    let row = usize::try_from((y - TOP) / ROW_H).ok().filter(|_| y >= TOP)?;
-    (row < VISIBLE).then_some(row)
+// Geometry on the 466x466 round screen, rows as in the stock Settings list (emulator frame: rows 120 px with
+// an 8 px gap from y 120, x 16..449, radius 44, icon centred 44 px from the row edge, text from x 101).
+// PAD_BOTTOM lets the last row scroll up to TITLE_Y, so the list always scrolls (a drag over a row
+// scrolls it and LVGL sends no CLICKED) and the crown always moves it.
+pub const TITLE_Y: i32 = 56;
+pub const TOP: i32 = 120;
+pub const PITCH: i32 = 128;
+pub const ROW_H: i32 = 120;
+pub const COL_X: i32 = 16;
+pub const COL_W: i32 = 434;
+pub const RADIUS: i32 = 44;
+pub const ICON: i32 = 40;
+pub const ICON_X: i32 = 44 - ICON / 2;
+pub const TEXT_X: i32 = 101 - COL_X;
+pub const PAD_R: i32 = 32;
+pub const VER_W: i32 = 72;
+pub const NAME_W: i32 = COL_W - TEXT_X - PAD_R - VER_W - 8;
+pub const PAD_BOTTOM: i32 = 466 - TITLE_Y - ROW_H;
+
+// "No apps" sits where row 0 would
+#[cfg(test)]
+pub fn content_height(rows: usize) -> i32 {
+    TOP + PITCH * (rows.max(1) as i32 - 1) + ROW_H + PAD_BOTTOM
+}
+
+#[cfg(target_os = "none")]
+pub mod lv {
+    use super::*;
+    use core::ffi::c_void;
+    use core::ptr::{addr_of_mut, null_mut};
+    use wp2_core::stock::*;
+
+    pub type Obj = *mut c_void;
+    pub type Cb = extern "C" fn(*mut c_void);
+
+    const FLAG_HIDDEN: u32 = 1;
+    // cleared on the icon so a press on it goes to the row
+    const FLAG_CLICKABLE: u32 = 2;
+    // LV_OBJ_FLAG_USER_4: registers the object as the knob object; the crown scrolls it (docs/recon-lvgl.md)
+    pub const FLAG_KNOB: u32 = 1 << 30;
+    pub const CLICKED: u32 = 7;
+    const STATE_PRESSED: u32 = 0x20;
+    const LONG_DOT: u32 = 1;
+    const ALIGN_CENTER: u32 = 2;
+    const ALIGN_RIGHT: u32 = 3;
+    const BLACK: u32 = 0x0000;
+    const WHITE: u32 = 0xFFFF;
+    const GREY: u32 = 0x8C92; // #8E9196
+    // stock accent: the emulator shows it as (160, 43, 15), i.e. RGB565 31/17/3
+    const RED: u32 = 0xFA23;
+    // stock Settings row: the emulator frame reads (26, 28, 31), white reads 160, so RGB565 5/11/6
+    const ROW_BG: u32 = 0x2966;
+    const ROW_PRESSED: u32 = 0x4229;
+    const FONT_PATH: &[u8] = b"/NAND:A/font32M.font\0";
+
+    // repr(C): the e2e probe reads it by offset
+    #[repr(C)]
+    struct Ui {
+        cont: Obj,
+        names: [Obj; ROWS],
+        font: [u32; 8],
+        font_open: bool,
+    }
+
+    static mut UI: Ui = Ui { cont: null_mut(), names: [null_mut(); ROWS], font: [0; 8], font_open: false };
+
+    fn ui() -> &'static mut Ui {
+        unsafe { &mut *addr_of_mut!(UI) }
+    }
+
+    fn style(obj: Obj, prop: u32, value: u32, selector: u32) {
+        stock!(LV_OBJ_SET_LOCAL_STYLE_PROP, fn(Obj, u32, u32, u32))(obj, prop, value, selector)
+    }
+
+    fn place(obj: Obj, x: i32, y: i32, w: i32, h: i32) -> Obj {
+        stock!(LV_OBJ_SET_POS, fn(Obj, i32, i32))(obj, x, y);
+        stock!(LV_OBJ_SET_SIZE, fn(Obj, i32, i32))(obj, w, h);
+        obj
+    }
+
+    fn panel(parent: Obj, x: i32, y: i32, w: i32, h: i32, color: u32) -> Obj {
+        let o = place(stock!(LV_OBJ_CREATE, fn(Obj) -> Obj)(parent), x, y, w, h);
+        style(o, LV_STYLE_BG_COLOR, color, 0);
+        style(o, LV_STYLE_BG_OPA, 0xFF, 0);
+        o
+    }
+
+    fn label(parent: Obj, x: i32, y: i32, w: i32, h: i32, text: &Text) -> Obj {
+        let l = stock!(LV_LABEL_CREATE, fn(Obj) -> Obj)(parent);
+        stock!(LV_LABEL_SET_LONG_MODE, fn(Obj, u32))(l, LONG_DOT);
+        set_text(l, text);
+        place(l, x, y, w, h)
+    }
+
+    fn set_text(l: Obj, text: &Text) {
+        stock!(LV_LABEL_SET_TEXT, fn(Obj, *const u8))(l, text.as_ptr())
+    }
+
+    fn text(s: &[u8]) -> Text {
+        let mut t = [0; 26];
+        t[..s.len()].copy_from_slice(s);
+        t
+    }
+
+    // UI thread (view msg 3). `click` gets CLICKED with the row index as user data.
+    pub fn build(scr: Obj, entries: &[Option<Entry>; ROWS], click: Cb) {
+        let u = ui();
+        u.font_open = stock!(LVGL_BITMAP_FONT_OPEN, fn(*mut u32, *const u8) -> i32)(u.font.as_mut_ptr(), FONT_PATH.as_ptr()) == 0;
+        let font = if u.font_open { u.font.as_ptr() as u32 } else { LV_FONT_DEFAULT };
+        let lh = unsafe { *(font as *const i32).add(2) }.clamp(1, ROW_H);
+        let ty = (ROW_H - lh) / 2;
+        let cont = panel(scr, 0, 0, 466, 466, BLACK);
+        style(cont, LV_STYLE_PAD_BOTTOM, PAD_BOTTOM as u32, 0);
+        style(cont, LV_STYLE_TEXT_FONT, font, 0);
+        style(cont, LV_STYLE_TEXT_COLOR, WHITE, 0);
+        stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(cont, FLAG_KNOB);
+        let title = label(cont, 0, TITLE_Y, 466, lh, &text(b"Apps"));
+        style(title, LV_STYLE_TEXT_ALIGN, ALIGN_CENTER, 0);
+        style(title, LV_STYLE_TEXT_COLOR, RED, 0);
+        let mut rows = 0;
+        for (i, e) in entries.iter().flatten().enumerate() {
+            let row = panel(cont, COL_X, TOP + PITCH * i as i32, COL_W, ROW_H, ROW_BG);
+            style(row, LV_STYLE_RADIUS, RADIUS as u32, 0);
+            style(row, LV_STYLE_BG_COLOR, ROW_PRESSED, STATE_PRESSED);
+            stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, usize) -> *mut c_void)(row, click, CLICKED, i);
+            let icon = panel(row, ICON_X, (ROW_H - ICON) / 2, ICON, ICON, RED);
+            style(icon, LV_STYLE_RADIUS, (ICON / 2) as u32, 0);
+            stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(icon, FLAG_CLICKABLE);
+            let letter = label(icon, 0, (ICON - lh) / 2, ICON, lh, &initial(e));
+            style(letter, LV_STYLE_TEXT_ALIGN, ALIGN_CENTER, 0);
+            u.names[i] = label(row, TEXT_X, ty, NAME_W, lh, &name_text(e));
+            let v = label(row, COL_W - PAD_R - VER_W, ty, VER_W, lh, &version_text(e.version));
+            style(v, LV_STYLE_TEXT_ALIGN, ALIGN_RIGHT, 0);
+            style(v, LV_STYLE_TEXT_COLOR, GREY, 0);
+            rows += 1;
+        }
+        if rows == 0 {
+            label(cont, COL_X + TEXT_X, TOP + ty, NAME_W, lh, &text(b"No apps"));
+        }
+        u.cont = cont;
+    }
+
+    pub fn row_of(e: *mut c_void) -> usize {
+        stock!(LV_EVENT_GET_USER_DATA, fn(*mut c_void) -> usize)(e)
+    }
+
+    pub fn set_row_text(row: usize, t: &Text) {
+        let l = ui().names[row];
+        if !l.is_null() {
+            set_text(l, t);
+        }
+    }
+
+    // hidden: no touch, not drawn; shown: the knob object again (the image took it while an app ran)
+    pub fn show(on: bool) {
+        let c = ui().cont;
+        if c.is_null() {
+            return;
+        }
+        if on {
+            stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(c, FLAG_HIDDEN);
+            stock!(LV_DISP_ADD_KNOB_OBJ, fn(Obj))(c);
+        } else {
+            stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(c, FLAG_HIDDEN);
+        }
+    }
+
+    // UI thread, view msg 4: the loader block is freed afterwards, so no object, callback or font is left.
+    pub fn delete() {
+        let u = ui();
+        if !u.cont.is_null() {
+            stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(u.cont, FLAG_KNOB);
+            stock!(LV_OBJ_DEL, fn(Obj))(u.cont);
+        }
+        if u.font_open {
+            stock!(LVGL_BITMAP_FONT_CLOSE, fn(*mut u32))(u.font.as_mut_ptr());
+        }
+        u.cont = null_mut();
+        u.names = [null_mut(); ROWS];
+        u.font_open = false;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wp2_core::gfx::{H, W};
     use wp2_core::pkg::crc32;
 
     fn header(name: &[u8], kind: u8) -> [u8; HEADER_SIZE] {
@@ -125,20 +281,21 @@ mod tests {
         raw[4] = 1;
         raw[6] = kind;
         raw[8..8 + name.len()].copy_from_slice(name);
+        raw[0x20..0x24].copy_from_slice(&7u32.to_le_bytes());
         raw[0x24..0x28].copy_from_slice(&0x100u32.to_le_bytes());
         let crc = crc32(0, &raw[..0x34]);
         raw[0x34..0x38].copy_from_slice(&crc.to_le_bytes());
         raw
     }
 
-    fn lit(px: &[u16], x: usize, y: usize, w: usize, h: usize) -> usize {
-        (y..y + h).map(|r| px[r * W + x..r * W + x + w].iter().filter(|&&p| p != 0).count()).sum()
+    fn cstr(t: &Text) -> &[u8] {
+        &t[..t.iter().position(|&b| b == 0).unwrap()]
     }
 
     #[test]
     fn entry_needs_valid_app_header() {
         let e = entry(2, &header(b"hello", 0)).unwrap();
-        assert_eq!((e.slot, &e.name[..e.len as usize]), (2, &b"hello"[..]));
+        assert_eq!((e.slot, &e.name[..e.len as usize], e.version), (2, &b"hello"[..], 7));
         assert_eq!(entry(2, &header(b"loader", 1)), None);
         let mut bad = header(b"hello", 0);
         bad[0x20] ^= 1;
@@ -146,81 +303,27 @@ mod tests {
     }
 
     #[test]
-    fn rows_and_hits() {
-        assert_eq!(hit(119), None);
-        assert_eq!(hit(120), Some(0));
-        assert_eq!(hit(179), Some(0));
-        assert_eq!(hit(180), Some(1));
-        assert_eq!(hit(120 + 60 * VISIBLE as i16 - 1), Some(VISIBLE - 1));
-        assert_eq!(hit(120 + 60 * VISIBLE as i16), None);
-        assert_eq!(hit(-5), None);
+    fn texts_are_nul_terminated() {
+        let e = entry(0, &header(b"abcdefghijklmnopqrstuvw", 0)).unwrap();
+        assert_eq!(cstr(&name_text(&e)), b"abcdefghijklmnopqrstuvw");
+        assert_eq!(cstr(&error_text(-12)), b"Error -12");
+        assert_eq!(cstr(&error_text(i32::MIN)), b"Error -2147483648");
+        assert_eq!(cstr(&error_text(5)), b"Error 5");
+        assert_eq!(cstr(&version_text(0)), b"v0");
+        assert_eq!(cstr(&version_text(u32::MAX)), b"v4294967295");
+        assert_eq!(cstr(&initial(&e)), b"A");
+        assert_eq!(cstr(&initial(&entry(0, &header("éte".as_bytes(), 0)).unwrap())), "é".as_bytes());
+        assert_eq!(cstr(&initial(&entry(0, &header(b"7", 0)).unwrap())), b"7");
     }
 
     #[test]
-    fn draws_title_and_rows() {
-        let mut px = vec![0u16; W * H];
-        let a = entry(0, &header(b"hello", 0));
-        let b = entry(1, &header(b"vibration-lab", 0));
-        let mut entries = [None; ROWS];
-        entries[0] = a;
-        entries[1] = b;
-        draw(&mut Canvas { px: &mut px }, &entries, 1, None);
-        assert!(lit(&px, 0, 60, W, 16) > 50);
-        assert!(lit(&px, 90, 120, 300, 40) > 50);
-        assert!(lit(&px, 90, 180, 300, 40) > 50);
-        assert_eq!(lit(&px, 90, 240, 300, 40), 0);
-        assert!(lit(&px, 0, 180, 90, 40) > 0, "selection marker left of row 1");
-        assert_eq!(lit(&px, 0, 120, 90, 40), 0);
-    }
-
-    #[test]
-    fn selection_pages_the_rows() {
-        assert_eq!((first(0), first(4), first(5), first(7)), (0, 0, 5, 5));
-        let mut entries = [None; ROWS];
-        for (i, e) in entries.iter_mut().enumerate() {
-            *e = entry(i as u8, &header(b"app", 0));
+    fn list_always_scrolls() {
+        for n in 0..=ROWS {
+            assert!(content_height(n) > 466, "{n} rows");
         }
-        let mut px = vec![0u16; W * H];
-        draw(&mut Canvas { px: &mut px }, &entries, 6, None);
-        assert!(lit(&px, 0, 180, 90, 40) > 0, "entry 6 is the second row of page 2");
-        assert!(lit(&px, 90, 240, 300, 40) > 0);
-        assert_eq!(lit(&px, 0, 300, W, H - 300), 0, "page 2 has 3 rows");
-    }
-
-    #[test]
-    fn drag_is_not_a_tap() {
-        assert!(is_tap((200, 140), (200, 103)));
-        assert!(!is_tap((233, 140), (233, 363)));
-        assert!(!is_tap((40, 233), (400, 233)));
-    }
-
-    #[test]
-    fn error_text() {
-        let mut buf = [0u8; 18];
-        assert_eq!(error(-12, &mut buf), b"Error -12");
-        assert_eq!(error(i32::MIN, &mut buf), b"Error -2147483648");
-        assert_eq!(error(5, &mut buf), b"Error 5");
-    }
-
-    #[test]
-    fn error_replaces_the_row_name() {
-        let mut entries = [None; ROWS];
-        entries[0] = entry(0, &header(b"hello", 0));
-        let mut plain = vec![0u16; W * H];
-        draw(&mut Canvas { px: &mut plain }, &entries, 0, None);
-        let mut px = vec![0u16; W * H];
-        draw(&mut Canvas { px: &mut px }, &entries, 0, Some((0, -12)));
-        assert!(lit(&px, 90, 120, 300, 40) > lit(&plain, 90, 120, 300, 40), "\"Error -12\" is longer than \"hello\"");
-        let mut other = vec![0u16; W * H];
-        draw(&mut Canvas { px: &mut other }, &entries, 0, Some((1, -12)));
-        assert_eq!(other, plain);
-    }
-
-    #[test]
-    fn empty_menu_says_no_apps() {
-        let mut px = vec![0xFFFFu16; W * H];
-        draw(&mut Canvas { px: &mut px }, &[None; ROWS], 0, None);
-        assert!(lit(&px, 90, 120, 300, 40) > 50);
-        assert_eq!(lit(&px, 0, 180, W, H - 180), 0);
+        assert_eq!(content_height(ROWS) - 466, TOP + PITCH * (ROWS as i32 - 1) - TITLE_Y, "last row reaches the title");
+        assert!(NAME_W > 200);
+        assert_eq!(COL_X + COL_W, 450);
+        assert!(ICON_X + ICON < TEXT_X && 2 * RADIUS < ROW_H);
     }
 }

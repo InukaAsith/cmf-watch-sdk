@@ -43,6 +43,29 @@ pub const LV_EVENT_GET_CODE: u32 = 0x101C4C9B;
 pub const LV_EVENT_GET_PARAM: u32 = 0x101C4CA3;
 // lv_point_t is two i32 here (LV_USE_LARGE_COORD)
 pub const LV_INDEV_GET_POINT: u32 = 0x101C4F57;
+pub const LV_EVENT_GET_USER_DATA: u32 = 0x101C4CA7;
+pub const LV_OBJ_CREATE: u32 = 0x10127CFD;
+pub const LV_OBJ_CLEAR_FLAG: u32 = 0x10127E7D;
+// (obj): makes an already registered knob object the display's current one (docs/recon-lvgl.md)
+pub const LV_DISP_ADD_KNOB_OBJ: u32 = 0x10128C51;
+// (obj, prop, value, selector); value is lv_style_value_t (i32, pointer or RGB565 in the low half)
+pub const LV_OBJ_SET_LOCAL_STYLE_PROP: u32 = 0x101C6F9B;
+pub const LV_LABEL_CREATE: u32 = 0x1013F5F1;
+// copies the text into lv_mem
+pub const LV_LABEL_SET_TEXT: u32 = 0x101400A5;
+pub const LV_LABEL_SET_LONG_MODE: u32 = 0x1014051D;
+// (lv_font_t *, path) -> 0 / -1; the 0x20-byte lv_font_t has line_height (i32) at +8
+pub const LVGL_BITMAP_FONT_OPEN: u32 = 0x10185C31;
+pub const LVGL_BITMAP_FONT_CLOSE: u32 = 0x10185D3D;
+pub const LV_FONT_DEFAULT: u32 = 0x101FB6BC;
+// style property ids of this build (8.3.10 numbering, read from the lv_obj_set_style_* setters)
+pub const LV_STYLE_RADIUS: u32 = 0x0B;
+pub const LV_STYLE_PAD_BOTTOM: u32 = 0x11;
+pub const LV_STYLE_BG_COLOR: u32 = 0x20;
+pub const LV_STYLE_BG_OPA: u32 = 0x21;
+pub const LV_STYLE_TEXT_COLOR: u32 = 0x55;
+pub const LV_STYLE_TEXT_FONT: u32 = 0x57;
+pub const LV_STYLE_TEXT_ALIGN: u32 = 0x5B;
 
 pub const PWM_DEVICE: u32 = 0x101DF1C0;
 pub const PWM_PIN_SET_CYCLES: u32 = 0x1012197D;

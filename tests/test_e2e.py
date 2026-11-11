@@ -338,13 +338,20 @@ class LoaderTest(unittest.TestCase):
             self.assertTrue(0x380A9340 <= block < START, hex(block))  # the loader lives in ResFbHeap
             (emu.run / "menu.ppm").write_bytes((emu.run / "frame.ppm").read_bytes())
             w, h, rgb = emu.frame()
-            self.assertGreater(bright_pixels(rgb, w, (90, 120, 300, 40)), 50)  # "hello"
-            self.assertGreater(bright_pixels(rgb, w, (90, 180, 300, 40)), 50)  # "vibration-lab"
-            self.assertEqual(rgb[300 * w * 3:], bytes(len(rgb) - 300 * w * 3), "framebuffer does not cover the face")
-            emu.send("r -80", pause=1)  # crown +1: the selection marker moves to row 1
+            self.assertGreater(bright_pixels(rgb, w, ROW0), 50)  # "hello"
+            self.assertGreater(bright_pixels(rgb, w, row_box(1)), 50)  # "vibration-lab"
+            # below the last row, inside the round panel (a WP2_GUI run frames it with a grey bezel)
+            self.assertFalse(any(pixel(rgb, w, x, y) != (0, 0, 0) for x in range(160, 306) for y in range(380, 430)),
+                             "the menu does not cover the face")
+            above = (90, 110, 300, 45)  # row 0 above its text
+            self.assertEqual(bright_pixels(rgb, w, above), 0)
+            emu.send("r -80", pause=1)  # the crown scrolls the list: row 0 moves up
             rgb = emu.frame()[2]
-            self.assertEqual(bright_pixels(rgb, w, (55, 120, 35, 60)), 0)
-            self.assertGreater(bright_pixels(rgb, w, (55, 180, 35, 60)), 20)
+            self.assertGreater(bright_pixels(rgb, w, above), 50)
+            emu.send("r 80", "r 80", pause=1.5)  # back to the top (clamped)
+            rgb = emu.frame()[2]
+            self.assertEqual(bright_pixels(rgb, w, above), 0)
+            self.assertGreater(bright_pixels(rgb, w, ROW0), 50)
             emu.send("c 1", "c 0", pause=2)  # button: stock closes the view
             self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
             self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
@@ -410,7 +417,12 @@ def pixel(rgb: bytes, w: int, x: int, y: int) -> tuple[int, int, int]:
     return tuple(rgb[3 * (y * w + x):3 * (y * w + x) + 3])
 
 
-ROW0 = (90, 120, 300, 40)
+def row_box(row: int):
+    """Text of menu row `row` (wp2-loader menu.rs: rows 120 px from y 120, pitch 128, text from x 101)."""
+    return 90, 150 + 128 * row, 300, 50
+
+
+ROW0 = row_box(0)
 
 
 @skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
@@ -788,7 +800,7 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")
         w, h, rgb = emu.frame()
         for row in range(rows):
-            self.assertGreater(bright_pixels(rgb, w, (90, 120 + 60 * row, 300, 40)), 50, f"menu row {row}")
+            self.assertGreater(bright_pixels(rgb, w, row_box(row)), 50, f"menu row {row}")
         emu.send("c 1", "c 0", pause=3)
         self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
         self.assertEqual(harness.u32(emu, START + harness.LOADER_BLOCK_OFF), 0)
