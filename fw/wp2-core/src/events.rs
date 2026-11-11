@@ -59,14 +59,14 @@ impl Queue {
         true
     }
 
-    /// Replaces a queued event with the same `kind` and `x` (the app sees only the latest value), else pushes.
+    /// Replaces a queued event with the same `kind`, `x` and `y` (the app sees only the latest value), else pushes.
     pub fn coalesce(&self, e: Event) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
         let mut i = self.head.load(Ordering::Acquire) as u8;
         while i != tail {
             let s = self.slot(i);
             let q = unsafe { s.read() };
-            if q.kind == e.kind && q.x == e.x {
+            if (q.kind, q.x, q.y) == (e.kind, e.x, e.y) {
                 unsafe { s.write(e) };
                 self.head.fetch_add(0x100, Ordering::AcqRel);
                 return true;
@@ -192,6 +192,12 @@ mod tests {
         q.coalesce(Event { kind: LV, x: 3, delta: 5, ..Event::default() });
         assert_eq!(q.pop().map(|e| (e.x, e.delta)), Some((4, 2)));
         assert_eq!(q.pop().map(|e| (e.x, e.delta)), Some((3, 5)));
+        // same handle, another event code: PRESSED stays, VALUE_CHANGED queues behind it
+        q.push(Event { kind: LV, x: 3, y: 1, ..Event::default() });
+        q.coalesce(Event { kind: LV, x: 3, y: 28, delta: 7, ..Event::default() });
+        assert_eq!(q.pop().map(|e| (e.y, e.delta)), Some((1, 0)));
+        assert_eq!(q.pop().map(|e| (e.y, e.delta)), Some((28, 7)));
+        assert_eq!(q.pop(), None);
     }
 
     #[test]
