@@ -464,7 +464,7 @@ def walk(emu: Emu):
     emu.send("c 1", "c 0", pause=2)
     swipe(emu, 233, 380, 233, 80)  # notifications
     emu.send("c 1", "c 0", pause=2)
-    for y in (233, 130):  # Exercise Records, Exercise
+    for y in (336, 232):  # Exercise Records, Exercise (below the "Custom Apps" row)
         emu.send("c 1", "c 0", pause=2)  # app list
         emu.send(f"t 1 233 {y}", f"t 0 233 {y}", pause=3)
         emu.send("c 1", "c 0", pause=2)  # back to the face
