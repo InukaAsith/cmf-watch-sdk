@@ -86,6 +86,21 @@ class StubTest(unittest.TestCase):
         self.assertNotEqual(ops, 0)
         self.assertNotEqual(harness.u32(emu, ops + 0x3C), 0)
 
+    def test_stock_vibration_scaled(self):
+        emu, value = self.emu, START + 0xE30
+        n = len(emu.motor())
+        emu.poke(value, struct.pack("<i", 1))
+        emu.call(0x100E17CD, value, 0, 0)  # property 0x25, level 1 preview: stock 250/255, 300 ms
+        emu.sleep(1)
+        log = emu.motor()
+        print(f"\nstock motor.log {log}")
+        boot = [d for _, d, _ in log[:n] if d > 0]
+        preview = [(d, hz) for _, d, hz in log[n:] if d > 0]
+        self.assertTrue(boot and preview)
+        self.assertTrue(all(abs(d - 349) <= 2 for d in boot), boot)  # 89/255, SYSTEM_DUTY_PERMILLE 350
+        self.assertTrue(all(abs(d - 341) <= 2 and abs(hz - 31) <= 1 for d, hz in preview), preview)  # 87/255
+        self.assertEqual(log[-1][1], 0)
+
     def test_patched_boots_and_view_without_loader_fails_cleanly(self):
         emu = self.emu
         self.assertEqual(emu.peek(START, 4), struct.pack("<I", 0x57503253))
