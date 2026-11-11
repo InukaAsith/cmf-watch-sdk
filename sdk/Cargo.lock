@@ -59,6 +59,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui-gallery"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "vibration-lab"
 version = "0.1.0"
 dependencies = [
