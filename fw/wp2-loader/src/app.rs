@@ -47,6 +47,7 @@ static API: Api = Api {
     get_time: svc::time,
     get_battery: svc::battery,
     screen_on: svc::keep_screen_on,
+    lv_submit: svc::lv_submit,
 };
 
 type Entry = extern "C" fn(*const Api) -> i32;

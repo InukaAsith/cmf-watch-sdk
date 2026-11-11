@@ -104,6 +104,8 @@ pub struct Api {
     pub get_time: extern "C" fn(*mut Time) -> i32,
     pub get_battery: extern "C" fn() -> i32,
     pub screen_on: extern "C" fn(bool) -> i32,
+    // ABI 1.2 (docs/specs/2026-11-11-lvgl-apps-design.md)
+    pub lv_submit: extern "C" fn(*const u8, usize) -> i32,
 }
 
 #[repr(C)]
@@ -162,6 +164,7 @@ mod tests {
         assert_eq!(offset_of!(Api, exit), offset_of!(cmf_wp2_app::Api, exit));
         assert_eq!(offset_of!(Api, send_msg), offset_of!(cmf_wp2_app::Api, send_msg));
         assert_eq!(offset_of!(Api, screen_on), offset_of!(cmf_wp2_app::Api, screen_on));
+        assert_eq!(offset_of!(Api, lv_submit), offset_of!(cmf_wp2_app::Api, lv_submit));
         assert_eq!(size_of::<Time>(), size_of::<cmf_wp2_app::Time>());
         assert_eq!(offset_of!(Time, utc_offset_min), offset_of!(cmf_wp2_app::Time, utc_offset_min));
         assert_eq!(size_of::<Event>(), size_of::<cmf_wp2_app::Event>());
