@@ -1,4 +1,4 @@
-// Pure logic of herdr-agents: wire protocol, agent list, sorting, haptic transitions, storage, layout.
+// Pure logic of herdr-agents: wire protocol, agent list, sorting, haptic transitions, storage.
 // Protocol: docs/herdr-agents.md.
 
 pub const MAGIC: &[u8; 2] = b"h1";
@@ -6,6 +6,9 @@ pub const MAX: usize = 32;
 pub const WS_MAX: usize = 24;
 pub const TITLE_MAX: usize = 64;
 pub const REQUEST: &[u8] = b"h1R";
+
+use cmf_wp2_ui::haptic::{self, Pattern};
+use cmf_wp2_ui::text::fit;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
@@ -54,76 +57,12 @@ pub enum Buzz {
     Blocked,
 }
 
-/// `(duty ‰, ms)` steps; the last one turns the motor off. Both far inside the loader's 2 s cap.
-pub const BLOCKED_PATTERN: &[(u16, u16)] = &[(1000, 110), (0, 90), (1000, 110), (0, 90), (1000, 110), (0, 0)];
-pub const DONE_PATTERN: &[(u16, u16)] = &[(650, 220), (0, 0)];
-
 impl Buzz {
-    pub fn pattern(self) -> &'static [(u16, u16)] {
+    pub fn pattern(self) -> Pattern {
         match self {
-            Buzz::Blocked => BLOCKED_PATTERN,
-            Buzz::Done => DONE_PATTERN,
+            Buzz::Blocked => haptic::ALERT,
+            Buzz::Done => haptic::DONE,
         }
-    }
-}
-
-/// Steps a haptic pattern: `tick` returns the duty to set when a step starts.
-#[derive(Default)]
-pub struct Player {
-    steps: &'static [(u16, u16)],
-    i: usize,
-    next: u32,
-}
-
-impl Player {
-    pub fn start(&mut self, steps: &'static [(u16, u16)], now: u32) {
-        self.steps = steps;
-        self.i = 0;
-        self.next = now;
-    }
-
-    pub fn busy(&self) -> bool {
-        self.i < self.steps.len()
-    }
-
-    /// ms until the next step, if one is pending
-    pub fn wait(&self, now: u32) -> Option<u32> {
-        self.busy().then(|| (self.next.wrapping_sub(now) as i32).max(0) as u32)
-    }
-
-    pub fn tick(&mut self, now: u32) -> Option<u16> {
-        if !self.busy() || (now.wrapping_sub(self.next) as i32) < 0 {
-            return None;
-        }
-        let (duty, ms) = self.steps[self.i];
-        self.i += 1;
-        self.next = now.wrapping_add(ms as u32);
-        Some(duty)
-    }
-
-    pub fn stop(&mut self) {
-        self.i = self.steps.len();
-    }
-}
-
-/// Longest prefix of `s` with at most `max` bytes that ends on a char boundary (invalid UTF-8 is cut off).
-pub fn fit(s: &[u8], max: usize) -> &str {
-    let s = match core::str::from_utf8(s) {
-        Ok(v) => v,
-        Err(e) => unsafe { core::str::from_utf8_unchecked(&s[..e.valid_up_to()]) },
-    };
-    let mut n = s.len().min(max);
-    while !s.is_char_boundary(n) {
-        n -= 1;
-    }
-    &s[..n]
-}
-
-/// At most `chars` chars of `s`; `true` if it was cut.
-pub fn clip(s: &str, chars: usize) -> (&str, bool) {
-    match s.char_indices().nth(chars) {
-        Some((i, _)) => (&s[..i], true),
-        None => (s, false),
     }
 }
 
@@ -353,45 +292,6 @@ impl Model {
     }
 }
 
-pub const SIZE: i32 = 466;
-pub const C: i32 = SIZE / 2;
-pub const LIST_TOP: i32 = 112;
-pub const ROW_H: i32 = 58;
-pub const ROWS: usize = 5;
-pub const CHAR: i32 = 16;
-
-/// Visible row `r` (0..ROWS): (dot centre x, text x, chars that fit) inside the round screen.
-pub fn row_geometry(r: usize) -> (i32, i32, usize) {
-    let (top, bottom) = (LIST_TOP + r as i32 * ROW_H, LIST_TOP + (r as i32 + 1) * ROW_H);
-    let dy = (top - C).abs().max((bottom - C).abs());
-    let half = isqrt(C * C - dy * dy) - 6;
-    let text = C - half + 22;
-    (C - half + 8, text, ((C + half - text) / CHAR) as usize)
-}
-
-/// Agent index under a tap at `y` with the list scrolled by `scroll` rows.
-pub fn row_at(y: i32, scroll: usize, n: usize) -> Option<usize> {
-    let r = (y - LIST_TOP).div_euclid(ROW_H);
-    let i = scroll + r as usize;
-    (y >= LIST_TOP && (r as usize) < ROWS && i < n).then_some(i)
-}
-
-pub fn max_scroll(n: usize) -> usize {
-    n.saturating_sub(ROWS)
-}
-
-pub fn isqrt(n: i32) -> i32 {
-    if n <= 0 {
-        return 0;
-    }
-    let (mut lo, mut hi) = (0, n.min(46340));
-    while lo < hi {
-        let m = (lo + hi + 1) / 2;
-        if m * m <= n { lo = m } else { hi = m - 1 }
-    }
-    lo
-}
-
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -496,11 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn utf8_fit_and_clip() {
-        assert_eq!(fit("привет".as_bytes(), 5), "пр");
-        assert_eq!(fit(b"ab\xD0", 10), "ab");
-        assert_eq!(clip("привет мир", 6), ("привет", true));
-        assert_eq!(clip("ok", 6), ("ok", false));
+    fn utf8_cut_on_char_boundary() {
         let mut m = Model::new();
         let long = "ж".repeat(40);
         snapshot(&mut m, &[(1, 2, "рабочее пространство очень длинное", &long)]);
@@ -542,38 +438,8 @@ mod tests {
     }
 
     #[test]
-    fn haptic_patterns_stay_short_and_end_off() {
-        for p in [BLOCKED_PATTERN, DONE_PATTERN] {
-            assert_eq!(p.last().unwrap().0, 0);
-            assert!(p.iter().map(|s| s.1 as u32).sum::<u32>() < 1000);
-            assert!(p.iter().all(|s| s.0 <= 1000));
-        }
-        let mut p = Player::default();
-        p.start(DONE_PATTERN, 100);
-        assert_eq!(p.tick(100), Some(650));
-        assert_eq!(p.tick(200), None);
-        assert_eq!(p.wait(200), Some(120));
-        assert_eq!(p.tick(320), Some(0));
-        assert!(!p.busy());
-    }
-
-    #[test]
-    fn rows_fit_round_screen_and_taps_map() {
-        for r in 0..ROWS {
-            let (dot, text, chars) = row_geometry(r);
-            let y0 = LIST_TOP + r as i32 * ROW_H;
-            for y in [y0, y0 + ROW_H] {
-                let half = isqrt(C * C - (y - C) * (y - C));
-                assert!(dot - 8 >= C - half && text + chars as i32 * CHAR <= C + half, "row {r}");
-            }
-            assert!(chars >= 14, "row {r}: {chars}");
-        }
-        assert_eq!(row_at(LIST_TOP - 1, 0, 9), None);
-        assert_eq!(row_at(LIST_TOP, 0, 9), Some(0));
-        assert_eq!(row_at(LIST_TOP + ROW_H * 2 + 3, 2, 9), Some(4));
-        assert_eq!(row_at(LIST_TOP + ROW_H * 2 + 3, 0, 2), None);
-        assert_eq!(row_at(LIST_TOP + ROW_H * ROWS as i32, 0, 20), None);
-        assert_eq!(max_scroll(3), 0);
-        assert_eq!(max_scroll(9), 4);
+    fn buzz_patterns() {
+        assert_eq!(Buzz::Blocked.pattern().steps(), &[(1000, 110), (0, 90), (1000, 110), (0, 90), (1000, 110), (0, 0)]);
+        assert_eq!(Buzz::Done.pattern().steps(), &[(650, 220), (0, 0)]);
     }
 }
