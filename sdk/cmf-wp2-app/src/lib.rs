@@ -172,6 +172,7 @@ pub fn __start(api: &'static Api, main: fn(&'static Api) -> i32) -> i32 {
     main(api)
 }
 
+#[cfg(not(wp2_sim))]
 #[macro_export]
 macro_rules! entry {
     ($main:path) => {
@@ -183,8 +184,47 @@ macro_rules! entry {
     };
 }
 
+#[cfg(wp2_sim)]
+#[macro_export]
+macro_rules! entry {
+    ($main:path) => {
+        extern "C" fn _start(api: &'static $crate::Api) -> i32 {
+            $crate::__start(api, $main)
+        }
+        #[unsafe(export_name = "main")]
+        extern "C" fn __wp2_sim_main() -> i32 {
+            $crate::__sim_run(_start)
+        }
+    };
+}
+
+// `scripts/sim` builds apps for the host with `--cfg wp2_sim` (docs/simulator.md). Keep it below the code with
+// panics: their line numbers are in the watch build.
+#[cfg(wp2_sim)]
+extern crate std;
+
+/// Runs the app in the host simulator (`sim/`, linked by `scripts/sim`).
+#[cfg(wp2_sim)]
+#[doc(hidden)]
+pub fn __sim_run(start: extern "C" fn(&'static Api) -> i32) -> i32 {
+    #[link(name = "wp2_sim")]
+    unsafe extern "C" {
+        fn wp2_sim_run(start: extern "C" fn(&'static Api) -> i32) -> i32;
+    }
+    // like the panic handler below: motor off, exit(-1)
+    std::panic::set_hook(std::boxed::Box::new(|info| {
+        std::eprintln!("{info}");
+        if let Some(api) = api() {
+            api.vibrate(0, 0);
+            (api.exit)(-1)
+        }
+    }));
+    unsafe { wp2_sim_run(start) }
+}
+
 /// The app's menu icon, in front of the code (docs/app-icons.md). `scripts/build-app` renders the crate's
 /// `icon.svg` and passes the descriptor in `WP2_ICON`.
+#[cfg(not(wp2_sim))]
 #[macro_export]
 macro_rules! app_icon {
     () => {
@@ -192,6 +232,12 @@ macro_rules! app_icon {
         #[unsafe(link_section = ".wp2info")]
         static WP2_ICON: [u8; include_bytes!(env!("WP2_ICON")).len()] = *include_bytes!(env!("WP2_ICON"));
     };
+}
+
+#[cfg(wp2_sim)]
+#[macro_export]
+macro_rules! app_icon {
+    () => {};
 }
 
 #[cfg(target_os = "none")]

@@ -1,11 +1,11 @@
-#![cfg_attr(target_os = "none", no_std, no_main)]
+#![cfg_attr(any(target_os = "none", wp2_sim), no_main, cfg_attr(target_os = "none", no_std))]
 
 mod glow;
 
-#[cfg(not(target_os = "none"))]
+#[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}
 
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", wp2_sim))]
 mod device {
     use crate::glow::{App, Sink, SCENES};
     use cmf_wp2_app::{Api, BUTTON, CROWN, PAUSE, RESUME, TOUCH_DOWN};

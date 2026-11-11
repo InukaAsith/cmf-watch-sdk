@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Runs an example app on the Mac: scripts/sim <app> [options] (docs/simulator.md, --help for options).
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+app=${1:?usage: scripts/sim <app> [options]}
+shift
+host=$(rustc -vV | sed -n 's/^host: //p')
+lib=$root/sim/target/release
+(cd "$root/sim" && cargo build --release -q)
+# the app as a host binary: cmf_wp2_app::entry! calls wp2_sim_run from libwp2_sim; no overflow checks, like the
+# watch's release build
+(cd "$root/sdk" && RUSTFLAGS="--cfg wp2_sim --check-cfg=cfg(wp2_sim) -L native=$lib -C link-arg=-Wl,-rpath,$lib" \
+    cargo build -q --target "$host" --target-dir "$root/sdk/target/sim" -p "$app" \
+    --config profile.dev.overflow-checks=false --config profile.dev.debug-assertions=false)
+export WP2_SIM_ROOT=$root
+exec "$root/sdk/target/sim/$host/debug/$app" "$@"
