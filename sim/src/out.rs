@@ -143,7 +143,8 @@ unsafe extern "C" {
 /// Local time (zone from TZ) of `ms` since the epoch.
 pub fn local(ms: i64) -> Option<Time> {
     let secs = ms.div_euclid(1000);
-    let mut tm = Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() };
+    let mut tm =
+        Tm { sec: 0, min: 0, hour: 0, mday: 0, mon: 0, year: 0, wday: 0, yday: 0, isdst: 0, gmtoff: 0, zone: std::ptr::null() };
     if unsafe { localtime_r(&secs, &mut tm) }.is_null() {
         return None;
     }

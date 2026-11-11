@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs an example app on the Mac: scripts/sim <app> [options] (docs/simulator.md, --help for options).
+# Runs an example app on the Mac: scripts/sim <app> [options] (docs/app-guide.md, Simulator; --help for options).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 app=${1:?usage: scripts/sim <app> [options]}
