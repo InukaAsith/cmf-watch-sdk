@@ -132,6 +132,7 @@ pub mod lv {
     const LONG_DOT: u32 = 1;
     const ALIGN_CENTER: u32 = 2;
     const ALIGN_RIGHT: u32 = 3;
+    const ALIGN_CENTER_OBJ: u32 = 9;
     const BLACK: u32 = 0x0000;
     const WHITE: u32 = 0xFFFF;
     const GREY: u32 = 0x8C92; // #8E9196
@@ -149,9 +150,10 @@ pub mod lv {
         names: [Obj; ROWS],
         font: [u32; 8],
         font_open: bool,
+        bar: Obj,
     }
 
-    static mut UI: Ui = Ui { cont: null_mut(), names: [null_mut(); ROWS], font: [0; 8], font_open: false };
+    static mut UI: Ui = Ui { cont: null_mut(), names: [null_mut(); ROWS], font: [0; 8], font_open: false, bar: null_mut() };
 
     fn ui() -> &'static mut Ui {
         unsafe { &mut *addr_of_mut!(UI) }
@@ -202,7 +204,6 @@ pub mod lv {
         style(cont, LV_STYLE_PAD_BOTTOM, PAD_BOTTOM as u32, 0);
         style(cont, LV_STYLE_TEXT_FONT, font, 0);
         style(cont, LV_STYLE_TEXT_COLOR, WHITE, 0);
-        stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(cont, FLAG_KNOB);
         let title = label(cont, 0, TITLE_Y, 466, lh, &text(b"Apps"));
         style(title, LV_STYLE_TEXT_ALIGN, ALIGN_CENTER, 0);
         style(title, LV_STYLE_TEXT_COLOR, RED, 0);
@@ -226,7 +227,14 @@ pub mod lv {
         if rows == 0 {
             label(cont, COL_X + TEXT_X, TOP + ty, NAME_W, lh, &text(b"No apps"));
         }
+        // as the stock app list (0x1005EFA6); the bar also gives the list the knob flag
+        let bar = stock!(JX_SCROLL_BAR_CREATE, fn(Obj) -> Obj)(scr);
+        stock!(LV_OBJ_SET_SIZE, fn(Obj, i32, i32))(bar, 462, 462);
+        stock!(JX_SCROLL_BAR_SET_SCROLL_OBJ, fn(Obj, Obj))(bar, cont);
+        stock!(JX_SCROLL_BAR_SET_KNOB, fn(Obj, bool))(bar, true);
+        stock!(LV_OBJ_ALIGN, fn(Obj, u32, i32, i32))(bar, ALIGN_CENTER_OBJ, 0, 0);
         u.cont = cont;
+        u.bar = bar;
     }
 
     pub fn row_of(e: *mut c_void) -> usize {
@@ -240,17 +248,19 @@ pub mod lv {
         }
     }
 
-    // hidden: no touch, not drawn; shown: the knob object again (the image took it while an app ran)
+    // hidden: no touch, not drawn; shown: the knob object again (the image took it while an app ran).
+    // The bar stays hidden until the list scrolls, as after its create.
     pub fn show(on: bool) {
-        let c = ui().cont;
-        if c.is_null() {
+        let u = ui();
+        if u.cont.is_null() {
             return;
         }
         if on {
-            stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(c, FLAG_HIDDEN);
-            stock!(LV_DISP_ADD_KNOB_OBJ, fn(Obj))(c);
+            stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(u.cont, FLAG_HIDDEN);
+            stock!(LV_DISP_ADD_KNOB_OBJ, fn(Obj))(u.cont);
         } else {
-            stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(c, FLAG_HIDDEN);
+            stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(u.cont, FLAG_HIDDEN);
+            stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(u.bar, FLAG_HIDDEN);
         }
     }
 
@@ -260,11 +270,14 @@ pub mod lv {
         if !u.cont.is_null() {
             stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(u.cont, FLAG_KNOB);
             stock!(LV_OBJ_DEL, fn(Obj))(u.cont);
+            // after the list, as stock deletes the screen's children; its destructor drops its timer
+            stock!(LV_OBJ_DEL, fn(Obj))(u.bar);
         }
         if u.font_open {
             stock!(LVGL_BITMAP_FONT_CLOSE, fn(*mut u32))(u.font.as_mut_ptr());
         }
         u.cont = null_mut();
+        u.bar = null_mut();
         u.names = [null_mut(); ROWS];
         u.font_open = false;
     }
