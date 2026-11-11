@@ -392,3 +392,25 @@ Ghidra (`scripts/recon/decomp`) on `0x10142C80`, `0x100F0084`, `0x101BEE00`, `0x
 Unverified on hardware: whether the SPI1 cache serves instruction fetches from `0x38…` through the same lines as
 data (if it does, the write back alone would be enough; the invalidate costs only refills). The emulator does
 not model the controller (stock calls it during normal drawing, so its writes are accepted there).
+
+## ABI 1.1: host channel, time, battery, wake lock, sensors
+
+Ghidra (`scripts/recon/decomp`) on the functions below, capstone on `0x100CBF84`, `0x100D343C`, `0x10147748`; the
+ux2sys property table `0x101F4274` dumped (0x91 entries `{set, get, u16 size}`); emulator probes
+`runs/api/probe{1,2,3}.py` and `tests/test_api_e2e.py`. Design and API: `docs/abi-1.1.md`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| BLE dispatch thread | `wewear_read` (prio 12, 12 KiB stack, created by `wewear` `0x100CC150`): loop `0x100CBF84` reads an 11 B header with the stream read `0x10147748` and calls `0x100D343C`; it calls `os_sleep(10)` (`0x100CBFC8`) only while the stream is not connected. Context `*0x3801A658`: `+0` the thread, byte `+4` bit 0 connected, `+0x18` the stream | high |
+| Stream read | `0x10147748` blocks while connected: the stream's own read (`+0x50` ops `+8`) waits; its 50 ms semaphore loop (`0x10147786`) is not reached in the emulator. A hook in either place ran about once per 5 s | high (emulator) |
+| Stream write | send `0x100CC2D4` → `0x10147890`: waits up to 21 × 50 ms for room, writes all or nothing; free space `0x101CE411(stream)`, negative when closed | high |
+| Crypto buffers | encrypt `0x100CCB34` / decrypt `0x100CCC0C` use static buffers and the AES engine, so all stub frames go out from `wewear_read` | high |
+| Opcodes | `c1 == 0xFFFF`, `c2 > 0x908B` → `default` (`0x100D34AC bhi`): `0x90A0..0x90A7` reach only the stub | high |
+| "Paired" popup | every bind (`0x8047` + `0x8049`) opens msgbox 270, then 267 ("Paired", `reset_work dur:1 sec`) which stays until a key closes it; its delete handler runs `launcher ui_enter clock view` (jump to the clock, view 0xF0 deleted). Reusing the session key without a bind shows nothing | high (emulator) |
+| Charge popup | on the charger, msgbox 262 opens again at every screen wake | high (emulator) |
+| RTC | `0x100C14B4(struct rtc_time *)` calls the RTC driver (`*0x2FFB44A0`, api `+8` → `+8`), then year + 1900, month + 1: `{u8 sec, min, hour, mday, mon, wday, u16 year, u16 ms}`; holds local time (log `rtc_time_d/_t`). `0x100C1488` = RTC as epoch minus zone | high |
+| Zone | `0x100C1458` → `s8 h · 3600 + s8 m · 60` from `0x2FFB449C` (`gSysTimeZone`); set by the phone time sync (`0x100D2A0C`). Emulator fixture: 86,400 (24 h, never synced) | high |
+| Battery | power supply props through `0x101CE6FC` (prop 3 capacity), `0x101CE702` (prop 0 status: 3 charging, 4 full, 2 discharging), `0x101CE70E` (prop 4 DC5V); ux2sys `0x0A` (3 B: percent, status code, low flag) adds low-battery bookkeeping, `0x0B` = DC5V > 0 | high |
+| Wake locks | `0x101B59A8(id)` sets bit `id` in the words at `0x38007708 + 0x40 + 4 · (id / 32)` and takes the full wake lock on the first one; `0x100C1858(id)` clears it, the last one calls `sys_wake_unlock` (restarts the auto-sleep time). `0x100C1738` (AT `SETWAKELOCK 0`) then blanks at once when the timeout ran out. Ids are view ids (`0x1C`, `0x43`, `0x63`, `0x6B`, `0xF6` …) plus `0x113`, `0x11F` (AT), `0x123`; `0xF0` is unused | high |
+| ux2sys properties | get `0x100E082C(prop, out)` and set `0x100E08B8(prop, in, size)` assert (and reset) on an id > `0x9E` or a NULL handler. `0x06`/`0x07` screen-on and active time (`0x07` → `set_autosleep_time`), `0x08` temporary active time, `0x0C` BT connected, `0x2B` g-sensor sample, `0x62` GPS info, `0x63` GPS mode, `0x02` HR mode | medium |
+| Accelerometer | property `0x2B` copies 24 B from `0x3800C9C8`; with emulator input `a 100 -200 1000` it stayed zero without a stock consumer | high (emulator) |
