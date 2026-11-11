@@ -9,13 +9,14 @@ pub struct Entry {
     pub name: [u8; 24],
     pub len: u8,
     pub version: u32,
+    pub size: u32,
 }
 
 pub fn entry(slot: u8, raw: &[u8; HEADER_SIZE]) -> Option<Entry> {
     let h = parse_header(raw).ok()?;
     check_slot(&h, slot).ok()?;
     let len = h.name.iter().position(|&b| b == 0).unwrap_or(h.name.len()) as u8;
-    Some(Entry { slot, name: h.name, len, version: h.version })
+    Some(Entry { slot, name: h.name, len, version: h.version, size: h.image_size })
 }
 
 // Entries are packed from index 0; row i shows entries[i].
@@ -31,11 +32,12 @@ pub fn scan() -> [Option<Entry>; ROWS] {
         }
         let mut raw = [0u8; HEADER_SIZE];
         let ok = fs::read_exact(&mut file, &mut raw);
-        fs::close(&mut file);
         if let Some(e) = entry(slot, &raw).filter(|_| ok) {
             out[n] = Some(e);
+            lv::set_icon(n, lv::read_icon(&mut file, e.size));
             n += 1;
         }
+        fs::close(&mut file);
     }
     out
 }
@@ -88,7 +90,7 @@ fn num(prefix: &[u8], neg: bool, mut v: u32) -> Text {
 }
 
 // Geometry on the 466x466 round screen, rows as in the stock Settings list (emulator frame: rows 120 px with
-// an 8 px gap from y 120, x 16..449, radius 44, icon centred 44 px from the row edge, text from x 101).
+// an 8 px gap from y 120, x 16..449, radius 44); the icon is a 96 px circle as in the stock app list.
 // PAD_BOTTOM lets the last row scroll up to TITLE_Y, so the list always scrolls (a drag over a row
 // scrolls it and LVGL sends no CLICKED) and the crown always moves it.
 pub const TITLE_Y: i32 = 56;
@@ -98,11 +100,11 @@ pub const ROW_H: i32 = 120;
 pub const COL_X: i32 = 16;
 pub const COL_W: i32 = 434;
 pub const RADIUS: i32 = 44;
-pub const ICON: i32 = 40;
-pub const ICON_X: i32 = 44 - ICON / 2;
-pub const TEXT_X: i32 = 101 - COL_X;
-pub const PAD_R: i32 = 32;
-pub const VER_W: i32 = 72;
+pub const ICON: i32 = wp2_core::pkg::ICON_SIDE as i32;
+pub const ICON_X: i32 = (ROW_H - ICON) / 2;
+pub const TEXT_X: i32 = ICON_X + ICON + 20;
+pub const PAD_R: i32 = 28;
+pub const VER_W: i32 = 64;
 pub const NAME_W: i32 = COL_W - TEXT_X - PAD_R - VER_W - 8;
 pub const PAD_BOTTOM: i32 = 466 - TITLE_Y - ROW_H;
 
@@ -116,7 +118,11 @@ pub fn content_height(rows: usize) -> i32 {
 pub mod lv {
     use super::*;
     use core::ffi::c_void;
-    use core::ptr::{addr_of_mut, null_mut};
+    use core::ptr::{addr_of_mut, null, null_mut};
+    use wp2_core::fs;
+    use wp2_core::heap::{self, RES};
+    use wp2_core::load::sync_psram;
+    use wp2_core::pkg::{icon_ok, ICON_BYTES, ICON_DESC, ICON_SIDE};
     use wp2_core::stock::*;
 
     pub type Obj = *mut c_void;
@@ -141,6 +147,13 @@ pub mod lv {
     // stock Settings row: the emulator frame reads (26, 28, 31), white reads 160, so RGB565 5/11/6
     const ROW_BG: u32 = 0x2966;
     const ROW_PRESSED: u32 = 0x4229;
+    // letter circle of an app without an icon: #52555A, lighter than the row
+    const LETTER_BG: u32 = 0x52AB;
+    const CF_TRUE_COLOR_ALPHA: u32 = 5;
+    // [64 B like the stock resource-cache header][pixels, 64-byte aligned]: the emulator's GPU model reads
+    // RGB565+A8 only behind that header, the hardware ignores it (applist-style, docs/recon.md)
+    const HEAD: usize = 64;
+    const BLOCK: u32 = HEAD as u32 + ICON_BYTES;
     const FONT_PATH: &[u8] = b"/NAND:A/font32M.font\0";
 
     // repr(C): the e2e probe reads it by offset
@@ -151,12 +164,59 @@ pub mod lv {
         font: [u32; 8],
         font_open: bool,
         bar: Obj,
+        icons: [*mut u8; ROWS],
+        dsc: [ImgDsc; ROWS],
     }
 
-    static mut UI: Ui = Ui { cont: null_mut(), names: [null_mut(); ROWS], font: [0; 8], font_open: false, bar: null_mut() };
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct ImgDsc {
+        header: u32,
+        size: u32,
+        data: *const u8,
+    }
+
+    const NO_DSC: ImgDsc = ImgDsc { header: 0, size: 0, data: null() };
+
+    static mut UI: Ui = Ui {
+        cont: null_mut(),
+        names: [null_mut(); ROWS],
+        font: [0; 8],
+        font_open: false,
+        bar: null_mut(),
+        icons: [null_mut(); ROWS],
+        dsc: [NO_DSC; ROWS],
+    };
 
     fn ui() -> &'static mut Ui {
         unsafe { &mut *addr_of_mut!(UI) }
+    }
+
+    // The file is positioned at image offset 0. Any failure gives NULL: the row shows the letter.
+    pub fn read_icon(file: &mut fs::File, image_size: u32) -> *mut u8 {
+        let mut desc = [0u8; ICON_DESC];
+        if !fs::read_exact(file, &mut desc) || !icon_ok(&desc, image_size) {
+            return null_mut();
+        }
+        let block = heap::alloc(RES, BLOCK, 0x40);
+        if block.is_null() {
+            return block;
+        }
+        let px = unsafe { block.add(HEAD) };
+        if !fs::read_exact(file, unsafe { core::slice::from_raw_parts_mut(px, ICON_BYTES as usize) }) {
+            unsafe { heap::free(RES, block) };
+            return null_mut();
+        }
+        let head = unsafe { core::slice::from_raw_parts_mut(block as *mut u32, HEAD / 4) };
+        head.fill(0);
+        (head[2], head[4], head[5], head[6], head[8]) = (BLOCK, ICON_SIDE, ICON_SIDE, 3, px as u32);
+        sync_psram(block, BLOCK);
+        block
+    }
+
+    pub fn set_icon(row: usize, block: *mut u8) {
+        let old = core::mem::replace(&mut ui().icons[row], block);
+        unsafe { heap::free(RES, old) };
     }
 
     fn style(obj: Obj, prop: u32, value: u32, selector: u32) {
@@ -213,11 +273,22 @@ pub mod lv {
             style(row, LV_STYLE_RADIUS, RADIUS as u32, 0);
             style(row, LV_STYLE_BG_COLOR, ROW_PRESSED, STATE_PRESSED);
             stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, usize) -> *mut c_void)(row, click, CLICKED, i);
-            let icon = panel(row, ICON_X, (ROW_H - ICON) / 2, ICON, ICON, RED);
-            style(icon, LV_STYLE_RADIUS, (ICON / 2) as u32, 0);
+            let block = u.icons[i];
+            let icon = if block.is_null() {
+                let c = panel(row, ICON_X, ICON_X, ICON, ICON, LETTER_BG);
+                style(c, LV_STYLE_RADIUS, (ICON / 2) as u32, 0);
+                let letter = label(c, 0, (ICON - lh) / 2, ICON, lh, &initial(e));
+                style(letter, LV_STYLE_TEXT_ALIGN, ALIGN_CENTER, 0);
+                c
+            } else {
+                let px = unsafe { block.add(HEAD) };
+                u.dsc[i] = ImgDsc { header: CF_TRUE_COLOR_ALPHA | ICON_SIDE << 10 | ICON_SIDE << 21, size: ICON_BYTES, data: px };
+                let img = stock!(LV_IMG_CREATE, fn(Obj) -> Obj)(row);
+                stock!(LV_IMG_SET_SRC, fn(Obj, *const ImgDsc))(img, &u.dsc[i]);
+                stock!(LV_OBJ_SET_POS, fn(Obj, i32, i32))(img, ICON_X, ICON_X);
+                img
+            };
             stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(icon, FLAG_CLICKABLE);
-            let letter = label(icon, 0, (ICON - lh) / 2, ICON, lh, &initial(e));
-            style(letter, LV_STYLE_TEXT_ALIGN, ALIGN_CENTER, 0);
             u.names[i] = label(row, TEXT_X, ty, NAME_W, lh, &name_text(e));
             let v = label(row, COL_W - PAD_R - VER_W, ty, VER_W, lh, &version_text(e.version));
             style(v, LV_STYLE_TEXT_ALIGN, ALIGN_RIGHT, 0);
@@ -276,6 +347,11 @@ pub mod lv {
         if u.font_open {
             stock!(LVGL_BITMAP_FONT_CLOSE, fn(*mut u32))(u.font.as_mut_ptr());
         }
+        for b in &mut u.icons {
+            unsafe { heap::free(RES, *b) };
+            *b = null_mut();
+        }
+        u.dsc = [NO_DSC; ROWS];
         u.cont = null_mut();
         u.bar = null_mut();
         u.names = [null_mut(); ROWS];
