@@ -1,0 +1,652 @@
+# Writing apps for the watch
+
+How to build an app for the wp2-apps loader (ABI 1 / 1.1) on the CMF Watch Pro 2, JX402 `1.0.0.73`. Read this
+before anything else. You should not need `docs/recon*.md`, the plans or agent reports to write an app; file paths
+below point at the code that backs each fact.
+
+An app is a `no_std` Rust binary linked at address 0, packed into a `.wp2app` and installed over BLE into one of 8
+slots. The loader copies it into PSRAM, relocates it and runs `main(api)` in its own thread. The app draws into a
+466×466 RGB565 framebuffer, waits for events and talks to the hardware only through the `Api` table
+(`sdk/cmf-wp2-app/src/lib.rs`). The loader, `vibration-lab`, `agent-glow`, `api-demo` and `herdr-agents` have all run
+on a real watch. Every install onto a physical watch needs the owner's approval (AGENTS.md, hard rule 1).
+
+## 1. Quick start
+
+### Create the crate
+
+1. Copy `sdk/examples/vibration-lab` to `sdk/examples/<name>` (it has the host-test layout and an `icon.svg`).
+   Replace `src/main.rs` (start from the app below) and delete `src/lab.rs`.
+2. In `sdk/examples/<name>/Cargo.toml`, replace `vibration-lab` with `<name>` (package and `[[bin]]`). Leave out
+   `test = false`, or `cargo test` skips the crate.
+3. Add `"examples/<name>"` to `members` in `sdk/Cargo.toml`.
+4. Edit `icon.svg` (96×96 viewBox). Style of the bundled icons: a gradient circle filling the 96 px, a white glyph
+   about 40 px tall (`docs/app-icons.md`). No icon: delete `icon.svg` and the `app_icon!()` line; the menu then
+   shows the app's initial in a grey circle. `app_icon!()` without `icon.svg` fails to compile
+   (`WP2_ICON` not defined).
+
+### A minimal app
+
+`blink`: a coloured square, the crown changes its colour, a tap counts and ticks the motor, the button exits,
+a stock popup pauses it. This exact code was built with `scripts/build-app`, its tests pass, and it was run in the
+emulator (colour, crown, a 30 ms motor tick, pause/resume under the charger popup, exit).
+
+`src/main.rs`:
+
+```rust
+#![cfg_attr(target_os = "none", no_std, no_main)]
+
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+mod logic;
+
+#[cfg(not(target_os = "none"))]
+fn main() {}
+
+#[cfg(target_os = "none")]
+mod device {
+    use crate::logic::{label, turn, COLOURS};
+    use cmf_wp2_app::{Api, BUTTON, CROWN, PAUSE, RESUME, TOUCH_DOWN};
+
+    cmf_wp2_app::entry!(main);
+    cmf_wp2_app::app_icon!(); // needs icon.svg next to Cargo.toml
+
+    const HZ: u16 = 31; // the stock motor PWM frequency
+    const TICK_MS: u32 = 25;
+
+    fn draw(api: &Api, colour: usize, taps: u32) {
+        api.rect(0, 0, api.width, api.height, 0x0000);
+        api.rect(133, 113, 200, 200, COLOURS[colour]);
+        let mut buf = [0u8; 8];
+        let text = label(taps, &mut buf);
+        api.text(233 - 8 * text.len() as i16, 340, text, 0xFFFF);
+        api.show();
+    }
+
+    fn main(api: &'static Api) -> i32 {
+        let (mut colour, mut taps) = (0, 0);
+        let mut tick_off: Option<u32> = None; // when the tap tick must stop
+        draw(api, colour, taps);
+        loop {
+            let wait = tick_off.map_or(u32::MAX, |t| (t.wrapping_sub(api.now()) as i32).max(0) as u32);
+            let Some(e) = api.event(wait) else {
+                api.vibrate(0, HZ); // timed out: the tick is over
+                tick_off = None;
+                continue;
+            };
+            match e.kind {
+                BUTTON => break,
+                PAUSE => {
+                    api.vibrate(0, HZ);
+                    tick_off = None;
+                    loop {
+                        match api.event(u32::MAX).map(|e| e.kind) {
+                            Some(RESUME) => break,
+                            Some(BUTTON) => return 0,
+                            _ => {}
+                        }
+                    }
+                }
+                CROWN => colour = turn(colour, e.delta),
+                TOUCH_DOWN => {
+                    taps += 1;
+                    if api.vibrate(400, HZ) == 0 {
+                        tick_off = Some(api.now().wrapping_add(TICK_MS));
+                    } else {
+                        api.vibrate(0, HZ); // -4: clear the lock, skip this tick
+                    }
+                }
+                _ => continue,
+            }
+            draw(api, colour, taps);
+        }
+        api.vibrate(0, HZ);
+        0
+    }
+}
+```
+
+`src/logic.rs`, the pure part that `cargo test` runs on the Mac:
+
+```rust
+// Pure logic: no Api, so `cargo test` runs it on the Mac.
+
+/// Orange, cyan, magenta, green (RGB565).
+pub const COLOURS: [u16; 4] = [0xFD20, 0x07FF, 0xF81F, 0x07E0];
+
+/// Colour index after one crown detent (`delta` is +1 or -1).
+pub fn turn(i: usize, delta: i16) -> usize {
+    (i as i16 + delta).rem_euclid(COLOURS.len() as i16) as usize
+}
+
+/// "taps N", N capped at 999, without a heap.
+pub fn label(taps: u32, buf: &mut [u8; 8]) -> &str {
+    buf[..5].copy_from_slice(b"taps ");
+    let n = taps.min(999);
+    let digits = if n >= 100 { 3 } else if n >= 10 { 2 } else { 1 };
+    for i in 0..digits {
+        buf[4 + digits - i] = b'0' + (n / 10u32.pow(i as u32) % 10) as u8;
+    }
+    core::str::from_utf8(&buf[..5 + digits]).unwrap_or("?")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crown_wraps_both_ways() {
+        assert_eq!(turn(0, -1), 3);
+        assert_eq!(turn(3, 1), 0);
+    }
+
+    #[test]
+    fn label_digits() {
+        let mut b = [0; 8];
+        assert_eq!(label(0, &mut b), "taps 0");
+        assert_eq!(label(42, &mut b), "taps 42");
+        assert_eq!(label(5000, &mut b), "taps 999");
+    }
+}
+```
+
+The two-module layout is how `vibration-lab`, `agent-glow` and `herdr-agents` are built: everything that needs
+`Api` lives in `mod device` (compiled only for `target_os = "none"`), and the host build gets an empty `main` so
+`cargo test` can link. A crate that needs no host tests can be a plain `#![no_std] #![no_main]` file with
+`test = false` in `Cargo.toml` (`sdk/examples/hello`, and `line` in section 4).
+
+### Build and test
+
+```bash
+(cd sdk && cargo test -p <name> --target aarch64-apple-darwin)   # host unit tests
+nix-shell -p llvm --run 'scripts/build-app <name> <version>'     # -> target/<name>.wp2app
+uv run --locked wp2apps info target/<name>.wp2app                # name, version, abi_minor, image_size, icon
+```
+
+`scripts/build-app` renders `icon.svg` with `resvg` (via `nix-shell -p resvg` if missing), builds the release ELF
+for `thumbv7em-none-eabi` (`sdk/.cargo/config.toml` sets the target, `app.ld` and `--emit-relocs`), converts it with
+`llvm-objcopy` and packs it with `wp2apps pack`. A bare `cargo build` of an app with `app_icon!()` fails without
+`WP2_ICON`; always build through the script. The `+no-movt` "unstable feature" warning is expected.
+`<version>` is a `u32` shown in the loader menu as `v<version>`; nothing checks it, bump it so you can tell
+installs apart.
+
+### Install and run
+
+Emulator (boot it as in README "Running in the emulator": `scripts/build-fw`, `wp2apps nor`, `scripts/emu` with
+`--hci-port P`, `netsimd` on the same port):
+
+```bash
+uv run --locked wp2apps install target/loader.wp2app --hci-port P        # once per loader build
+uv run --locked wp2apps install target/<name>.wp2app --hci-port P        # -> {"installed": "0"}
+uv run --locked wp2apps list --hci-port P
+```
+
+Real watch, only after the owner says yes:
+
+```bash
+uv run --locked wp2apps scan --show-address          # macOS gives a CoreBluetooth UUID, not a MAC
+uv run --locked wp2apps install target/<name>.wp2app --address <UUID>
+```
+
+- `install` without `--slot` reuses the slot of a package with the same name (an update, keeps its stored data),
+  else the first free one. Installing into the slot of the running app, or the loader while its menu is open, is
+  refused with `BUSY` (`fw/wp2-stub/src/ble.rs`, `busy`). Close the app first.
+- `install`, `list` and `remove` do a full bind, and the stock then shows a "Paired" popup. Close it with the
+  button. If an app was running, closing that popup ends it (section 4).
+- Open an app: stock app list (list style, not waterfall) → "Apps", the last row → tap the app's row (the crown
+  scrolls the list). The row shows the name and `vN`. If `main` returns a non-zero code, the row shows
+  `Error <code>` for 2 s (`fw/wp2-loader/src/main.rs`, `fail`).
+
+## 2. Platform facts
+
+### Screen
+
+| | |
+|---|---|
+| Panel | 466×466 round AMOLED. `api.width`/`api.height` are 466. Origin top left, centre (233, 233), visible disc radius 233 |
+| Pixels | RGB565, `0xRRRR_RGGG_GGGB_BBBB` as `u16` (`LV_COLOR_16_SWAP 0`, `fw/wp2-loader/src/ui.rs`) |
+| Black | `0x0000` is a pixel that is off: use black backgrounds and light only what matters (AMOLED power) |
+| Framebuffer | one buffer, 434 312 B in PSRAM, owned by the loader; it starts black at each launch |
+| Font | built-in 8×8 at 2×: every char is a 16×16 cell, no other sizes |
+
+**Safe area.** Anything outside the circle is cut. For a band from `y0` to `y1` the visible half-width is
+`isqrt(233² − d²)` with `d` the larger of `|y0 − 233|` and `|y1 − 233|`; keep 6–8 px of margin inside it.
+`row_geometry` in `sdk/examples/herdr-agents/src/model.rs` does this (with a test that every row fits).
+Centred 16 px text lines, 6 px margin:
+
+| line top `y` | 40 | 60 | 80 | 100 | 120 | 160 | 200–217 |
+|---|---|---|---|---|---|---|---|
+| chars that fit | 15 | 18 | 21 | 23 | 24 | 26 | 28 |
+
+The same table holds mirrored below the centre (line bottom at `466 − y`). A centred line of `n` ASCII/Cyrillic
+chars starts at `x = 233 − 8·n`. Touch rows in the examples are 50–58 px tall.
+
+**Colours that read well** (from the examples): white `0xFFFF` text; dim grey `0x8410` or `0x8C71` for secondary
+text; `0x39E7` or `0x2124` for a selected-row background; orange accent `0xFD20` (vibration-lab); cyan `0x07FF`
+(api-demo); status colours red (255, 80, 40), green (60, 220, 110), blue (60, 140, 255), grey (110, 110, 110)
+(herdr-agents); palette `#22D3EE`, `#3B82F6`, `#8B5CF6`, `#E84CD8` on black (agent-glow). To convert:
+
+```rust
+fn rgb(r: u32, g: u32, b: u32) -> u16 {
+    ((r >> 3) << 11 | (g >> 2) << 5 | b >> 3) as u16
+}
+```
+
+### Limits
+
+| | Value | Source |
+|---|---|---|
+| Image | ≤ 128 KiB (`APP_SIZE = 0x20000`): icon + code + rodata + data **+ bss** | `fw/wp2-core/src/layout.rs`, `sdk/cmf-wp2-app/app.ld`, `wp2apps pack` refuses more |
+| Icon | 27 664 B of the image (16 B descriptor + 96·96·3) | `docs/app-icons.md` |
+| Statics | `.bss` is written into the image as zeros (`llvm-objcopy --set-section-flags .data=alloc,load,contents`), so a `static mut [u8; 8192]` adds 8 KiB to the package and the install. They start fresh on every launch: the image is reloaded from NAND | `scripts/build-app`, `fw/wp2-core/src/load.rs` |
+| Stack | 8 KiB (`0x2000`), no guard: an overflow corrupts the thread struct. Put buffers over ~1 KiB in a `static mut` (api-demo `SCRATCH`, herdr-agents `STORE`) | `fw/wp2-loader/src/app.rs`, `ThreadBuf` |
+| Heap | none: no allocator, no `alloc`. Fixed arrays only | |
+| Floats | compile to soft-float library calls (target is `eabi`, not `eabihf`): an `f32` multiply linked `__aeabi_fmul` and grew `.text` by ~600 B. No shipped app uses floats on the device; use integers and fixed point (`sin`/`cos` in Q14 in `agent-glow/src/glow.rs`) | build check in this guide's scratch |
+| Formatting | `core::fmt::Write` into a fixed buffer works (`Line` in `vibration-lab/src/main.rs`, `Buf` in `api-demo/src/main.rs`); it costs code size. herdr-agents formats digits by hand | |
+| Thread | one Zephyr thread at priority 14, the lowest preemptible (idle is 15): stock BLE, UI and sensors preempt the app, so a busy app does not freeze the watch, but it burns battery and starves `standby` | `fw/wp2-loader/src/app.rs`, `APP_PRIO` |
+| Panic | the SDK handler turns the motor off and exits with `-1` (menu: `Error -1`). A CPU fault is not caught | `sdk/cmf-wp2-app/src/lib.rs` |
+| ABI | an app built with this SDK needs a 1.1 loader; on a 1.0 loader `main` never runs and the menu shows `Error -2` | `__start` in `lib.rs` |
+
+### What is slow
+
+- `rect` and `text` write straight into the PSRAM framebuffer; `show` copies nothing. It publishes the bounding box
+  of every `rect`/`text` since the last `show`. Every 10 ms the loader's UI tick writes back **whole rows** `y0..=y1`
+  of that box from the PSRAM cache (full 466 px width) and has LVGL redraw the box to the panel
+  (`present` in `fw/wp2-loader/src/app.rs`, `flush` in `fw/wp2-loader/src/ui.rs`). Several `show` calls between
+  two ticks merge into one box.
+- So the cost scales with the rows the union box spans. A full-screen clear is a 434 KB write-back and a full
+  LVGL redraw. Two small changes at the top and bottom of the screen cost about as much as a full redraw. Redraw
+  only what changed and keep animated parts compact (agent-glow repaints rings in place; herdr-agents repaints only
+  the pulsing dots between full redraws).
+- Measured in the emulator (not hardware; `tests/test_demo_e2e.py` prints it): agent-glow with dirty redraws
+  flushes ~255 KB per frame (58 % of full) and draws a frame in 16–25 ms of its 33 ms. On the watch it looks nearly
+  smooth. There are no hardware frame timings yet.
+- There is no double buffering. LVGL can read the buffer while the app draws, so draw a frame quickly and `show`
+  right after.
+
+## 3. API reference
+
+`fn main(api: &'static Api) -> i32` is registered with `cmf_wp2_app::entry!(main)`. Returning ends the app;
+`0` is a normal exit, anything else shows `Error <code>` in the menu. `(api.exit)(code)` does the same from deep
+inside the app (there is no wrapper). `cmf_wp2_app::api()` returns `Some(&Api)` from anywhere once the app started.
+
+### Drawing
+
+| Call | Notes |
+|---|---|
+| `rect(x: i16, y: i16, w: u16, h: u16, rgb565: u16)` | Fills a rectangle, clipped to the screen. The only drawing primitive: discs, rings and AA edges are built from 1 px rows (see section 5) |
+| `text(x: i16, y: i16, text: &str, rgb565: u16)` | Top-left of the first 16×16 cell at (x, y). Draws only the glyph pixels (transparent background): clear the area first with `rect`. ASCII and Cyrillic `А–я`, `Ё`, `ё` have glyphs; any other char and every invalid UTF-8 byte draws one `?` cell (`fw/wp2-core/src/gfx.rs`). **At most 64 bytes per call** (`TEXT_MAX`, `fw/wp2-loader/src/app.rs`): longer text is cut silently, which is 32 Cyrillic chars. No wrapping, no width query: width = 16 × chars |
+| `show()` | Publishes what was drawn since the last `show` (see "What is slow"). Without it nothing is guaranteed to reach the panel. While paused the box stays pending and the loader repaints everything on resume |
+
+### Waiting and events
+
+`event(timeout_ms: u32) -> Option<Event>` is the only way to wait or sleep. `u32::MAX` waits forever, `0` polls,
+`None` means the timeout ran out. It checks the queue, then the host inbox, then sleeps 5 ms, so timeouts and input
+have ~5 ms granularity (`next_event` in `fw/wp2-loader/src/app.rs`). Never spin without calling it.
+
+`Event { kind: u8, x: i16, y: i16, delta: i16 }`:
+
+| `kind` | When | Fields, notes |
+|---|---|---|
+| `TOUCH_DOWN` (1) | finger down | `x`, `y` in screen pixels. Act on this one |
+| `TOUCH_UP` (2) | finger up | `x`, `y` are not reliable: in the emulator a tap at y 199 reported a row-0 `y` (herdr-agents now uses DOWN). There are no move events, so no drags or swipes inside the app |
+| `CROWN` (3) | one crown detent | `delta` is `+1` or `-1`, never a magnitude; a fast turn is several events |
+| `BUTTON` (4) | crown press | The loader force-stops the app **1000 ms** later if it is still running (`ESCAPE_MS`, `fw/wp2-loader/src/main.rs`). Turn the motor off, save if needed, return |
+| `PAUSE` (5) | a stock popup (charger, incoming call, "Paired"; notifications use the call's popup type, untested) or another view covers the app | The queue is cleared, input is dropped, `vibrate` returns `-3` and the motor is cut, `show` does not reach the panel, host messages are refused with `PAUSED`. Stop the motor and animations, then block in `event(u32::MAX)` until `RESUME` (handle `BUTTON` there too, as `paused()` in agent-glow and herdr-agents does) |
+| `RESUME` (6) | the popup closed | The loader repaints the whole framebuffer itself. Redraw time-dependent parts; ask the host for a fresh snapshot |
+| `MESSAGE` (7) | ABI 1.1: a host message is in the inbox | `x` = its length. A hint: drain with `recv` until `None` |
+
+- The queue holds 15 events; more are dropped (`fw/wp2-core/src/events.rs`).
+- **An app can end without any event.** A right swipe is the stock "back": the stock jumps to the clock and deletes
+  the view (`docs/recon.md`, "Swipe back"). Closing the "Paired" popup does the same. When auto-sleep blanks the
+  panel the stock closes the view (`docs/herdr-agents.md`; in one emulator run the view instead came back paused
+  under the charger popup). All of these abort the thread: no `BUTTON`, no return. Save state when it changes, not
+  only at exit.
+
+### Time
+
+| Call | Returns | Notes |
+|---|---|---|
+| `now() -> u32` | ms since boot | Wraps after ~49.7 days: compare with `(a.wrapping_sub(b) as i32) >= 0`, as every example does |
+| `time() -> Option<Time>` (1.1) | local wall-clock time as the watch shows it | `None` if the RTC is unavailable. `Time { year, month 1–12, day, hour, minute, second, weekday (0 = Sunday), millis, utc_offset_min }`; `utc_offset_min` is `i16::MIN` when the phone never synced a zone |
+
+### Motor
+
+`vibrate(duty_permille: u16, freq_hz: u16) -> i32`, `duty_permille` `0..=1000` (0 = off), `freq_hz` `1..=20000`.
+31 Hz is the stock PWM frequency and what the examples use; `vibrate(0, 0)` is a valid "off".
+
+| Return | Meaning |
+|---|---|
+| `0` | applied |
+| `-1` | out of range |
+| `-3` | paused (between `PAUSE` and `RESUME`); the motor stays off |
+| `-4` | locked: the loader cut a run longer than 2000 ms; every `vibrate(duty > 0)` returns `-4` until `vibrate(0, _)` |
+| other negative | PWM driver error |
+
+- The 2000 ms cap counts from the off→on switch; calling `vibrate` again while on does not restart it
+  (`fw/wp2-core/src/pwm.rs`). Longer feedback = pulses with gaps.
+- The loader turns the motor off on exit, force stop, crash and view delete, and cuts it on pause. Your app still
+  turns it off on `BUTTON` and `PAUSE`, because its own pattern state must stop too.
+- A tick: start, then stop from the event loop when its deadline passes (`blink` above, `agent-glow` main.rs). Do
+  not `event(20)` to wait for it inside a handler: that call can swallow a `BUTTON`.
+- Patterns used today: tick 250‰ for 20 ms (agent-glow); 400‰ for 25 ms (blink); blocked = 3 × 110 ms at 1000‰ with
+  90 ms gaps, done = 220 ms at 650‰ (herdr-agents `BLOCKED_PATTERN`, `DONE_PATTERN`). The emulator only logs duty;
+  how it feels is checked on the watch.
+
+### Storage (1.1)
+
+One blob of at most `STORE_MAX = 4096` bytes per slot, in `/NAND:/wp2apps/<slot>.dat`.
+
+| Call | Returns |
+|---|---|
+| `load(buf: &mut [u8]) -> i32` | stored length (`0` = nothing stored), `-1` `buf` too short, `-5` I/O error or both copies corrupt |
+| `save(data: &[u8]) -> i32` | `0`, `-1` longer than 4096, `-5` I/O error. Empty `data` deletes the blob |
+
+- Atomic: `save` writes `N.new`, unlinks `N.dat`, renames; `load` falls back to `N.new` and checks a CRC
+  (`fw/wp2-loader/src/svc.rs`). A cut write never gives you half a blob.
+- It writes NAND synchronously in the app thread: save on change or at exit, never per frame.
+- The blob survives an update (install of the same name) and is deleted by `wp2apps remove` or by installing another
+  app into the slot.
+- Put a magic/version in front (herdr-agents saves `"H1"`) and treat a blob you cannot parse as empty.
+- A 4 KiB buffer belongs in a `static mut`, not on the 8 KiB stack.
+
+### System (1.1)
+
+| Call | Returns | Notes |
+|---|---|---|
+| `battery() -> Option<Battery>` | `percent` (the stock estimate), `charging`, `full`, `charger` | `None` on a driver error |
+| `keep_screen_on(on: bool)` | – | Records the wish; the next UI tick takes or drops the stock wake lock. Held only while the app runs and is not paused; dropped on pause, exit, crash, force stop and view delete; taken again on resume. Costs display power: hold it with a deadline (herdr-agents: 20 s after a buzz) |
+
+### Host messages (1.1)
+
+| Call | Returns |
+|---|---|
+| `send(data: &[u8]) -> i32` | `0` queued; `-1` length not `1..=128` (`MSG_MAX`); `-11` outbox full (4 queued); `-107` no host listening |
+| `recv(buf: &mut [u8]) -> Option<&[u8]>` | the oldest message, removed from the inbox; `None` if empty or `buf` is too short (use `[0u8; MSG_MAX]`) |
+
+Details and the host side are in section 4.
+
+### Event loop rules
+
+- Block in `event(...)`. For animation, draw, `show`, then wait the rest of the frame in `event(left)`
+  (agent-glow `FRAME_MS = 33`). For a static screen, `event(u32::MAX)` or a slow tick for a clock.
+- Handle `BUTTON` in every loop, nested ones included, and leave within 1000 ms.
+- On `PAUSE`: motor off, stop timers, wait for `RESUME`.
+- Keep timeouts derived from `now()` deadlines, not from counting `event` calls.
+
+## 4. Talking to the Mac
+
+### The channel
+
+The app exchanges up to 128-byte messages with a host (today: the Python package on a Mac) over the stub's BLE
+channel. Protocol: `docs/abi-1.1.md`.
+
+| | |
+|---|---|
+| Size | 1–128 B per message, both directions |
+| Queues | inbox 4, outbox 4 messages |
+| Host → app | acknowledged. Status `0` OK, `1` BAD_REQUEST, `7` NO_APP (nothing runs, another slot, or an ABI 1.0 app), `8` FULL, `9` PAUSED; the host retries FULL and PAUSED |
+| App → host | sent only after the watch answers a host frame, so the host polls with PING (default every 0.25 s). `send` returns `-107` when no host listens. A new host key drops queued messages; the host sees gaps in a per-boot `seq` |
+| Latency (emulator, Netsim, MTU 23) | host → app 14–16 ms per acked 128 B message; echo round trip median 270 ms (one poll); app → host 72 ms per message in a burst of 41, none lost (`docs/abi-1.1.md`, from `tests/test_api_e2e.py`). Not measured on hardware |
+| Security | the pairing secret is readable by any BLE client, so anyone in range can read and send app messages. Treat input as untrusted; never send personal data (names, titles, notification text, locations, keys) |
+
+### Python host
+
+`wp2apps.channel.Channel` (`src/wp2apps/channel.py`), asyncio:
+
+| Member | Behaviour |
+|---|---|
+| `Channel(address=None, hci_port=None, slot=ANY, poll=0.25)` | exactly one of `address` (real watch) or `hci_port` (emulator) |
+| `.key` | session key; set it before the first call to resume a bound session instead of binding (no popup) |
+| `.slot` | `channel.ANY` (0xFF) = whatever app runs; set it to the slot that talked to you |
+| `.poll` | seconds between PINGs while `recv` waits; each PING is one encrypted frame each way (watch power) |
+| `await connect()` | connects, resuming `.key` first; retries with backoff 1, 2, 4 … 30 s |
+| `await send(data, timeout=10)` | reconnects on link loss, retries FULL/PAUSED; raises `channel.NoApp`, `TimeoutError`, or `ValueError` (refused) |
+| `await recv(timeout=None)` | next `Message(seq, slot, data)` from the app (of `.slot` unless `ANY`); raises `TimeoutError` |
+| `await drop()` / `close()`, `async with` | closes the link |
+
+Lower level: `channel.ping(session) -> State(running_slot, flags)`, `channel.send(session, …)`,
+`channel.recv(session, …)` on a `link.Session`.
+
+CLI, for poking an app by hand (both reuse the cached session key):
+
+```bash
+uv run --locked wp2apps send 'hello' --address <UUID>       # or --hci-port P; --hex, --slot N, --wait S
+uv run --locked wp2apps listen --count 5 --address <UUID>   # first line: running slot, abi_1_1, paused;
+                                                            # then one JSON line per message: seq, slot, data, text
+```
+
+### A complete pair: app and daemon
+
+`line` shows a line of text that the Mac sends once a second. App (`sdk/examples/line/src/main.rs`, `test = false`,
+no icon), built and run in the emulator with the daemon below:
+
+```rust
+#![no_std]
+#![no_main]
+
+// Shows one line of text from a Mac daemon. Protocol: "d1" + kind; R (app -> Mac) asks for the line,
+// L (Mac -> app) is seq + UTF-8 text.
+use cmf_wp2_app::{Api, BUTTON, MSG_MAX, PAUSE, RESUME};
+
+cmf_wp2_app::entry!(main);
+
+const ASK_MS: u32 = 3000;
+
+fn draw(api: &Api, text: &str) {
+    api.rect(0, 200, api.width, 16, 0x0000);
+    api.text(233 - 8 * text.chars().count() as i16, 200, text, 0xFFFF);
+    api.show();
+}
+
+// true on RESUME, false on BUTTON
+fn paused(api: &Api) -> bool {
+    loop {
+        match api.event(u32::MAX).map(|e| e.kind) {
+            Some(RESUME) => return true,
+            Some(BUTTON) => return false,
+            _ => {}
+        }
+    }
+}
+
+fn main(api: &'static Api) -> i32 {
+    let mut synced = false; // got a line since the last (re)start
+    let mut last_seq = 0u8;
+    let mut asked: Option<u32> = None;
+    draw(api, "waiting for Mac...");
+    loop {
+        let now = api.now();
+        if !synced && asked.is_none_or(|t| now.wrapping_sub(t) >= ASK_MS) {
+            api.send(b"d1R"); // -107 while no host listens: asked again in 3 s
+            asked = Some(now);
+        }
+        match api.event(500).map(|e| e.kind) {
+            Some(BUTTON) => return 0,
+            Some(PAUSE) => {
+                if !paused(api) {
+                    return 0;
+                }
+                (synced, asked) = (false, None); // messages were refused meanwhile: ask again
+            }
+            _ => {}
+        }
+        let mut buf = [0u8; MSG_MAX];
+        while let Some(m) = api.recv(&mut buf) {
+            if let [b'd', b'1', b'L', seq, text @ ..] = m {
+                if synced && *seq != last_seq.wrapping_add(1) {
+                    synced = false; // a gap: the Mac resends on the next R
+                } else {
+                    (synced, last_seq) = (true, *seq);
+                }
+                draw(api, core::str::from_utf8(text).unwrap_or("?"));
+            }
+        }
+    }
+}
+```
+
+Daemon, modelled on `src/wp2apps/herdr.py` (run here with `uv run --locked python line_daemon.py <hci-port>`):
+
+```python
+"""Mac side of the `line` app: sends the Mac's clock once a second while the app is open."""
+import asyncio
+import sys
+import time
+
+from wp2apps import channel
+from wp2apps.cli import cache_key, cached_key
+
+MAGIC = b"d1"
+
+
+async def run(ch: channel.Channel, target: str) -> None:
+    open_, seq, key = False, 0, None
+    while True:
+        ch.poll = 0.25 if open_ else 1.0  # each poll is one PING frame: slow down while the app is closed
+        try:
+            m = await ch.recv(timeout=1.0)  # connects (resuming ch.key), PINGs to collect app messages
+        except TimeoutError:
+            m = None
+        if ch.key != key:
+            key = ch.key
+            cache_key(target, key)  # reuse it next time: a fresh bind shows the "Paired" popup
+        if m and m.data == MAGIC + b"R":
+            ch.slot, open_ = m.slot, True  # answer the slot that asked
+        if not open_:
+            continue
+        seq = (seq + 1) & 0xFF
+        try:
+            await ch.send(MAGIC + b"L" + bytes([seq]) + time.strftime("%H:%M:%S").encode(), timeout=5)
+        except (channel.NoApp, TimeoutError, ValueError):
+            ch.slot, open_ = channel.ANY, False  # closed or stuck: wait for the next R
+
+
+def main(address: str | None = None, hci_port: int | None = None) -> None:
+    target = f"ble:{address}" if address else f"hci:{hci_port}"
+    ch = channel.Channel(address=address, hci_port=hci_port)
+    ch.key = cached_key(target)  # same cache as `wp2apps send/listen/herdr`
+    asyncio.run(run(ch, target))
+
+
+if __name__ == "__main__":
+    main(hci_port=int(sys.argv[1]))
+```
+
+A daemon that belongs in the repository goes to `src/wp2apps/<name>.py` with a subcommand in `src/wp2apps/cli.py`,
+as `wp2apps herdr` does.
+
+### Protocol design
+
+- Start every message with a magic and version (`"h1"`, `"d1"`), then a kind byte. Ignore anything else.
+- The app pulls, the host pushes. The app asks for a snapshot (`R`) on start, on `RESUME` and after a gap, and repeats
+  the request every few seconds until it gets one (`send` fails with `-107` while nobody listens). The host sends
+  nothing until it is asked, and stops after `NoApp` or a send that stays FULL/PAUSED for 5 s.
+- Number host messages with a `seq` byte; a gap means lost messages, so the app asks for a snapshot again.
+- Snapshot framing as in herdr-agents: `B` begin, upserts, `E` end with a count the app checks; deltas after that;
+  a heartbeat `H` every 10 s so the app can show "stale" (`docs/herdr-agents.md`).
+- Keep each record well under 128 B and cut UTF-8 on a char boundary on the host (`clip` in `herdr.py`) and again
+  on the watch (`fit` in `herdr-agents/src/model.rs`).
+- Poll slowly while the app is closed (herdr: 1 s) and at 0.25 s only while it is open.
+
+### Operating rules
+
+- **Bind before the app opens, never while it runs.** A full bind shows the stock "Paired" popup; it pauses the
+  app, and closing it with the button sends the stock to the clock, which ends the app. Order: install → close the
+  popup → start the daemon (it binds once if no key is cached; close that popup) → open the app. After that the key
+  in `~/.cache/wp2apps/sessions.json` (mode 0600, `WP2APPS_SESSIONS` overrides it) resumes without a popup until the
+  watch reboots or another client binds. The file is personal data: never in the repository.
+- **One central at a time.** Turn the phone's Bluetooth off; if the Nothing X app connects it binds with a new key
+  and the daemon loses the session.
+- **macOS can hold the LE link** after a crash, a sleep or even a normal session: the watch stops advertising and the
+  daemon retries without connecting (the watch shows as connected in the macOS Bluetooth settings while no process
+  of ours holds it). Turning the Mac's Bluetooth off and on frees it.
+- `install`, `list` and `remove` always bind (popup). Do not run them while an app that talks to a daemon is open.
+
+## 5. Reusable code today
+
+There is no shared UI kit. Copy from the examples; each file below is self-contained and host-tested.
+
+| Need | Where | What it is |
+|---|---|---|
+| Round-screen row layout | `herdr-agents/src/model.rs`: `row_geometry`, `row_at`, `max_scroll`, `isqrt`, `LIST_TOP`, `ROW_H`, `ROWS` | rows that fit the circle, chars per row, tap → row index, crown scroll by one row |
+| List screen | `herdr-agents/src/main.rs`: `Ui::draw`, `text_clipped`, `ellipsis`, `number`, `dot` | header counts, clipped rows with an ellipsis, "+N more", a 1/4-px AA status disc, row flash on tap |
+| UTF-8 cutting | `herdr-agents/src/model.rs`: `fit` (by bytes, on a char boundary), `clip` (by chars, reports a cut) | |
+| Haptic patterns | `herdr-agents/src/model.rs`: `Player`, `BLOCKED_PATTERN`, `DONE_PATTERN` | non-blocking `(duty, ms)` steps driven by `tick(now)` / `wait(now)` from the event loop |
+| Storage snapshot | `herdr-agents/src/model.rs`: `Model::save`, `Model::load` | versioned blob, garbage loads nothing |
+| Snapshot/delta protocol | `herdr-agents/src/model.rs`: `decode`, `Model::apply`, `Effect` | seq gaps, resync, buzz decisions |
+| AA shapes | `agent-glow/src/glow.rs`: `radial` (concentric bands: discs, rings, gradients with blended edges), `bar` (AA stroke at an angle), `Run` (merges same-colour pixels into one `rect`) | the `Sink` trait abstracts `rect`, so tests draw into a host framebuffer |
+| Fixed-point maths | `agent-glow/src/glow.rs`: `sin`, `cos` (Q14, 1/65536 turn), `angle` (atan2), `isqrt`, `wave`, `ease_out`, `spring`, `hue`, `Rgb` | |
+| Dirty redraw | `agent-glow/src/glow.rs`: `App::frame`, `App::redraw` | repaints only what moved; tests check incremental == full redraw |
+| Frame loop with haptic tick | `agent-glow/src/main.rs` | 33 ms frames, motor off at a deadline, PAUSE/RESUME, `STATS` for e2e |
+| Settings screen | `vibration-lab/src/main.rs`, `lab.rs` | rows selected by tap, values changed by the crown, a stepped vibration `Player` with pause |
+| Every 1.1 call | `api-demo/src/main.rs` | time, battery, counter in storage, `keep_screen_on`, echo, send retry on `-11` |
+| Text into a buffer | `Line` (`vibration-lab/src/main.rs`), `Buf<N>` (`api-demo/src/main.rs`) | `core::fmt::Write` without a heap |
+
+Missing today: bitmaps (only `rect`; the icon path is loader-only), font sizes and text measuring, touch move,
+gestures and long press, any sensor (accelerometer, heart rate and GPS were looked at and not shipped,
+`docs/abi-1.1.md`), a notice before the screen blanks, a random source, a phone-side host, and a shared crate for
+the pieces above.
+
+## 6. Testing
+
+### Host unit tests
+
+Put logic that does not need `Api` (protocol, model, layout, maths, patterns) in a module and test it with
+`#[cfg(test)]` on the Mac: `(cd sdk && cargo test -p <name> --target aarch64-apple-darwin)`. For drawing, write
+against a trait like agent-glow's `Sink { fn rect(...) }` and test with a framebuffer in a `Vec<u16>`
+(`agent-glow/src/glow.rs` tests). Before a commit run the three suites from AGENTS.md.
+
+### Emulator e2e
+
+Pattern: `tests/test_herdr_e2e.py` (app + daemon), `tests/test_demo_e2e.py` (animation, pause, button),
+`tests/test_api_e2e.py` (1.1 calls). Helpers in `tests/e2e/harness.py`:
+
+| Helper | Does |
+|---|---|
+| `installed(names, name=…)` | boots the paired NOR on its own Netsim, installs `target/<name>.wp2app` for each name; yields `(emu, hci_port)` |
+| `open_menu(emu)`, `open_app(emu, row)` | close the "Paired" popup, wait out the screen-off after the BLE disconnect, open the loader menu, tap row `row` (centre y = 180 + 128·row) |
+| `emu.send(*lines, pause=…)` | input: `t 1 X Y` / `t 0 X Y` touch down/up, `c 1` / `c 0` crown press (BUTTON), `r -80` one crown detent (`delta +1`) |
+| `emu.frame()` → `(w, h, rgb)` | the panel; `save_png` in `tests/test_demo_e2e.py` writes it out |
+| `emu.motor()` | `motor.log` rows `(ms, duty, hz)` |
+| `popup(emu)`, `close_popup(emu)` | charger popup: PAUSE, then RESUME |
+| `emu.peek(STUB_RAM + 6, 1)` | running slot, `ff` = none |
+| `u32(emu, STUB_RAM + APP_BLOCK_OFF) + symbol(elf, "STATS")` | address of an app `#[unsafe(no_mangle)] static`, to read counters the app keeps for the test (api-demo, agent-glow) |
+
+Run: `WP2_E2E=1 WP2_NETSIM_INSTANCE=<unique> nix-shell -p gdb llvm --run 'uv run --locked python -m unittest tests.<module> -v'`.
+Build `scripts/build-fw` and the apps first. Two `netsimd` on one instance stop each other, so every parallel run
+gets its own instance. `WP2_GUI=1` opens a window (Tk 8.6, `nix-shell -p tk`). Logs, UART and frames go to
+`runs/e2e/<name>-<time>/`. It takes minutes per test; run it in a pane, not in the background.
+
+Known flakes and their workarounds:
+
+- **gdb `OPEN_VIEW` stall**: `subprocess.TimeoutExpired` from `emu.call` in `open_menu` when the guest went idle
+  after the screen blanked. Not an app bug; re-run.
+- **Screen-off race**: the panel blanks ~5.7 s after the BLE install connection closes ("Ble wake lock 0"), even
+  with `keep_awake`. `harness.ready` waits it out. After an app exits, tap the menu row right away instead of
+  calling `open_app` again (as `test_herdr_e2e` does).
+- **Colours**: the panel capture scales brightness (white reads ~160 of 255, ×0.627). Compare hue, not absolute
+  values (`hue` in `tests/test_herdr_e2e.py`).
+- **TOUCH_UP `y`** is wrong in the emulator; drive the app from `TOUCH_DOWN`.
+- The charger popup leaves the charger plugged (on purpose: unplugging sets a 5 s auto-sleep and the deep sleep
+  stops the emulator), so a later screen wake brings the charge popup back over the app.
+
+### On the watch (owner approval for every write)
+
+Check what the emulator cannot: how the haptics feel, the real frame rate and tearing, text legibility and
+colours on the panel, behaviour when the screen blanks or a notification arrives, BLE latency at the real MTU, and
+battery use with `keep_screen_on` or a polling daemon.
+
+## 7. Checklist before shipping an app
+
+- [ ] `BUTTON` is handled in every loop, the motor goes off and `main` returns within 1000 ms.
+- [ ] `PAUSE` turns the motor off and stops animation; `RESUME` redraws and resyncs with the host.
+- [ ] Every wait goes through `event(...)`; no busy loop, no `event` call that can swallow a `BUTTON` mid-pattern.
+- [ ] No motor run near 2 s; `-4` is cleared with `vibrate(0, _)`.
+- [ ] State is saved on change (the app can die without notice), not per frame; the blob has a version and fits
+      4096 B; a bad blob loads as empty.
+- [ ] Buffers over ~1 KiB are statics, the image stays well under 128 KiB (`wp2apps info`).
+- [ ] Text fits the circle (section 2 table) and each `text` call is ≤ 64 bytes.
+- [ ] Nothing personal goes over BLE, in either direction, and nothing personal is logged or committed.
+- [ ] Host messages are parsed defensively (magic, version, lengths).
+- [ ] `keep_screen_on(true)` only with a deadline.
+- [ ] `icon.svg` present (or the letter fallback is intended), version bumped, host tests pass, the e2e or a manual
+      emulator run covers start, input, pause and exit.

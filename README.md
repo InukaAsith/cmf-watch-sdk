@@ -7,6 +7,7 @@ The watch is never reflashed to add or remove an app.
 Status: everything runs in the emulator. Only `scan` has been tried on a real watch.
 
 - Design: [docs/specs/2026-11-10-wp2-app-loader-design.md](docs/specs/2026-11-10-wp2-app-loader-design.md)
+- Writing an app (quick start, platform limits, API, Mac channel, testing): [docs/app-guide.md](docs/app-guide.md)
 - App ABI 1.1 (host messages, storage, time, battery, screen on): [docs/abi-1.1.md](docs/abi-1.1.md)
 - herdr agents on the watch (example app + Mac daemon): [docs/herdr-agents.md](docs/herdr-agents.md)
 - Plan, part 1: [docs/plans/2026-11-10-wp2-app-loader-foundations.md](docs/plans/2026-11-10-wp2-app-loader-foundations.md)
