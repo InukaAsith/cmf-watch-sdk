@@ -52,6 +52,13 @@ pub const LV_OBJ_CLEAR_FLAG: u32 = 0x10127E7D;
 pub const LV_DISP_ADD_KNOB_OBJ: u32 = 0x10128C51;
 // (obj, prop, value, selector); value is lv_style_value_t (i32, pointer or RGB565 in the low half)
 pub const LV_OBJ_SET_LOCAL_STYLE_PROP: u32 = 0x101C6F9B;
+pub const LV_OBJ_ALIGN: u32 = 0x101C5DE5;
+// jx_scroll_bar (lv_arc): round indicator; stock lists create it on the screen, size 462, align CENTER (0x1005EFA6)
+pub const JX_SCROLL_BAR_CREATE: u32 = 0x100D93CD;
+// (bar, obj): follows SCROLL_BEGIN/END/SCROLL of obj
+pub const JX_SCROLL_BAR_SET_SCROLL_OBJ: u32 = 0x100D93E5;
+// (bar, on): sets or clears the knob flag (1 << 30) on the scroll obj, so the crown scrolls it
+pub const JX_SCROLL_BAR_SET_KNOB: u32 = 0x100D94ED;
 pub const LV_LABEL_CREATE: u32 = 0x1013F5F1;
 // copies the text into lv_mem
 pub const LV_LABEL_SET_TEXT: u32 = 0x101400A5;
