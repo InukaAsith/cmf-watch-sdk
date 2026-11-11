@@ -193,9 +193,12 @@ uv run --locked wp2apps install target/<name>.wp2app --address <UUID>
   refused with `BUSY` (`fw/wp2-stub/src/ble.rs`, `busy`). Close the app first.
 - `install`, `list` and `remove` do a full bind, and the stock then shows a "Paired" popup. Close it with the
   button. If an app was running, closing that popup ends it (section 4).
-- Open an app: stock app list (list style, not waterfall) → "Apps", the last row → tap the app's row (the crown
-  scrolls the list). The row shows the name and `vN`. If `main` returns a non-zero code, the row shows
+- Open an app: stock app list (list style, not waterfall) → "Custom Apps", the first row → tap the app's row (the
+  crown scrolls the list). The row shows the name and `vN`. If `main` returns a non-zero code, the row shows
   `Error <code>` for 2 s (`fw/wp2-loader/src/main.rs`, `fail`).
+- Leave, as in stock apps: in an app, the crown press or a right swipe sends `BUTTON` and returns to the "Custom
+  Apps" menu (the app gets 1 s, then it is stopped). In the menu a right swipe goes back to the stock app list at
+  the same scroll position and the crown press goes to the clock (`docs/recon.md`, "Back navigation").
 
 ## 2. Platform facts
 
@@ -291,15 +294,14 @@ have ~5 ms granularity (`next_event` in `fw/wp2-loader/src/app.rs`). Never spin 
 | `TOUCH_DOWN` (1) | finger down | `x`, `y` in screen pixels. Act on this one |
 | `TOUCH_UP` (2) | finger up | `x`, `y` are not reliable: in the emulator a tap at y 199 reported a row-0 `y` (herdr-agents now uses DOWN). There are no move events, so no drags or swipes inside the app |
 | `CROWN` (3) | one crown detent | `delta` is `+1` or `-1`, never a magnitude; a fast turn is several events |
-| `BUTTON` (4) | crown press | The loader force-stops the app **1000 ms** later if it is still running (`ESCAPE_MS`, `fw/wp2-loader/src/main.rs`). Turn the motor off, save if needed, return |
+| `BUTTON` (4) | crown press, or a right swipe (the stock "back") | The loader force-stops the app **1000 ms** later if it is still running (`ESCAPE_MS`, `fw/wp2-loader/src/main.rs`). Turn the motor off, save if needed, return |
 | `PAUSE` (5) | a stock popup (charger, incoming call, "Paired"; notifications use the call's popup type, untested) or another view covers the app | The queue is cleared, input is dropped, `vibrate` returns `-3` and the motor is cut, `show` does not reach the panel, host messages are refused with `PAUSED`. Stop the motor and animations, then block in `event(u32::MAX)` until `RESUME` (handle `BUTTON` there too, as `paused()` in agent-glow and herdr-agents does) |
 | `RESUME` (6) | the popup closed | The loader repaints the whole framebuffer itself. Redraw time-dependent parts; ask the host for a fresh snapshot |
 | `MESSAGE` (7) | ABI 1.1: a host message is in the inbox | `x` = its length. A hint: drain with `recv` until `None` |
 
 - The queue holds 15 events; more are dropped (`fw/wp2-core/src/events.rs`).
-- **An app can end without any event.** A right swipe is the stock "back": the stock jumps to the clock and deletes
-  the view (`docs/recon.md`, "Swipe back"). Closing the "Paired" popup does the same. When auto-sleep blanks the
-  panel the stock closes the view (`docs/herdr-agents.md`; in one emulator run the view instead came back paused
+- **An app can end without any event.** Closing the "Paired" popup jumps to the clock and deletes the view. When
+  auto-sleep blanks the panel the stock closes the view (`docs/herdr-agents.md`; in one emulator run the view instead came back paused
   under the charger popup). All of these abort the thread: no `BUTTON`, no return. Save state when it changes, not
   only at exit.
 

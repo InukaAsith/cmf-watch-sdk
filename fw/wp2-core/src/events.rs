@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use crate::stock::{KEY_CROWN_CCW, KEY_CROWN_CW, KEY_CROWN_PRESS};
+use crate::stock::{KEY_BACK, KEY_CROWN_CCW, KEY_CROWN_CW, KEY_CROWN_PRESS};
 
 pub const TOUCH_DOWN: u8 = 1;
 pub const TOUCH_UP: u8 = 2;
@@ -76,6 +76,8 @@ pub fn map_key(value: u32) -> Option<Event> {
         KEY_CROWN_CW => (CROWN, 1),
         KEY_CROWN_CCW => (CROWN, -1),
         KEY_CROWN_PRESS => (BUTTON, 0),
+        // the app leaves as on the button and the loader shows its menu, not the stock app list
+        v if v & 0xFFFF == KEY_BACK => (BUTTON, 0),
         _ => return None,
     };
     Some(Event { kind, delta, ..Event::default() })
@@ -149,6 +151,7 @@ mod tests {
         assert_eq!(map_key(0xFFFF_006F).map(|e| (e.kind, e.delta)), Some((3, 1)));
         assert_eq!(map_key(0xFFFF_006E).map(|e| (e.kind, e.delta)), Some((3, -1)));
         assert_eq!(map_key(0x0400_0001).map(|e| e.kind), Some(4));
+        assert_eq!(map_key(0xFFFF_0071).map(|e| e.kind), Some(4));
         assert_eq!(map_key(0x2000_0001), None);
     }
 
