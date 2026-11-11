@@ -1,4 +1,4 @@
-use crate::{motor, svc, ui};
+use crate::{lv, motor, svc, ui};
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use wp2_core::gfx;
@@ -30,7 +30,7 @@ pub static DEFOCUSED: AtomicBool = AtomicBool::new(false);
 
 static API: Api = Api {
     abi: 1,
-    abi_minor: 1,
+    abi_minor: 2,
     width: 466,
     height: 466,
     fill_rect,
@@ -47,7 +47,7 @@ static API: Api = Api {
     get_time: svc::time,
     get_battery: svc::battery,
     screen_on: svc::keep_screen_on,
-    lv_submit: svc::lv_submit,
+    lv_submit: lv::submit,
 };
 
 type Entry = extern "C" fn(*const Api) -> i32;
@@ -103,6 +103,8 @@ pub fn stop_app() {
     stock!(K_THREAD_ABORT, fn(*mut u8))(addr_of_mut!(THREAD_BUF) as *mut u8);
     motor::off();
     svc::stop();
+    // LVGL keeps no object, callback or font of the app once its block is gone
+    lv::teardown();
     let ram = stub_ram();
     unsafe { heap::free(RES, ram.app_block as *mut u8) };
     ram.app_block = 0;

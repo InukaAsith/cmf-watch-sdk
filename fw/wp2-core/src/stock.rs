@@ -103,6 +103,8 @@ pub const LV_OBJ_SET_FLEX_FLOW: u32 = 0x10133545;
 // (obj, main, cross, track)
 pub const LV_OBJ_SET_FLEX_ALIGN: u32 = 0x10133595;
 pub const LV_EVENT_GET_TARGET: u32 = 0x101C4C93;
+// (obj, flag) -> bool; the checker of set_knob in lv_entries.py
+pub const LV_OBJ_HAS_FLAG: u32 = 0x101283DD;
 // Ids of the 48 stock lv_obj_set_style_* setters (44 tail-call set_local_style_prop with `movs r1, #id`,
 // 0x101C72CC..0x101C751A; the 4 flex setters load ids that lv_flex_init registers at boot: flow 113, main_place
 // 114, cross_place 115, track_place 116, read in the emulator). 45, 92, 93 are Actions additions. Sorted.
