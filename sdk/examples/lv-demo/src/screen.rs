@@ -22,6 +22,7 @@ pub const ARC_START: i32 = 70;
 
 pub struct Screen {
     pub title: Obj,
+    pub list: Obj,
     pub rows: [Obj; ROWS],
     pub bar: Obj,
     pub slider: Obj,
@@ -45,32 +46,7 @@ pub fn build(b: &mut Batch) -> Result<Screen, LvError> {
     b.text(title, "LVGL demo")?;
     b.align(title, Align::TopMid, 0, 28)?;
 
-    // a bare flex column: no padding, border or background, so row i sits at LIST_Y + i * (ROW_H + ROW_GAP)
-    let list = b.create(Class::Obj, ROOT)?;
-    b.size(list, LIST_W, LIST_H)?;
-    b.align(list, Align::TopMid, 0, LIST_Y)?;
-    for p in [Prop::PadTop, Prop::PadBottom, Prop::PadLeft, Prop::PadRight, Prop::BorderWidth, Prop::Radius, Prop::BgOpa] {
-        b.style(list, p, 0, 0)?;
-    }
-    b.style(list, Prop::PadRow, 0, ROW_GAP)?;
-    b.flex(list, Flow::Column, FlexAlign::Start, FlexAlign::Center, FlexAlign::Start)?;
-    let mut rows = [ROOT; ROWS];
-    for (i, row) in rows.iter_mut().enumerate() {
-        let btn = b.create(Class::Btn, list)?;
-        b.size(btn, pct(100), ROW_H)?;
-        b.style(btn, Prop::BgColor, 0, ROW_BG)?;
-        b.style(btn, Prop::BgOpa, 0, 255)?;
-        b.style(btn, Prop::Radius, 0, 12)?;
-        b.events(btn, &[Ev::Clicked])?;
-        let label = b.create(Class::Label, btn)?;
-        let mut text = *b"Row 00";
-        text[4] += (i / 10) as u8;
-        text[5] += (i % 10) as u8;
-        b.text(label, core::str::from_utf8(&text).unwrap_or("Row"))?;
-        b.align(label, Align::LeftMid, 8, 0)?;
-        *row = btn;
-    }
-    let bar = b.scroll_bar(list)?;
+    let (list, rows, bar) = list(b)?;
 
     let slider = b.create(Class::Slider, ROOT)?;
     b.size(slider, 260, 16)?;
@@ -109,7 +85,49 @@ pub fn build(b: &mut Batch) -> Result<Screen, LvError> {
     b.events(roller, &[Ev::ValueChanged])?;
     // creating a roller makes it the knob object: hand the crown back to the list (it scrolls, the bar shows)
     b.knob(list)?;
-    Ok(Screen { title, rows, bar, slider, arc, arc_label, roller })
+    Ok(Screen { title, list, rows, bar, slider, arc, arc_label, roller })
+}
+
+/// The list of 12 rows and its scroll bar: (list, rows, bar).
+fn list(b: &mut Batch) -> Result<(Obj, [Obj; ROWS], Obj), LvError> {
+    // a bare flex column: no padding, border or background, so row i sits at LIST_Y + i * (ROW_H + ROW_GAP)
+    let list = b.create(Class::Obj, ROOT)?;
+    b.size(list, LIST_W, LIST_H)?;
+    b.align(list, Align::TopMid, 0, LIST_Y)?;
+    for p in [Prop::PadTop, Prop::PadBottom, Prop::PadLeft, Prop::PadRight, Prop::BorderWidth, Prop::Radius, Prop::BgOpa] {
+        b.style(list, p, 0, 0)?;
+    }
+    b.style(list, Prop::PadRow, 0, ROW_GAP)?;
+    b.flex(list, Flow::Column, FlexAlign::Start, FlexAlign::Center, FlexAlign::Start)?;
+    let mut rows = [ROOT; ROWS];
+    for (i, row) in rows.iter_mut().enumerate() {
+        let btn = b.create(Class::Btn, list)?;
+        b.size(btn, pct(100), ROW_H)?;
+        b.style(btn, Prop::BgColor, 0, ROW_BG)?;
+        b.style(btn, Prop::BgOpa, 0, 255)?;
+        b.style(btn, Prop::Radius, 0, 12)?;
+        b.events(btn, &[Ev::Clicked])?;
+        let label = b.create(Class::Label, btn)?;
+        let mut text = *b"Row 00";
+        text[4] += (i / 10) as u8;
+        text[5] += (i % 10) as u8;
+        b.text(label, core::str::from_utf8(&text).unwrap_or("Row"))?;
+        b.align(label, Align::LeftMid, 8, 0)?;
+        *row = btn;
+    }
+    let bar = b.scroll_bar(list)?;
+    Ok((list, rows, bar))
+}
+
+/// `!del`: the list goes, and its rows, labels and scroll bar with it.
+pub fn del_list(b: &mut Batch, s: &Screen) -> Result<(), LvError> {
+    b.del(s.list)
+}
+
+/// `!list`: the list again after `del_list`, with the crown.
+pub fn rebuild_list(b: &mut Batch, s: &mut Screen) -> Result<(), LvError> {
+    (s.list, s.rows, s.bar) = list(b)?;
+    b.knob(s.list)
 }
 
 /// The arc and its number follow the slider.
@@ -177,6 +195,25 @@ mod tests {
         let mut b = batch();
         bad(&mut b, &s).unwrap();
         assert!(lvcmd::validate(b.bytes(), &t, 1).is_err());
+    }
+
+    #[test]
+    fn del_list_frees_rows_and_bar() {
+        // ponytail: !list is not host-tested (it does not fit the screen's buffer without a submit); the e2e runs it
+        let mut b = batch();
+        let s = build(&mut b).unwrap();
+        let mut t = table_after(b.bytes());
+        let n = b.bytes().len();
+        del_list(&mut b, &s).unwrap();
+        let rec = &b.bytes()[n..];
+        assert_eq!(lvcmd::validate(rec, &t, 1), Ok(()));
+        lvcmd::apply(&mut t, &lvcmd::records(rec).next().unwrap().unwrap());
+        for h in s.list.0..=s.bar.0 {
+            assert_eq!(t.class(h), None, "{h}");
+        }
+        assert!(t.class(s.slider.0).is_some() && t.class(s.title.0).is_some());
+        // a fresh list takes the same handles again
+        assert_eq!(b.create(Class::Obj, ROOT), Ok(s.list));
     }
 
     #[test]

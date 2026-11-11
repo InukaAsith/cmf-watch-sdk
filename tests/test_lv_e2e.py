@@ -1,5 +1,5 @@
 """lv-demo (ABI 1.2, stock LVGL widgets) in the emulator: the screen, LV events, crown scrolling with the round
-scroll bar, a rejected batch, GUI heap after exit and a force stop while the app sits in lv_submit.
+scroll bar, a rejected batch, DEL of the list, GUI heap after exit and a force stop while the app sits in lv_submit.
 Needs target/{loader,lv-demo}.wp2app. WP2_NETSIM_INSTANCE=93."""
 import asyncio
 from contextlib import ExitStack
@@ -24,7 +24,9 @@ SLIDER_Y = 298  # centre line
 ARC_BOX = (103, 322, 223, 442)
 CLICKED, VALUE_CHANGED = 7, 28
 # STATS indices (lv-demo main.rs)
-FONT_RC, SCREEN_RC, MSG_RC, EVENTS, LAST_H, LAST_CODE, LAST_DELTA, ARC_VALUE, SLIDER, ARC, BAR, SPINS, ROWS = range(13)
+(FONT_RC, SCREEN_RC, MSG_RC, EVENTS, LAST_H, LAST_CODE, LAST_DELTA, ARC_VALUE, SLIDER, ARC, BAR, SPINS, LIST, MSGS,
+ ROWS) = range(15)
+N_STATS = ROWS + 12
 COORDS, FLAGS = 0x14, 0x24  # lv_obj_t: i32 x1 y1 x2 y2; flags (bit 0 HIDDEN), docs/recon-lvgl.md
 CROWN_DOWN = "r -80"  # one detent
 
@@ -102,12 +104,12 @@ class LvDemoTest(unittest.TestCase):
             self.emu.sleep(0.25)
         self.assertEqual((s[FONT_RC], s[SCREEN_RC]), (0, 0), f"font and screen batches: STATS {s}")
         self.assertTrue(s[SLIDER], f"screen batch never returned: STATS {s}")
-        self.assertEqual((s[EVENTS], s[MSG_RC], s[SPINS]), (0, 0, 0), f"STATS of a previous run: {s}")
+        self.assertEqual((s[EVENTS], s[MSG_RC], s[SPINS], s[MSGS]), (0, 0, 0, 0), f"STATS of a previous run: {s}")
         return s
 
     def stats(self):
         at = harness.u32(self.emu, S + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
-        return struct.unpack("<25i", self.emu.peek(at, 100))
+        return struct.unpack(f"<{N_STATS}i", self.emu.peek(at, 4 * N_STATS))
 
     def obj(self, h: int) -> int:
         lv = harness.u32(self.emu, S + harness.LOADER_BLOCK_OFF) + harness.symbol(LOADER_ELF, "LV_STATE")
@@ -212,6 +214,58 @@ class LvDemoTest(unittest.TestCase):
         after, _ = self.frame("after-bad.png")
         self.assertEqual(self.running(), 0)
         self.assertTrue(before == after, "a rejected batch changed the screen")
+        self.emu.send("c 1", "c 0", pause=2)
+        self.assertTrue(self.in_menu())
+
+    def handled(self, text: bytes, n: int):
+        """Sends a host message and waits until lv-demo has handled its n-th one; returns STATS."""
+        self.message(text)
+        return self.wait_stat(MSGS, lambda v: v >= n, f"no result for {text}")
+
+    def test_del_list(self):
+        """DEL of a subtree on the device: the list, its 12 rows, their labels and the list's scroll bar."""
+        s = self.launch()
+        self.emu.sleep(1)
+        doomed = range(s[LIST], s[BAR] + 1)  # list, rows and labels, bar: created in one run
+        kept = (1, s[SLIDER], s[ARC])  # title, slider, arc
+        self.assertEqual(len(doomed), 26)
+        self.assertTrue(all(self.obj(h) for h in [*doomed, *kept]), "objects before DEL")
+        with_list = self.gui_free()
+
+        s = self.handled(b"!del", 1)
+        self.assertEqual(s[MSG_RC], 0, s)
+        self.emu.sleep(0.5)
+        gone = self.gui_free()
+        _, px = self.frame("after-del.png")
+        print(f"\nGUI heap free: with the list {with_list}, after DEL {gone} (the list cost {gone - with_list})")
+        self.assertEqual([h for h in doomed if self.obj(h)], [], "LV_STATE.objs of freed handles")
+        self.assertTrue(all(self.obj(h) for h in kept), "DEL took objects outside the list")
+        self.assertGreater(gone - with_list, 2000, "DEL freed too little GUI heap")
+        for i in (0, 1, 2):
+            self.assertEqual(px(110, row_y(i)), (0, 0, 0), f"row {i} still drawn")
+        self.assertEqual(widgets_drawn(px), [])
+
+        # the crown's knob was the list: turning it must not touch the freed list or bar
+        self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
+        self.emu.sleep(1.5)  # past the bar's 1 s hide timer
+        self.assertEqual(self.running(), 0, "crown after DEL")
+        # touch still works: the slider reports
+        harness.swipe(self.emu, 330, SLIDER_Y, 150, SLIDER_Y, steps=4, pause=1)
+        s = self.stats()
+        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[SLIDER], VALUE_CHANGED), s)
+
+        # the same list again: the same handles, and the GUI heap of the first list (DEL leaked nothing)
+        s = self.handled(b"!list", 2)
+        self.assertEqual(s[MSG_RC], 0, s)
+        self.assertEqual(range(s[LIST], s[BAR] + 1), doomed)
+        self.emu.sleep(0.5)
+        again = self.gui_free()
+        print(f"GUI heap free with the list again: {again}")
+        self.assertLessEqual(abs(again - with_list), 256)
+        self.assertEqual(self.coords(s[ROWS])[1], LIST_Y, "rebuilt row 0 at the top")
+        y0 = self.coords(s[ROWS])[1]
+        self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
+        self.assertLess(self.coords(s[ROWS])[1], y0, "crown does not scroll the rebuilt list")
         self.emu.send("c 1", "c 0", pause=2)
         self.assertTrue(self.in_menu())
 

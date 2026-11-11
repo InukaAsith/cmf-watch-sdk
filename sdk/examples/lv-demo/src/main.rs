@@ -1,7 +1,8 @@
 //! lv-demo: an ABI 1.2 app on the watch's own LVGL widgets. A title in a stock font, a crown-scrolled list of 12
 //! rows (a tap plays the haptic pattern the roller picks), a slider that drives an arc; BUTTON exits.
-//! Host messages for tests/test_lv_e2e.py: `!bad` submits a batch the loader must reject, `!spin` submits forever
-//! and never reads BUTTON again (the loader force stops it).
+//! Host messages for tests/test_lv_e2e.py: `!bad` submits a batch the loader must reject, `!del` deletes the list
+//! (rows, labels and scroll bar go with it), `!list` builds it again, `!spin` submits forever and never reads BUTTON
+//! again (the loader force stops it).
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
@@ -35,7 +36,9 @@ mod device {
     const ARC: usize = 9;
     const BAR: usize = 10;
     const SPINS: usize = 11;
-    const ROWS: usize = 12; // .. 12 row handles
+    const LIST: usize = 12;
+    const MSGS: usize = 13; // !bad, !del and !list handled; MSG_RC holds the last one's result
+    const ROWS: usize = 14; // .. 12 row handles
     // FONT_RC and SCREEN_RC start at NOT_YET (no lv_submit code), so the e2e sees whether the submits returned;
     // the non-zero initialiser puts STATS in .data, copied fresh at every launch
     const NOT_YET: i32 = 1;
@@ -60,11 +63,19 @@ mod device {
         }
     }
 
+    fn publish(s: &screen::Screen) {
+        set(LIST, s.list.0 as i32);
+        set(BAR, s.bar.0 as i32);
+        for (i, r) in s.rows.iter().enumerate() {
+            set(ROWS + i, r.0 as i32);
+        }
+    }
+
     fn main(api: &'static Api) -> i32 {
         let Some(lv) = api.lv() else { return -95 }; // loader older than ABI 1.2
         let Some(mut b) = Batch::new() else { return -1 };
         set(FONT_RC, code(screen::fonts(&mut b).and_then(|_| b.submit(&lv))));
-        let s = match screen::build(&mut b) {
+        let mut s = match screen::build(&mut b) {
             Ok(s) => s,
             Err(e) => {
                 set(SCREEN_RC, code(Err(e)));
@@ -74,10 +85,7 @@ mod device {
         set(SCREEN_RC, code(b.submit(&lv)));
         set(ARC_VALUE, ARC_START);
         set(ARC, s.arc.0 as i32);
-        set(BAR, s.bar.0 as i32);
-        for (i, r) in s.rows.iter().enumerate() {
-            set(ROWS + i, r.0 as i32);
-        }
+        publish(&s);
         set(SLIDER, s.slider.0 as i32); // last: the e2e waits for it
 
         let mut motor = Motor::new(api);
@@ -110,7 +118,16 @@ mod device {
                 MESSAGE => {
                     while let Some(m) = api.recv(&mut msg) {
                         match m {
-                            b"!bad" => set(MSG_RC, code(screen::bad(&mut b, &s).and_then(|_| b.submit(&lv)))),
+                            b"!bad" | b"!del" | b"!list" => {
+                                let r = match m {
+                                    b"!bad" => screen::bad(&mut b, &s),
+                                    b"!del" => screen::del_list(&mut b, &s),
+                                    _ => screen::rebuild_list(&mut b, &mut s),
+                                };
+                                set(MSG_RC, code(r.and_then(|_| b.submit(&lv))));
+                                publish(&s);
+                                set(MSGS, get(MSGS) + 1);
+                            }
                             b"!spin" => {
                                 motor.off();
                                 let mut v = 0;
