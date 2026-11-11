@@ -6,6 +6,8 @@ Make the CMF Watch Pro 2 run separately installable apps: a minimal stub in the 
 `app.bin`, a loader on NAND, a Rust SDK and apps installed over BLE. The first app is a
 vibration lab. See `docs/specs/` for the design and `docs/plans/` for the current plan.
 
+Building an app → read `docs/app-guide.md` first.
+
 ## Hard rules
 
 1. No writes to a physical watch without explicit approval from the owner. Read-only BLE
