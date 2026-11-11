@@ -1,0 +1,10 @@
+[package]
+name = "cmf-wp2-ui"
+description = "UI kit for wp2-apps apps: antialiased shapes, round-screen layout, text, widgets, haptics, motion"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+cmf-wp2-app = { path = "../cmf-wp2-app" }
+wp2-core = { path = "../../fw/wp2-core" }

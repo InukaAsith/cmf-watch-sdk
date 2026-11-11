@@ -7,6 +7,7 @@ name = "agent-glow"
 version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
+ "cmf-wp2-ui",
 ]
 
 [[package]]
@@ -21,6 +22,14 @@ name = "cmf-wp2-app"
 version = "0.1.0"
 
 [[package]]
+name = "cmf-wp2-ui"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "wp2-core",
+]
+
+[[package]]
 name = "hello"
 version = "0.1.0"
 dependencies = [
@@ -32,6 +41,7 @@ name = "herdr-agents"
 version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
+ "cmf-wp2-ui",
 ]
 
 [[package]]
@@ -54,3 +64,7 @@ version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
 ]
+
+[[package]]
+name = "wp2-core"
+version = "0.1.0"
