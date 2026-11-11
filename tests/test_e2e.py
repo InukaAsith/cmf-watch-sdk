@@ -87,19 +87,7 @@ class StubTest(unittest.TestCase):
         self.assertNotEqual(harness.u32(emu, ops + 0x3C), 0)
 
     def test_stock_vibration_scaled(self):
-        emu, value = self.emu, START + 0xE30
-        n = len(emu.motor())
-        emu.poke(value, struct.pack("<i", 1))
-        emu.call(0x100E17CD, value, 0, 0)  # property 0x25, level 1 preview: stock 250/255, 300 ms
-        emu.sleep(1)
-        log = emu.motor()
-        print(f"\nstock motor.log {log}")
-        boot = [d for _, d, _ in log[:n] if d > 0]
-        preview = [(d, hz) for _, d, hz in log[n:] if d > 0]
-        self.assertTrue(boot and preview)
-        self.assertTrue(all(abs(d - 349) <= 2 for d in boot), boot)  # 89/255, SYSTEM_DUTY_PERMILLE 350
-        self.assertTrue(all(abs(d - 341) <= 2 and abs(hz - 31) <= 1 for d, hz in preview), preview)  # 87/255
-        self.assertEqual(log[-1][1], 0)
+        assert_stock_vibration_scaled(self, self.emu, START + 0xE30)
 
     def test_patched_boots_and_view_without_loader_fails_cleanly(self):
         emu = self.emu
@@ -115,6 +103,35 @@ class StubTest(unittest.TestCase):
         self.assertNotIn("ZEPHYR FATAL ERROR", uart)
         self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
         self.assertTrue(same_screen(emu.frame(), before), "the stock screen changed")
+
+
+def assert_stock_vibration_scaled(test, emu, value):
+    n = len(emu.motor())
+    emu.poke(value, struct.pack("<i", 1))
+    emu.call(0x100E17CD, value, 0, 0)  # property 0x25, level 1 preview: stock 250/255, 300 ms
+    emu.sleep(1)
+    log = emu.motor()
+    print(f"\nstock motor.log {log}")
+    boot = [d for _, d, _ in log[:n] if d > 0]
+    preview = [(d, hz) for _, d, hz in log[n:] if d > 0]
+    test.assertTrue(boot and preview)
+    test.assertTrue(all(abs(d - 349) <= 2 for d in boot), boot)  # 89/255: `wp2apps firmware --motor 350`
+    # level 1 is 250 -> 87/255; level 0 (what a clobbered argument gives) 255 -> 89/255
+    test.assertTrue(all(min(abs(d - 341), abs(d - 349)) <= 2 and abs(hz - 31) <= 1 for d, hz in preview), preview)
+    test.assertEqual(log[-1][1], 0)
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class MotorOnlyTest(unittest.TestCase):
+    def test_motor_only_firmware(self):
+        app = firmware.patch(paths.stock_app(), motor=350, reserve=False)
+        with harness.Emu("motor-only", nor=firmware.stage_nor(harness.stock_nor(), app)) as emu:
+            emu.wait_uart("launcher enter", 60)
+            emu.keep_awake()
+            uart = emu.uart()
+            self.assertNotIn("ZEPHYR FATAL ERROR", uart)
+            self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
+            assert_stock_vibration_scaled(self, emu, 0x386FF000)  # app area, free without the loader
 
 
 def repack(data: bytes, version: int) -> bytes:

@@ -13,7 +13,7 @@ APP_VBASE = 0x10000000
 NOR_APP_OFFSET = 0x24000
 NOR_APP_SIZE = 0x34B000
 STUB_MAX = 0x4000
-STUB_HEADER = struct.Struct("<4sIIIIIII")
+STUB_HEADER = struct.Struct("<4sIIIIII4s")
 VIEW_TABLE, VIEW_TABLE_END = 0x100004B8, 0x100013E8
 # 0x101461AC and 0x10055458 hold the same values but bound neighbouring tables (docs/recon.md)
 VIEW_START_LITERALS = (0x1018BC24, 0x1018DF3C)
@@ -29,6 +29,10 @@ STOCK_APPLIST_LAYOUT = 0x1005EEE5
 # the only stock call that switches the motor on (docs/recon.md); 0x100FB168 and 0x100FB2A8 pass pulse 0
 MOTOR_CALL = 0x100FB398
 STOCK_MOTOR = 0x100FB4B4
+# zero gap between the end of the stock image (0x10259E3C) and the ksdfs tail (0x1025A000); stock only reads
+# 32 bytes at 0x10259E3B there. Inside app.bin, so a motor-only patch keeps the file size
+MOTOR_HOOK = 0x10259F00
+MOTOR_HOOK_SIZE = 14
 
 
 def sum32(data: bytes) -> int:
@@ -86,26 +90,51 @@ def put(app: bytearray, addr: int, old: bytes, new: bytes) -> None:
     app[off:off + len(new)] = new
 
 
-def patch(app: bytes, stub: bytes | None = None, *, _verify: bool = True) -> bytes:
+def motor_q10(permille: int) -> int:
+    if not 0 < permille < 1000:
+        raise ValueError(f"motor strength {permille} is not in 1..999 permille")
+    return (permille * 1024 + 500) // 1000
+
+
+def motor_hook(permille: int) -> bytes:
+    """Replaces `bl STOCK_MOTOR` (r3 = pulse = stock strength, 0 = off): r3 = r3 * q10 >> 10, then stock."""
+    k = motor_q10(permille)
+    movw_r12 = struct.pack("<HH", 0xF240 | (k >> 11 & 1) << 10 | k >> 12, (k >> 8 & 7) << 12 | 12 << 8 | k & 0xFF)
+    mul_r3_r3_r12 = bytes.fromhex("03fb0cf3")
+    lsrs_r3_10 = bytes.fromhex("9b0a")
+    code = movw_r12 + mul_r3_r3_r12 + lsrs_r3_10
+    return code + thumb_b_w(MOTOR_HOOK + len(code), STOCK_MOTOR)
+
+
+def patch(app: bytes, stub: bytes | None = None, *, motor: int | None = None, reserve: bool = True,
+          _verify: bool = True) -> bytes:
+    """motor: stock vibrations at this many permille of their strength; reserve: the loader's heap reservation."""
     if _verify and not hashlib.sha256(app).hexdigest().startswith(STOCK_SHA256_PREFIX):
         raise ValueError("not the stock JX402 1.0.0.73 app.bin (sha256 mismatch)")
+    if stub is not None and not reserve:
+        raise ValueError("the stub needs the heap reservation")
     out = bytearray(app)
-    stock_size = struct.unpack_from("<I", out, 0x18)[0]
-    for off in HEAP_LITERALS:
-        put(out, APP_VBASE + off, struct.pack("<I", HEAP_OLD), struct.pack("<I", HEAP_NEW))
+    size = struct.unpack_from("<I", out, 0x18)[0]
+    if reserve:
+        for off in HEAP_LITERALS:
+            put(out, APP_VBASE + off, struct.pack("<I", HEAP_OLD), struct.pack("<I", HEAP_NEW))
+    if motor is not None:
+        put(out, MOTOR_HOOK, bytes(MOTOR_HOOK_SIZE), motor_hook(motor))
+        put(out, MOTOR_CALL, thumb_bl(MOTOR_CALL, STOCK_MOTOR), thumb_bl(MOTOR_CALL, MOTOR_HOOK))
+        size = max(size, MOTOR_HOOK + MOTOR_HOOK_SIZE + 2 - APP_VBASE - 0x200)
     if stub is not None:
         add_stub(out, stub)
     out += bytes(-len(out) % 4)
     # stock size stops before the appended ksdfs tail; appended code must be covered
-    fix_acth(out, None if stub is not None else stock_size)
+    fix_acth(out, None if stub is not None else size)
     check_acth(out)
     return bytes(out)
 
 
 def add_stub(out: bytearray, stub: bytes) -> None:
-    magic, version, boot, ble, view_proc, view_name, applist, motor = STUB_HEADER.unpack_from(stub)
+    magic, version, boot, ble, view_proc, view_name, applist, _ = STUB_HEADER.unpack_from(stub)
     base = APP_VBASE + STUB_OFFSET
-    code = (boot, view_proc) + tuple(p for p in (ble, applist, motor) if p)
+    code = (boot, view_proc) + tuple(p for p in (ble, applist) if p)
     if (magic != b"WP2S" or version != 1 or not all(p & 1 for p in code)
             or not all(base <= p & ~1 < base + len(stub) for p in (*code, view_name))):
         raise ValueError("bad stub header")
@@ -127,8 +156,19 @@ def add_stub(out: bytearray, stub: bytes) -> None:
         put(out, BLE_CALL, thumb_bl(BLE_CALL, STOCK_BLE_READ), thumb_bl(BLE_CALL, ble & ~1))
     if applist:
         put(out, APPLIST_LAYOUT, struct.pack("<I", STOCK_APPLIST_LAYOUT), struct.pack("<I", applist))
-    if motor:
-        put(out, MOTOR_CALL, thumb_bl(MOTOR_CALL, STOCK_MOTOR), thumb_bl(MOTOR_CALL, motor & ~1))
+
+
+def changed_ranges(old: bytes, new: bytes, gap: int = 16) -> list[tuple[int, int]]:
+    """[start, end) offsets where new differs from old; runs closer than `gap` bytes are merged."""
+    if len(old) != len(new):
+        raise ValueError("ranges need equal lengths")
+    out: list[list[int]] = []
+    for i in (i for i in range(len(old)) if old[i] != new[i]):  # ponytail: byte scan, 2.5 MB takes ~0.3 s
+        if out and i - out[-1][1] < gap:
+            out[-1][1] = i + 1
+        else:
+            out.append([i, i + 1])
+    return [(a, b) for a, b in out]
 
 
 def stage_nor(nor: bytes, app: bytes) -> bytes:
