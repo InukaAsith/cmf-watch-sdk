@@ -361,7 +361,7 @@ Probes `runs/e2e/fixfinal-probe{,2}.log`; Ghidra on `0x1012197C`, `0x101214AC`, 
 |---|---|---|
 | Msgbox calls | `msgbox_cache_popup(mid, udata)` **`0x100D5E35`**; `0x100D6461 (mid, bsync)` is **close** (`msgbox_cache close … mid:%u, bsync:%u`), not popup. Both are safe to call from any thread through `emu.call` | high |
 | Notifications and calls | every stock overlay is a msgbox in `notify_view` (view 62) and sets `0x3800FAF4`: message notifications are mid **252** (`todo_list_msgbox_handler`), the incoming call is mid **246** (`btcall`, `BTCALL_MSGBOX_ID`). Mid 252 without stock message data fails its layout (`ev:25 err:-5`) and closes within 3 ms, so the e2e uses the call box: it opens without data, ignores the button (`btcall_msgbox_key`) and is closed with `0x100D6461(246, 0)`. A real phone notification (ANCS or the wewear app protocol) is not reproduced: its BLE opcode and payload were not found in the time box | high / BLE path not found |
-| Swipe back | a right swipe in view 240 arrives as key `0xFFFF0071`; unhandled, the stock jumps back to the clock (`jump 240 -> 16`) and deletes 240. The loader leaves the key unhandled, so a swipe back also stops a running app (msg 4). A btcall/msgbox close holds `gesture lock` for a few seconds | high |
+| Swipe back | a right swipe in view 240 arrives as key `0xFFFF0071`; unhandled, the stock pops the view stack (see "Back navigation" below): opened with `OPEN_VIEW` from the clock that is `jump 240 -> 16`. A btcall/msgbox close holds `gesture lock` for a few seconds |
 | PWM driver | `pin_set_cycles` `0x1012197D` logs through the Zephyr log core (`0x1014C818`) and selects the pin (`0x1012163C`) before it raises `BASEPRI` to `0x20` for the register writes; `off` `0x101214AD` writes the control word and logs. No `k_mutex`/`k_sem` seen in these, but the log path is not proven non-blocking, so the loader does not call the driver under `BASEPRI`. Each `pin_set_cycles` first writes control `0` and then enables: `motor.log` shows a `0` line before every re-set in the same ms | medium / log path |
 | Tap vs drag | LVGL 8.3 sends `CLICKED` only when no object scrolled during the press. The loader menu (LVGL objects since the menu rebuild) keeps its list always scrollable (bottom padding lets the last row rise to the title), so a drag over a row scrolls and launches nothing; a short tap whose release point is off (y 140 → 103) still clicks the pressed row (`PRESS_LOCK`) | high (emulator probe `runs/menu-lvgl/probe.log`) |
 
@@ -369,6 +369,21 @@ ABI 2 note (final review M7): `wp2_core::events::Queue::clear` moves `head` to `
 CASes `head`; a consumer preempted for ≥ 2 clears plus 14 pushes can see `head` back at its old value and pass the
 CAS (ABA). Unreachable in ABI 1 (`clear` only on launch and pause); an ABI 2 queue should carry a generation
 counter in `head`.
+
+## Back navigation: view stack and the back swipe
+
+Ghidra (`scripts/recon/decomp`) on `range:0x10189140-0x10189A00`, `callers:0x101897fc`, `callers:0x101896b8`;
+emulator probe with gdb breakpoints on the five stack functions (`runs/back/probe1.log`).
+
+| Item | Value | Confidence |
+|---|---|---|
+| View stack | array of 10 entries × 0x10 B `{u32 presenter, u32 group, u32 arg, u16 view_id, u16}` at the literal in `0x10189444`, `u8` count at `+0xA0`, bit 0 of `+0xA1` = initialised; mutex `0x101BE218`/`0x10189148`; `0x101891F8 (from, to)` does the transition (deletes/defocuses `from`, opens `to`) and logs `view_stack: jump <from> -> <to> (res=…)` for every kind of move | high |
+| Calls | push **`0x101898BC (id, arg)`** (`OPEN_VIEW`, `0x10189398(entry, 1)`), **pop `0x101897FC ()`** (count ≥ 2: top → top − 1), jump-to `0x101896B8 (id, presenter, arg)` (pops to `id` if it is in the stack, else pushes), reset `0x101895A0 (presenter, id, …)` (stack = one entry), remove `0x10189638 (n)`, depth `0x1018949C`, top id `0x101894A8` | high |
+| Launcher key handler | **`0x1005DB08 (view_id, key)`** gets every key no view handled (byte `+4` of the view's key message left 0). Right swipe: `(key & 0xFFFF) == 0x71` and view not in `100..105` → `0x101D7358()`, **pop**. Button `0x04000001`: depth 1 → clock or app list (`0x1005E834` from the clock); deeper → `0x1005DAAC`, reset to the clock (`jump N -> 16`). Crown rotation `0x1E/0x1F` keys and two configurable side-key shortcuts are handled here too | high |
+| Stock apps | no own back code: a stock app opened from the app list is `[16, 18, app]`; its swipe falls through to the launcher and pops to 18 (`jump 106 -> 18`, Exercise, from `0x1005DD83`); the crown press resets to the clock (`jump 106 -> 16`, via `0x101AD159`) | high (emulator) |
+| View 0xF0 | the "Custom Apps" row pushes 240 the same way (`[16, 18, 240]`), so the stock already treats the menu like a stock app: swipe → `jump 240 -> 18`, the list is rebuilt with its saved scroll ("Custom Apps" back at the top, `runs/back/probe-menu-swipe.ppm`); button → `jump 240 -> 16` | high (emulator) |
+| Running app (before the fix) | the loader left `0x71` unhandled, so a swipe in an app popped 240 straight to the app list: the app thread was aborted by the view delete (no `BUTTON`, no save) and the menu was skipped | high (emulator) |
+| Fix (loader only) | `map_key` maps any key with low half `0x71` to `BUTTON` while an app runs and marks it handled, so the launcher never sees it: the app gets `BUTTON`, the 1 s escape stops it if it does not return, the menu shows. In the menu the key stays unhandled (stock pop to the list). The stub is unchanged | high (emulator) |
 
 ## Hardware: caches and MPU
 

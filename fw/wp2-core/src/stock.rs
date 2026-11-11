@@ -87,6 +87,8 @@ pub const POPUP_FLAGS: u32 = 0x3800FAF4;
 pub const KEY_CROWN_PRESS: u32 = 0x0400_0001;
 pub const KEY_CROWN_CW: u32 = 0xFFFF_006F;
 pub const KEY_CROWN_CCW: u32 = 0xFFFF_006E;
+// right swipe; the launcher (0x1005DB08) matches the low half only and pops the view stack (docs/recon.md)
+pub const KEY_BACK: u32 = 0x71;
 
 // ABI 1.1 (docs/abi-1.1.md, docs/recon.md "ABI 1.1"): wewear_read's context (+0 the wewear_read thread, bit 0 of
 // byte +4 stream connected, +0x18 the BLE stream) and the stock key buffers.

@@ -102,8 +102,8 @@ mod view {
         }
     }
 
-    // data: u32 key code, byte +4 = handled. In the menu the crown scrolls through LVGL and the button
-    // stays with the stock (it closes the view).
+    // data: u32 key code, byte +4 = handled. In the menu the crown scrolls through LVGL, the button (to the
+    // clock) and the back swipe (view stack pop to the app list) stay with the stock. In an app both are BUTTON.
     fn key(data: *mut c_void) {
         let Some(e) = map_key(unsafe { *(data as *const u32) }) else { return };
         if !app::running() {
