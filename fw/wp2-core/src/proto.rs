@@ -1,3 +1,4 @@
+use crate::chan::MSG_MAX;
 use crate::layout::{LOADER_SLOT, SLOTS};
 
 pub const MAX_DATA: usize = 128;
@@ -6,6 +7,12 @@ pub const BEGIN: u16 = 0x90A1;
 pub const DATA: u16 = 0x90A2;
 pub const END: u16 = 0x90A3;
 pub const DELETE: u16 = 0x90A4;
+pub const MSG: u16 = 0x90A5;
+// watch -> host, unsolicited: seq, slot, data (docs/abi-1.1.md)
+pub const EVENT: u16 = 0xB0A6;
+pub const ANY_SLOT: u8 = 0xFF;
+// keep-alive: refreshes the host key, answers running_slot and app_flags (0x90A6 is skipped: its reply is EVENT)
+pub const PING: u16 = 0x90A7;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(u8)]
@@ -17,6 +24,9 @@ pub enum Status {
     Crc = 4,
     Busy = 5,
     Invalid = 6,
+    NoApp = 7,
+    Full = 8,
+    Paused = 9,
 }
 
 #[derive(Debug, PartialEq)]
@@ -26,6 +36,8 @@ pub enum Request<'a> {
     Data { offset: u32, bytes: &'a [u8] },
     End,
     Delete(u8),
+    Msg { slot: u8, data: &'a [u8] },
+    Ping,
 }
 
 fn slot(raw: u8) -> Result<u8, Status> {
@@ -44,6 +56,8 @@ pub fn parse(c2: u16, payload: &[u8]) -> Result<Request<'_>, Status> {
         // the stock decrypt helper returns NULL for an empty plaintext, so END carries one dummy byte
         (END, 1) => Ok(Request::End),
         (DELETE, 1) => Ok(Request::Delete(slot(payload[0])?)),
+        (PING, 1) => Ok(Request::Ping),
+        (MSG, n) if (2..=1 + MSG_MAX).contains(&n) && (payload[0] < SLOTS || payload[0] == ANY_SLOT) => Ok(Request::Msg { slot: payload[0], data: &payload[1..] }),
         _ => Err(Status::BadRequest),
     }
 }
@@ -60,8 +74,19 @@ mod tests {
         assert_eq!(parse(0x90A3, &[]), Err(Status::BadRequest));
         assert_eq!(parse(0x90A3, &[0, 0]), Err(Status::BadRequest));
         assert_eq!(parse(0x90A3, &[0]), Ok(Request::End));
-        assert_eq!(parse(0x90A5, &[]), Err(Status::BadRequest));
+        assert_eq!(parse(0x90A6, &[]), Err(Status::BadRequest));
         assert_eq!(parse(0x90A4, &[9]), Err(Status::BadRequest));
+    }
+
+    #[test]
+    fn msg_bounds() {
+        assert_eq!(parse(MSG, &[0xFF, 7]), Ok(Request::Msg { slot: 0xFF, data: &[7] }));
+        assert!(matches!(parse(MSG, &[3; 1 + MSG_MAX]), Ok(Request::Msg { slot: 3, .. })));
+        assert_eq!(parse(MSG, &[3; 2 + MSG_MAX]), Err(Status::BadRequest));
+        assert_eq!(parse(MSG, &[3]), Err(Status::BadRequest));
+        assert_eq!(parse(MSG, &[8, 1]), Err(Status::BadRequest));
+        assert_eq!(parse(PING, &[0]), Ok(Request::Ping));
+        assert_eq!(parse(0x90A6, &[0]), Err(Status::BadRequest));
     }
 
     #[test]

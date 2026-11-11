@@ -45,6 +45,7 @@ def decrypt(key: bytes, data: bytes) -> bytes:
 
 
 STUB_INFO = 0x90A0  # install.INFO, answered by the stub only with a bound session
+STUB_EVENT = 0xB0A6  # app -> host frames, unsolicited (docs/abi-1.1.md)
 
 
 def frame(c1: int, c2: int, payload: bytes, key: bytes | None) -> bytes:
@@ -89,16 +90,23 @@ class Session:
         self.gatt = None
         self.key = None
         self.frames = asyncio.Queue()
+        self.events = asyncio.Queue(maxsize=256)
         self.shell = asyncio.Queue()
         self.parser = Parser()
 
     async def attach(self, gatt):
         self.gatt = gatt
-        await self.gatt.subscribe(CMD_N, lambda data: [self.frames.put_nowait(f) for f in self.parser.feed(data)])
+        await self.gatt.subscribe(CMD_N, lambda data: [self._route(f) for f in self.parser.feed(data)])
         await self.gatt.subscribe(SHELL_N, self.shell.put_nowait)
         # the stock app treats the third subscription as "phone ready"; the shell is silent before it
         await self.gatt.subscribe(DATA_N, lambda data: None)
         await asyncio.sleep(0.6)
+
+    def _route(self, f) -> None:
+        if f[:2] != (SYSTEM, STUB_EVENT):
+            self.frames.put_nowait(f)
+        elif not self.events.full():  # a host that never reads them drops the oldest ones' successors
+            self.events.put_nowait(f[2])
 
     async def at(self, command: str, timeout: float = 6.0) -> bytes:
         await self.gatt.write(SHELL_W, command.encode() + b"\r\n")

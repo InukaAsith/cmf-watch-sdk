@@ -1,7 +1,9 @@
+use crate::chan::Ring;
+
 pub const VIEW_ID: u16 = 0xF0;
 pub const SLOTS: u8 = 8;
 pub const LOADER_SLOT: u8 = 0xFF;
-pub const LOADER_ABI_MINOR: u16 = 0;
+pub const LOADER_ABI_MINOR: u16 = 1;
 pub const STUB_RAM: u32 = 0x3871_EEC0;
 pub const STUB_RAM_SIZE: u32 = 0x1000;
 pub const LOADER_SIZE: u32 = 0x1_0000;
@@ -14,9 +16,17 @@ pub const E_NOMEM: i32 = -12;
 pub const DIR: &[u8] = b"/NAND:/wp2apps\0";
 
 pub fn slot_path(slot: u8, tmp: bool) -> [u8; 24] {
+    file_path(slot, if tmp { b"tmp" } else { b"pkg" })
+}
+
+// the app's data file (docs/abi-1.1.md, Storage): N.dat, and N.new while a save is in flight
+pub fn data_path(slot: u8, new: bool) -> [u8; 24] {
+    file_path(slot, if new { b"new" } else { b"dat" })
+}
+
+fn file_path(slot: u8, ext: &[u8; 3]) -> [u8; 24] {
     let mut path = [0u8; 24];
     let name = if slot == LOADER_SLOT { b'L' } else { b'0' + slot % 10 };
-    let ext: &[u8] = if tmp { b"tmp" } else { b"pkg" };
     let dir = &DIR[..DIR.len() - 1];
     path[..dir.len()].copy_from_slice(dir);
     path[dir.len()] = b'/';
@@ -35,7 +45,11 @@ pub struct StubRam {
     pub running_slot: u8,
     pub xfer_state: u8,
     pub xfer_slot: u8,
-    pub _pad: [u8; 3],
+    // 1: this stub fills the ABI 1.1 fields below (an older stub leaves 0 and never touches them)
+    pub api: u8,
+    // written by the loader: APP_V11, APP_PAUSED
+    pub app_flags: u8,
+    pub _pad: u8,
     pub xfer_size: u32,
     pub xfer_crc: u32,
     pub xfer_written: u32,
@@ -53,7 +67,15 @@ pub struct StubRam {
     // the loader load in view 0xF0 has its own file and scratch: `file`/`scratch` belong to the BLE transfer
     pub load_file: [u8; 0x2C],
     pub load_scratch: [u8; 0x200],
+    // ABI 1.1 channel: first word of the session key at the last authenticated wp2 frame, 0 = none
+    pub host_key: u32,
+    pub out_seq: u8,
+    pub inbox: Ring,
+    pub outbox: Ring,
 }
+
+pub const APP_V11: u8 = 1;
+pub const APP_PAUSED: u8 = 2;
 
 const _: () = assert!(core::mem::size_of::<StubRam>() <= 0xE00);
 
@@ -76,6 +98,8 @@ mod tests {
         assert_eq!(offset_of!(StubRam, loader_entry), 0x4FC);
         assert_eq!(offset_of!(StubRam, load_file), 0x500);
         assert_eq!(offset_of!(StubRam, load_scratch), 0x52C);
+        assert_eq!(offset_of!(StubRam, api), 9);
+        assert_eq!(offset_of!(StubRam, host_key), 0x72C);
         assert!(size_of::<StubRam>() <= 0xE00);
     }
 
@@ -85,5 +109,7 @@ mod tests {
         assert_eq!(&slot_path(3, true)[..21], b"/NAND:/wp2apps/3.tmp\0");
         assert!(slot_path(3, true)[21..].iter().all(|&b| b == 0));
         assert_eq!(&DIR[..], b"/NAND:/wp2apps\0");
+        assert_eq!(&data_path(2, false)[..21], b"/NAND:/wp2apps/2.dat\0");
+        assert_eq!(&data_path(2, true)[..21], b"/NAND:/wp2apps/2.new\0");
     }
 }

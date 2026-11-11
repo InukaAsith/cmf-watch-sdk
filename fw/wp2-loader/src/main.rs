@@ -13,11 +13,13 @@ mod menu;
 #[cfg(target_os = "none")]
 mod motor;
 #[cfg(target_os = "none")]
+mod svc;
+#[cfg(target_os = "none")]
 mod ui;
 
 #[cfg(target_os = "none")]
 mod view {
-    use crate::{app, menu, motor, ui};
+    use crate::{app, menu, motor, svc, ui};
     use core::ffi::c_void;
     use core::ptr::addr_of_mut;
     use core::sync::atomic::Ordering;
@@ -160,6 +162,7 @@ mod view {
         let m = st();
         app::pause_tick();
         motor::watchdog();
+        svc::tick(app::running(), app::paused());
         if app::running() {
             let exited = app::exited();
             let escape = m.button_at != 0 && app::millis().wrapping_sub(m.button_at) >= ESCAPE_MS;

@@ -1,9 +1,11 @@
 // Own install channel on c1 = 0xFFFF, c2 = 0x90A0..=0x90A4 (docs/specs; Status and requests in wp2_core::proto).
 use core::mem::transmute;
 use wp2_core::fs::{self, File};
-use wp2_core::layout::{slot_path, stub_ram, StubRam, APP_SIZE, DIR, LOADER_SIZE, LOADER_SLOT};
+use wp2_core::chan::{listening, session_word, MSG_MAX};
+use wp2_core::layout::{data_path, slot_path, stub_ram, StubRam, APP_PAUSED, APP_SIZE, APP_V11, DIR, LOADER_SIZE, LOADER_SLOT};
 use wp2_core::pkg::{check_slot, crc32, parse_header, HEADER_SIZE};
-use wp2_core::proto::{parse, Request, Status, DELETE, INFO, MAX_DATA};
+use wp2_core::proto::{parse, Request, Status, ANY_SLOT, DELETE, EVENT, INFO, MAX_DATA, MSG, PING};
+use wp2_core::stock::{AUTHKEY, OS_SLEEP, SESSION_KEY};
 
 const READ_PAYLOAD: u32 = 0x100CC285;
 const DECRYPT: u32 = 0x101B608D;
@@ -13,8 +15,6 @@ const SEND: u32 = 0x100CC2D5;
 // bind popup is confirmed, so a session counts only when both keys are non-zero. This only closes the zero-key
 // path: any client in BLE range reads the pairing secret (AT GETSECRET, also on the real watch) and binds without
 // a tap, so it can install silently; same exposure as stock OTA, accepted by the owner (docs/recon.md).
-const AUTHKEY: u32 = 0x3804_8E08;
-const SESSION_KEY: u32 = 0x3800_29A6;
 const EEXIST: i32 = -17;
 const HEADER_LEN: usize = 11;
 // longest reply: status + 64-byte header
@@ -33,7 +33,7 @@ extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
     let f = unsafe { core::slice::from_raw_parts(frame, HEADER_LEN) };
     let c1 = u16::from_le_bytes([f[3], f[4]]);
     let c2 = u16::from_le_bytes([f[9], f[10]]);
-    if rc != 0 || c1 != 0xFFFF || !(INFO..=DELETE).contains(&c2) || !keyed(AUTHKEY) || !keyed(SESSION_KEY) {
+    if rc != 0 || c1 != 0xFFFF || !(INFO..=PING).contains(&c2) || !keyed(AUTHKEY) || !keyed(SESSION_KEY) {
         return rc;
     }
     let decrypt: extern "C" fn(*mut u16, *const u8, u32, u32) -> *const u8 = unsafe { transmute(DECRYPT as usize) };
@@ -43,6 +43,7 @@ extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
         return rc;
     }
     let payload = unsafe { core::slice::from_raw_parts(plain, n as usize) };
+    stub_ram().host_key = session_word();
     let mut out = [0u8; MAX_REPLY];
     let size = handle(stub_ram(), c2, payload, &mut out);
     reply(stub_ram(), c2, &out[..size]);
@@ -108,11 +109,58 @@ fn handle(ram: &mut StubRam, c2: u16, payload: &[u8], out: &mut [u8; MAX_REPLY])
             } else if fs::unlink(&slot_path(slot, false)) < 0 {
                 Status::Io
             } else {
+                drop_data(slot);
                 Status::Ok
             };
             status(out, s)
         }
+        Ok(Request::Msg { slot, data }) => status(out, msg(ram, slot, data)),
+        Ok(Request::Ping) => {
+            out[..3].copy_from_slice(&[Status::Ok as u8, ram.running_slot, ram.app_flags]);
+            3
+        }
     }
+}
+
+// only to the running ABI 1.1 app, and not while a stock popup covers it
+fn msg(ram: &mut StubRam, slot: u8, data: &[u8]) -> Status {
+    let running = ram.running_slot;
+    if ram.app_flags & APP_V11 == 0 || running == LOADER_SLOT || (slot != ANY_SLOT && slot != running) {
+        Status::NoApp
+    } else if ram.app_flags & APP_PAUSED != 0 {
+        Status::Paused
+    } else if !ram.inbox.push(running, data) {
+        Status::Full
+    } else {
+        Status::Ok
+    }
+}
+
+fn drop_data(slot: u8) {
+    fs::unlink(&data_path(slot, false));
+    fs::unlink(&data_path(slot, true));
+}
+
+// Replaces `bl os_sleep` (r0 = 10 ms) in the idle pass of wewear_read, the thread that runs the stock dispatcher
+// and so wp2_ble_c: one EVENT per pass, from the thread that owns the stock encrypt buffers.
+pub extern "C" fn wp2_ble_idle(ms: u32) {
+    let ram = stub_ram();
+    if let Some(m) = ram.outbox.peek(0).copied() {
+        if listening(ram.host_key) && keyed(AUTHKEY) {
+            let mut plain = [0u8; 2 + MSG_MAX];
+            plain[0] = ram.out_seq;
+            plain[1] = m.slot;
+            let n = usize::from(m.len).min(MSG_MAX);
+            plain[2..2 + n].copy_from_slice(&m.data[..n]);
+            reply(ram, EVENT, &plain[..2 + n]);
+            ram.out_seq = ram.out_seq.wrapping_add(1);
+            ram.outbox.pop();
+        } else {
+            ram.outbox.clear();
+        }
+    }
+    let sleep: extern "C" fn(u32) = unsafe { transmute(OS_SLEEP as usize) };
+    sleep(ms)
 }
 
 fn info(slot: u8, out: &mut [u8; MAX_REPLY]) -> usize {
@@ -187,6 +235,9 @@ fn end(ram: &mut StubRam) -> Status {
     let tmp = slot_path(slot, true);
     let s = match verify(ram, &tmp) {
         Status::Ok => {
+            if name(&slot_path(slot, false)) != name(&tmp) {
+                drop_data(slot);
+            }
             fs::unlink(&slot_path(slot, false));
             if fs::rename(&tmp, &slot_path(slot, false)) < 0 { Status::Io } else { Status::Ok }
         }
@@ -197,6 +248,19 @@ fn end(ram: &mut StubRam) -> Status {
     }
     ram.xfer_state = 0;
     s
+}
+
+// the package name field, zeros if the file is missing
+fn name(path: &[u8]) -> [u8; 24] {
+    let mut file: File = [0; 0x2C];
+    let mut raw = [0u8; 0x20];
+    if fs::open(&mut file, path, fs::READ) >= 0 {
+        if !fs::read_exact(&mut file, &mut raw) {
+            raw = [0; 0x20];
+        }
+        fs::close(&mut file);
+    }
+    raw[8..].try_into().unwrap()
 }
 
 // Re-reads the closed file: CRC of all of it, header checks, exact size, CRC of image and relocation table.

@@ -21,6 +21,9 @@ class Status(enum.IntEnum):
     CRC = 4
     BUSY = 5
     INVALID = 6
+    NO_APP = 7
+    FULL = 8
+    PAUSED = 9
 
 
 @dataclass(frozen=True)

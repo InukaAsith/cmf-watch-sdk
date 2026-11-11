@@ -8,7 +8,7 @@ import zlib
 
 from bleak.exc import BleakError
 
-from . import blegatt, firmware, h4, install, link, package, paths
+from . import blegatt, channel, firmware, h4, install, link, package, paths
 
 
 def cmd_pack(args):
@@ -17,7 +17,7 @@ def cmd_pack(args):
     package.check_elf(image, elf)
     kind = package.KIND_LOADER if args.kind == "loader" else package.KIND_APP
     data = package.pack(image, name=args.name, version=args.version, kind=kind,
-                        relocs=package.relocations(elf))
+                        relocs=package.relocations(elf), abi_minor=package.abi_minor(image, elf))
     with args.output.open("xb") as out:
         out.write(data)
 
@@ -51,6 +51,12 @@ def slot_arg(text):
     return int(text)
 
 
+def app_slot_arg(text):
+    if not text.isdigit() or int(text) >= install.SLOTS:
+        raise argparse.ArgumentTypeError("slot must be 0..7")
+    return int(text)
+
+
 def slot_name(slot):
     return "L" if slot == install.LOADER_SLOT else str(slot)
 
@@ -78,6 +84,38 @@ def cmd_list(args):
     found = asyncio.run(with_watch(args, install.listing))
     print(json.dumps({"slots": {slot_name(n): {"name": h.name, "version": h.version, "kind": h.kind,
                                                "abi_minor": h.abi_minor} for n, h in found.items()}}))
+
+
+def cmd_send(args):
+    data = bytes.fromhex(args.data) if args.hex else args.data.encode()
+    asyncio.run(with_watch(args, lambda s: channel.send(s, data, args.slot, args.wait)))
+    print(json.dumps({"sent": len(data)}))
+
+
+def cmd_listen(args):
+    async def listen(s):
+        state = await channel.ping(s)
+        print(json.dumps({"running": slot_name(state.running_slot) if state.running_slot != 0xFF else None,
+                          "abi_1_1": bool(state.flags & 1), "paused": bool(state.flags & 2)}), flush=True)
+        loop = asyncio.get_running_loop()
+        end = None if args.seconds is None else loop.time() + args.seconds
+        count = 0
+        while args.count is None or count < args.count:
+            left = None if end is None else end - loop.time()
+            if left is not None and left <= 0:
+                break
+            try:
+                m = await channel.recv(s, 5.0 if left is None else min(left, 5.0))
+            except TimeoutError:
+                await channel.ping(s)  # keeps the link and the stub's host key alive
+                continue
+            if args.slot not in (channel.ANY, m.slot):
+                continue
+            count += 1
+            print(json.dumps({"seq": m.seq, "slot": m.slot, "data": m.data.hex(), "text": channel.text(m.data)}),
+                  flush=True)
+
+    asyncio.run(with_watch(args, listen))
 
 
 def cmd_scan(args):
@@ -111,14 +149,26 @@ def parser():
     nor.add_argument("--output", type=Path, required=True)
     nor.set_defaults(handler=cmd_nor)
     for name, handler, help_ in (("install", cmd_install, "Install a package over BLE"),
-                                 ("remove", cmd_remove, "Delete a slot"),
-                                 ("list", cmd_list, "List installed packages")):
+                                 ("remove", cmd_remove, "Delete a slot and its app data"),
+                                 ("list", cmd_list, "List installed packages"),
+                                 ("send", cmd_send, "Send one message to the running app (ABI 1.1)"),
+                                 ("listen", cmd_listen, "Print the running app's messages as JSON lines")):
         sub = commands.add_parser(name, help=help_)
         if name == "install":
             sub.add_argument("package", type=Path)
             sub.add_argument("--slot", type=slot_arg)
         if name == "remove":
             sub.add_argument("--slot", type=slot_arg, required=True)
+        if name in ("send", "listen"):
+            sub.add_argument("--slot", type=app_slot_arg, default=channel.ANY,
+                             help="only this app slot (default: whatever runs)")
+        if name == "send":
+            sub.add_argument("data")
+            sub.add_argument("--hex", action="store_true", help="DATA is hex, not UTF-8 text")
+            sub.add_argument("--wait", type=float, default=10.0, help="seconds to retry a full or paused inbox")
+        if name == "listen":
+            sub.add_argument("--count", type=int)
+            sub.add_argument("--seconds", type=float)
         where = sub.add_mutually_exclusive_group(required=True)
         where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
         where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
@@ -134,6 +184,9 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         return args.handler(args) or 0
+    except channel.NoApp as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
     except (OSError, ValueError, ConnectionError, BleakError, struct.error) as error:
         print(f"Error: {error or type(error).__name__}", file=sys.stderr)
         return 1

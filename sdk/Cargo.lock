@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "api-demo"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+]
+
+[[package]]
 name = "cmf-wp2-app"
 version = "0.1.0"
 
