@@ -36,8 +36,15 @@ mod device {
     const BAR: usize = 10;
     const SPINS: usize = 11;
     const ROWS: usize = 12; // .. 12 row handles
+    // FONT_RC and SCREEN_RC start at NOT_YET (no lv_submit code), so the e2e sees whether the submits returned;
+    // the non-zero initialiser puts STATS in .data, copied fresh at every launch
+    const NOT_YET: i32 = 1;
     #[unsafe(no_mangle)]
-    static mut STATS: [i32; ROWS + screen::ROWS] = [0; ROWS + screen::ROWS];
+    static mut STATS: [i32; ROWS + screen::ROWS] = {
+        let mut s = [0; ROWS + screen::ROWS];
+        (s[FONT_RC], s[SCREEN_RC]) = (NOT_YET, NOT_YET);
+        s
+    };
 
     fn set(i: usize, v: i32) {
         unsafe { (&raw mut STATS[i]).write_volatile(v) }

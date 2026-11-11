@@ -94,12 +94,15 @@ class LvDemoTest(unittest.TestCase):
         self.to_menu()
         self.emu.send("t 1 200 180", "t 0 200 180", pause=1.5)
         self.assertEqual(self.running(), 0, "lv-demo did not start")
+        # FONT_RC and SCREEN_RC start at 1 in the app; SLIDER is set after the screen submit returned
         for _ in range(20):
-            if self.stats()[EVENTS] == 0 and self.stats()[SLIDER]:
+            s = self.stats()
+            if s[SLIDER]:
                 break
             self.emu.sleep(0.25)
-        s = self.stats()
-        self.assertEqual((s[FONT_RC], s[SCREEN_RC]), (0, 0), "font and screen batches")
+        self.assertEqual((s[FONT_RC], s[SCREEN_RC]), (0, 0), f"font and screen batches: STATS {s}")
+        self.assertTrue(s[SLIDER], f"screen batch never returned: STATS {s}")
+        self.assertEqual((s[EVENTS], s[MSG_RC], s[SPINS]), (0, 0, 0), f"STATS of a previous run: {s}")
         return s
 
     def stats(self):
@@ -248,9 +251,15 @@ class LvDemoTest(unittest.TestCase):
         print(f"GUI heap free: menu {menu}, after force stop {back}")
         self.assertLessEqual(abs(menu - back), 256)
         self.assertEqual(self.emu.motor()[-1][1], 0)
-        # the mailbox is idle again: a new launch builds its screen
+        # the mailbox is idle again: a new launch builds its screen (launch asserts both submits returned 0)
         self.launch()
-        self.frame("relaunch.png")
+        self.emu.sleep(1)
+        _, px = self.frame("relaunch.png")
+        self.assertEqual(widgets_drawn(px), [], "relaunched screen")
+        for i in (0, 1):
+            r, g, b = px(110, row_y(i))
+            self.assertGreater(b, r + 40, f"relaunch: row {i} background")
+        self.assertEqual(self.coords(self.stats()[ROWS])[1], LIST_Y, "relaunch: row 0 at the top")
         self.emu.send("c 1", "c 0", pause=2)
         self.assertTrue(self.in_menu())
 
