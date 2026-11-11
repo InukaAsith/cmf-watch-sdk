@@ -34,6 +34,8 @@ pub const LV_IMG_SET_SRC: u32 = 0x1013ED51;
 pub const LV_OBJ_SET_POS: u32 = 0x1012926D;
 pub const LV_OBJ_SET_SIZE: u32 = 0x101294C9;
 pub const LV_OBJ_INVALIDATE: u32 = 0x10129FD9;
+// (obj, &lv_area_t): absolute i32 x1, y1, x2, y2 (inclusive), clipped to the object (docs/recon-lvgl.md)
+pub const LV_OBJ_INVALIDATE_AREA: u32 = 0x10129EF1;
 pub const LV_OBJ_DEL: u32 = 0x1012C775;
 pub const LV_TIMER_CREATE: u32 = 0x1013B10D;
 pub const LV_TIMER_DEL: u32 = 0x1013B1A5;

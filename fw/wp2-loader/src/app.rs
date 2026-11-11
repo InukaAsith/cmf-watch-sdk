@@ -1,6 +1,7 @@
 use crate::{motor, ui};
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use wp2_core::gfx;
 use wp2_core::events::{Api, Event, Queue, PAUSE, RESUME};
 use wp2_core::heap::{self, RES};
 use wp2_core::layout::stub_ram;
@@ -64,7 +65,8 @@ pub fn launch(slot: u8) -> Result<(), i32> {
     motor::reset();
     QUEUE.clear();
     ui::canvas().fill_rect(0, 0, 466, 466, 0);
-    ui::DIRTY.store(true, Ordering::Release);
+    ui::PENDING.store(gfx::EMPTY, Ordering::Relaxed);
+    ui::PUBLISHED.store(gfx::FULL, Ordering::Release);
     let buf = unsafe { &mut *addr_of_mut!(THREAD_BUF) };
     let entry = (block as u32 + h.entry) | 1;
     // os_thread_create(buf, size, entry, p1, p2, p3, prio, options, delay_ms)
@@ -142,7 +144,8 @@ fn sleep(ms: u32) {
 }
 
 extern "C" fn fill_rect(x: i16, y: i16, w: u16, h: u16, c: u16) {
-    ui::canvas().fill_rect(x, y, w, h, c)
+    ui::canvas().fill_rect(x, y, w, h, c);
+    ui::mark(gfx::rect_box(x, y, w, h));
 }
 
 extern "C" fn draw_text(x: i16, y: i16, text: *const u8, len: usize, c: u16) {
@@ -150,13 +153,16 @@ extern "C" fn draw_text(x: i16, y: i16, text: *const u8, len: usize, c: u16) {
         return;
     }
     let s = unsafe { core::slice::from_raw_parts(text, len.min(TEXT_MAX)) };
-    ui::canvas().text(x, y, s, c);
+    let end = ui::canvas().text(x, y, s, c);
+    ui::mark(gfx::rect_box(x, y, end.wrapping_sub(x) as u16, 16));
 }
 
-// paused: the frame stays in the buffer until RESUME redraws it
+// publishes the dirty box (Release: after the pixels); paused, it stays pending and RESUME redraws everything
 extern "C" fn present() {
+    ui::count_present();
     if !paused() {
-        ui::DIRTY.store(true, Ordering::Release);
+        let b = ui::PENDING.swap(gfx::EMPTY, Ordering::Relaxed);
+        let _ = ui::PUBLISHED.fetch_update(Ordering::Release, Ordering::Relaxed, |p| Some(gfx::merge(p, b)));
     }
 }
 

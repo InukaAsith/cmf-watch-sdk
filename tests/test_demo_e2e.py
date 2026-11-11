@@ -8,6 +8,8 @@ from wp2apps import firmware, paths
 
 START = firmware.STUB_RAM
 ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/agent-glow"
+LOADER_ELF = paths.ROOT / "fw/target/thumbv7em-none-eabi/release/wp2-loader"
+FULL = 466 * 466 * 2
 OUT = paths.ROOT / "runs" / "agent-glow"
 SCENES = ["orb", "thinking", "voice", "orbit"]
 DOTS = [(233 + (2 * i - 3) * 8, 440) for i in range(4)]  # page indicator, glow.rs App::frame
@@ -33,6 +35,9 @@ class AgentGlowTest(unittest.TestCase):
             harness.open_app(emu, row=0)
             stats_at = harness.u32(emu, START + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
             stats = lambda: struct.unpack("<12I", emu.peek(stats_at, 48))
+            flush_at = harness.u32(emu, START + harness.LOADER_BLOCK_OFF) + harness.symbol(LOADER_ELF, "FLUSH_STATS")
+            flush = lambda: struct.unpack("<4I", emu.peek(flush_at, 16))  # presents, flushes, bytes, pixels
+            f0 = flush()
             n = len(emu.motor())
             for scene, name in enumerate(SCENES):
                 if scene:
@@ -45,6 +50,10 @@ class AgentGlowTest(unittest.TestCase):
                 emu.send("t 1 233 233", "t 0 233 233", pause=0.25)
                 save_png(OUT / f"{scene}-{name}.png", w, h, emu.frame()[2])
                 emu.sleep(1.5)
+            presents, flushes, nbytes, pixels = (b - a for a, b in zip(f0, flush()))
+            print(f"\nflush: {presents} presents, {flushes} flushes, {nbytes / flushes:.0f} B/flush "
+                  f"({100 * nbytes / flushes / FULL:.0f}% of full), {pixels / flushes:.0f} px/flush")
+            self.assertLess(nbytes / flushes, 0.8 * FULL, "dirty box flush")
             s = stats()
             for scene, name in enumerate(SCENES):
                 frames, draw, period = s[3 * scene:3 * scene + 3]
