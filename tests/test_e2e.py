@@ -174,7 +174,7 @@ class InstallTest(unittest.TestCase):
         reloc_byte = bytearray(self.hello)
         reloc_byte[-1] ^= 1
         minor = bytearray(self.hello)
-        minor[7] = 2  # one above LOADER_ABI_MINOR (ABI 1.1)
+        minor[7] = 3  # one above LOADER_ABI_MINOR (ABI 1.2)
         struct.pack_into("<I", minor, package.HEADER_CRC_SPAN, zlib.crc32(bytes(minor[:package.HEADER_CRC_SPAN])))
         for name, data in (("image", image_byte), ("relocs", reloc_byte), ("abi_minor", minor)):
             with self.subTest(name):
@@ -533,8 +533,8 @@ class HelloTest(unittest.TestCase):
             self.assert_menu(emu)
             self.tap_row0(emu)
             self.assert_hello(emu)
-            harness.swipe(emu, 30, 233, 430, 233, steps=4, pause=3)  # swipe back: key 0xFFFF0071, stock leaves 0xF0
-            self.assertEqual(emu.peek(START + 4, 3), b"\x00\x00\xff")
+            harness.swipe(emu, 30, 233, 430, 233, steps=4, pause=3)  # swipe back: BUTTON, the app stops, menu stays
+            self.assertEqual(emu.peek(START + 4, 3), b"\x01\x01\xff")
             self.assertEqual(harness.u32(emu, START + harness.APP_BLOCK_OFF), 0)
             self.assert_clean(emu)
 
