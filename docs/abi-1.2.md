@@ -33,10 +33,10 @@ block, so use a `static` (the SDK's `Batch` does).
 |---|---|
 | `0` | the whole batch ran |
 | `-1` | `buf` null, `len > 2048`, or the range is outside the app block |
-| `-22` | malformed or invalid batch. The whole batch is checked first (structure, lengths, handle states, class of each target, whitelisted style ids and flags, open font slots); **nothing is executed** |
+| `-22` | malformed or invalid batch. The whole batch is checked first (structure, lengths, handle states, class of each target, whitelisted style ids, selectors and flags, open font slots); **nothing is executed** |
 | `-12` | the batch would create the 193rd live object. Nothing is executed |
 | `-2` | a font file failed to open. The batch stops there and earlier records stay applied; the slot holds the built-in font. The SDK opens fonts in a batch of their own |
-| `-95` | the loader is older than 1.2, or the simulator (returned by the SDK/simulator, never by the loader) |
+| `-95` | the simulator's `lv_submit` (never the loader). With a loader older than 1.2, `api.lv()` is `None` and nothing is called; lv-demo then returns `-95` from `main` on its own |
 
 Sources: `fw/wp2-core/src/lvcmd.rs` (`Error::code`, `validate`), `fw/wp2-loader/src/lv.rs` (`submit`, `BATCH_MAX`).
 
@@ -50,12 +50,12 @@ picks the lowest free handle and keeps the same table as the loader.
 | op | name | payload | LVGL call | Checks |
 |---|---|---|---|---|
 | 0x01 | CREATE | `class u8, parent u16`; classes 0 obj, 1 label, 2 btn, 3 arc, 4 bar, 5 slider, 6 roller | `lv_<class>_create(parent)` | handle free; parent live and not a scroll bar; class 7 is refused |
-| 0x02 | DEL | – | `lv_obj_del` | not the root. Frees the handle, every descendant and the scroll bars that target a freed object |
+| 0x02 | DEL | – | `lv_obj_del` | not the root, **not a scroll bar** (`BadClass`; a bar goes with its target, which keeps callbacks into it). Frees the handle, every descendant and the scroll bars that target a freed object |
 | 0x03 | SIZE | `w i32, h i32` raw `lv_coord_t` | `lv_obj_set_size` | not the root. `LV_PCT(n)` = `0x2000_0000 \| n`, `LV_SIZE_CONTENT` = `0x2000_07D1` (SDK: `pct`, `CONTENT`) |
 | 0x04 | ALIGN | `align u8, x i16, y i16` | `lv_obj_align` | not the root; `align` 0..=21 |
 | 0x05 | FLAGS | `set u32, clear u32` | `lv_obj_add_flag`, then `lv_obj_clear_flag` | bits ⊆ HIDDEN 1<<0, CLICKABLE 1<<1, CHECKABLE 1<<3, SCROLLABLE 1<<4, SCROLL_ELASTIC 1<<5, SCROLL_MOMENTUM 1<<6 (mask `0x7B`) |
-| 0x06 | STYLE | `prop u16, selector u32, value i32` | `lv_obj_set_local_style_prop` | `prop` in the **48** stock setter ids (`wp2_core::stock::STYLE_PROPS`, `SDK Prop`). `TEXT_FONT` takes a font slot that is open. The selector is `lv_style_selector_t` (`LV_PART_*` in bits 16.., state in the low bits; `0` = main part, default state) |
-| 0x07 | FONT | `slot u8 (0..4), font u8 (0..16)`; handle 0 | `lvgl_bitmap_font_open` into a loader-owned `lv_font_t` | a slot that is already open is closed first; objects styled with it pick up the new font |
+| 0x06 | STYLE | `prop u16, selector u32, value i32` | `lv_obj_set_local_style_prop` | `prop` in the **42** scalar ids of the 48 stock setters (`wp2_core::lvcmd::ACCEPTED_PROPS`, SDK `Prop`): the image sources 40 and 84 (pointers) and the unproven Actions ids 45, 92, 93 and 102 are refused. `TEXT_FONT` takes a font slot that is open. The selector is `lv_style_selector_t`: part (bits 16..) one of MAIN 0, SCROLLBAR 1, INDICATOR 2, KNOB 3, SELECTED 4, ITEMS 5; state (low 16 bits) one of DEFAULT 0, CHECKED `0x01`, FOCUSED `0x02`, PRESSED `0x20`, DISABLED `0x80` (no combined states). That keeps an object under LVGL's 63 local styles |
+| 0x07 | FONT | `slot u8 (0..4), font u8 (0..16)`; handle 0 | `lvgl_bitmap_font_open` into a loader-owned `lv_font_t` | a slot that is already open is closed first and reopened in place. Nothing refreshes the objects styled with it, so their size keeps the old font's metrics until they are laid out again: reopen a slot before styling with it, not under live labels |
 | 0x08 | TEXT | UTF-8, ≤ 128 B | `lv_label_set_text` (copies) | label only |
 | 0x09 | VALUE | `v i32, anim u8` | `lv_arc_set_value`, `lv_bar_set_value` (also slider), `lv_roller_set_selected` | arc `v` fits `i16`; roller `v` fits `u16` and is clamped to the option count (skipped while OPTIONS was never set) |
 | 0x0A | RANGE | `min i32, max i32` | `lv_bar_set_range` | **bar and slider only**, `min < max` |
@@ -70,6 +70,7 @@ picks the lowest free handle and keeps the same table as the loader.
 
 - **`STYLE_PROPS` has 48 ids, not 50.** The image has 44 setters that tail-call `lv_obj_set_local_style_prop`
   plus the 4 flex setters; the "50" of the first recon was a miscount (`docs/recon-lvgl.md`, "Verified for ABI 1.2").
+  STYLE accepts 42 of them: the spec's "no wild pointer" rules out the image sources and the ids of unknown type.
 - **The arc range is fixed 0..100.** `lv_arc_set_range` is absent from the firmware, so **RANGE works for bar and
   slider only**, and arc values are `i16`. `VALUE` on an arc clamps to 0..100 inside LVGL.
 - **`VALUE_CHANGED` coalesces per (handle, event code)**, not per handle (below).
@@ -101,7 +102,7 @@ open returns `-2`). Fonts the app does not open use the built-in font. Each open
 | label text | ≤ 128 B (`MAX_TEXT`) |
 | roller options | ≤ 240 B (`MAX_OPTIONS`) |
 | batch | ≤ 2048 B; one record ≤ 4 + 255 B |
-| GUI heap | lv-demo's screen (30 objects, one font, a scroll bar) used 7 724 B of the GUI heap: menu 94 732 B free, with the app 87 008 B (`tests/test_lv_e2e.py`). The design budget is 32–40 KB of objects (`docs/recon-lvgl.md`); an LVGL assert or heap exhaustion resets the watch |
+| GUI heap | lv-demo's screen (31 objects, one font, a scroll bar) used 7 724 B of the GUI heap: menu 94 732 B free, with the app 87 008 B (`tests/test_lv_e2e.py`). The design budget is 32–40 KB of objects (`docs/recon-lvgl.md`); an LVGL assert or heap exhaustion resets the watch |
 
 ## Events
 
@@ -123,10 +124,12 @@ For `VALUE_CHANGED` `delta` is the arc, bar, slider or roller value (clamped to 
   same flag on its target, so a list with a scroll bar is scrolled by the crown without a `KNOB`, unless
   something else took the knob afterwards.
 - `KNOB` on any other object registers a knob filter once: the app gets `CROWN ±1` for turns over that object.
+- **A plain `obj` is scrollable by default** (LVGL 8). `KNOB(panel)` meant to bring `CROWN` events then scrolls the
+  panel instead (often with nothing to scroll), and the app gets no `CROWN`. Clear `SCROLLABLE` with `FLAGS` first.
 - **Creating a roller makes it the knob** (the stock constructor sets `1 << 30` on itself): send `KNOB` to the
   object that should take the crown after the roller is created, as lv-demo does (`KNOB(list)` last).
 - **A rightward drag across a slider is the stock back gesture**: the app gets `BUTTON` and has 1 s to leave
-  (`docs/app-guide.md`, section 3). A leftward drag works. Design sliders for taps and left drags.
+  (`docs/app-guide.md`, section 1, "Install and run"). A leftward drag works. Design sliders for taps and left drags.
 
 ## Lifetime
 
@@ -139,6 +142,8 @@ The loader owns every LVGL object and font.
   is idle again. This runs before the app block is freed. A submit that is waiting at that moment is released.
 - Nothing can leak into the GUI heap. Measured with lv-demo: menu 94 732 B free; after BUTTON 94 728 B; after a force
   stop in the middle of a submit loop 94 728 B (a 4 B difference after the first launch only, `tests/test_lv_e2e.py`).
+- `DEL` of a subtree frees it at once: lv-demo's list (26 objects with the rows, labels and scroll bar) gives back
+  5 764 B, and building it again lands within 8 B of the first build (`test_del_list`).
 - A stuck app is stopped as in ABI 1: 1 s after `BUTTON`. Handle `BUTTON` in the event loop.
 
 ## What an app must not rely on

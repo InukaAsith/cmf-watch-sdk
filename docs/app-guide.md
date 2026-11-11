@@ -752,14 +752,16 @@ This snippet type-checks against the SDK (`cargo check`) but was not run on the 
 - **Open fonts in their own batch.** `-2` stops a batch at the failed font. Slots: 4. Names: `StockFont`.
 - **No theme.** A widget without styles for its parts is invisible or bare (slider, arc, button). Style the main part
   and `LV_PART_INDICATOR 0x02_0000` / `KNOB 0x03_0000` / `SELECTED 0x04_0000` through the selector; copy
-  `lv-demo`'s `screen.rs`.
+  `lv-demo`'s `screen.rs`. A selector holds one part (MAIN..ITEMS) and at most one state; image sources and the
+  Actions style ids are not available (`docs/abi-1.2.md`, STYLE).
 - **Arcs are 0..100**, `i16` values, no `range`. Bars and sliders take `range`.
-- **Events.** Subscribe with `events`; you get `Event { kind: LV, x: handle, y: LVGL event code, delta: value }`
+- **Events.** Subscribe with `events` (it adds; there is no unsubscribe); you get `Event { kind: LV, x: handle, y: LVGL event code, delta: value }`
   (CLICKED 7, PRESSED 1, RELEASED 8, LONG_PRESSED 5, VALUE_CHANGED 28). `VALUE_CHANGED` coalesces per (handle, code): a
   drag leaves the latest value, so read `delta` and do not count events.
 - **Crown.** The crown goes to the root (`CROWN ±1`) unless an object is the knob. `knob(list)` makes a scrollable
-  object scroll with the crown; `scroll_bar(list)` adds the round bar. **A roller takes the crown when it is
-  created**: send `knob(...)` after creating it.
+  object scroll with the crown; `scroll_bar(list)` adds the round bar, which goes with `list` (`del` refuses the bar
+  itself). **A roller takes the crown when it is created**: send `knob(...)` after creating it. A plain `obj` is
+  scrollable by default: clear `Flag::Scrollable` before `knob(panel)` if you want `CROWN` events from it.
 - **A rightward drag across a slider is the stock back gesture** (`BUTTON`). Test sliders with leftward drags.
 - **Budgets.** 192 objects, 4 fonts, 128 B text, 240 B roller options, 2048 B per batch. A bad batch returns `-22` or
   `-12` and changes nothing; the SDK's handle table is then out of step, so treat it as a bug.

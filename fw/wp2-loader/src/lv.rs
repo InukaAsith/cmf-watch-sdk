@@ -77,8 +77,9 @@ pub fn root() -> Obj {
 /// App thread (Api.lv_submit): waits until the UI tick ran the batch.
 pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
     let ram = stub_ram();
-    let (p, block) = (buf as usize, ram.app_block as usize);
-    if buf.is_null() || len > BATCH_MAX || p < block || p + len > block + ram.app_size as usize {
+    let (p, block, size) = (buf as usize, ram.app_block as usize, ram.app_size as usize);
+    // no p + len: a buf near the top of the address space would wrap
+    if buf.is_null() || len > BATCH_MAX || p < block || p - block > size || len > size - (p - block) {
         return E_ARG;
     }
     REQ_PTR.store(p as u32, Ordering::Relaxed);
@@ -179,7 +180,8 @@ fn exec(r: &Rec) -> Result<(), i32> {
         }
         Rec::Del(h) => {
             stock!(LV_OBJ_DEL, fn(Obj))(o(h));
-            // scroll bars targeting the subtree sit on the root: deleted after their target, as stock lists do
+            // scroll bars targeting the subtree sit on the root: deleted after their target, as stock lists do.
+            // A bar handle never gets here (validate refuses DEL of a bar).
             for x in lvcmd::freed_by_del(&s.table, h) {
                 let x = x as usize;
                 if x != h as usize && s.table.class(x as u16) == Some(Class::ScrollBar) {

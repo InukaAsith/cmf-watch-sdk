@@ -1,7 +1,18 @@
 //! ABI 1.2 LVGL command buffer: decode, validate, handle table (docs/specs/2026-11-11-lvgl-apps-design.md).
 //! Pure logic, no heap, no LVGL calls. The loader validates a whole batch before the first LVGL call.
 
-use crate::stock::{LV_STYLE_TEXT_FONT, STYLE_PROPS};
+use crate::stock::LV_STYLE_TEXT_FONT;
+
+/// STYLE takes only the stock setter ids whose value is a scalar: not the image sources 40 (BG_IMG_SRC) and 84
+/// (ARC_IMG_SRC), which are pointers, nor 45, 92, 93 and 102, whose value type is unproven (Ruling 14).
+pub const ACCEPTED_PROPS: [u16; 42] = [
+    1, 4, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 20, 21, 22, 32, 33, 34, 48, 50, 53, 54, 55, 70, 71, 72, 80, 81, 82, 83, 85,
+    86, 87, 89, 91, 96, 107, 108, 113, 114, 115, 116,
+];
+// LV_PART_* MAIN, SCROLLBAR, INDICATOR, KNOB, SELECTED, ITEMS (sel >> 16); single LV_STATE_* (sel & 0xFFFF): DEFAULT,
+// CHECKED, FOCUSED, PRESSED, DISABLED. At most 30 local styles per object, under the 6-bit style_cnt (Ruling 15).
+const STYLE_PARTS: u32 = 5;
+const STYLE_STATES: [u32; 5] = [0, 0x01, 0x02, 0x20, 0x80];
 
 pub const MAX_OBJS: usize = 192;
 pub const MAX_FONTS: u8 = 4;
@@ -297,7 +308,10 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
             }
         }
         Rec::Del(h) => {
-            child(t, h)?;
+            // a bar goes with its target: the target keeps callbacks into the bar (Ruling 13)
+            if child(t, h)? == Class::ScrollBar {
+                return Err(Error::BadClass);
+            }
         }
         Rec::Size { h, .. } => {
             child(t, h)?;
@@ -310,9 +324,10 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
             cls(t, h)?;
             bad((set | clear) & !FLAG_MASK != 0)?;
         }
-        Rec::Style { h, prop, value, .. } => {
+        Rec::Style { h, prop, sel, value } => {
             cls(t, h)?;
-            bad(STYLE_PROPS.binary_search(&prop).is_err())?;
+            bad(ACCEPTED_PROPS.binary_search(&prop).is_err())?;
+            bad(sel >> 16 > STYLE_PARTS || !STYLE_STATES.contains(&(sel & 0xFFFF)))?;
             if prop as u32 == LV_STYLE_TEXT_FONT {
                 bad(!(0..MAX_FONTS as i32).contains(&value) || *fonts >> value & 1 == 0)?;
             }
@@ -429,29 +444,13 @@ pub fn apply(t: &mut Table, r: &Rec) {
     }
 }
 
-struct Freed<'a> {
-    t: &'a Table,
-    s: [u64; 4],
-}
-
-impl Iterator for Freed<'_> {
-    type Item = u16;
-    fn next(&mut self) -> Option<u16> {
-        // a member with no member below it: children come before their parent
-        let x = (1..=MAX_OBJS)
-            .find(|&x| get(&self.s, x) && !(1..=MAX_OBJS).any(|y| y != x && get(&self.s, y) && self.t.parent[y] as usize == x))?;
-        self.s[x / 64] &= !(1 << (x % 64));
-        Some(x as u16)
-    }
-}
-
-/// The handles `DEL h` frees: descendants in post-order, scroll bars whose target is among them, then `h`.
-pub fn freed_by_del(t: &Table, h: u16) -> impl Iterator<Item = u16> + '_ {
+/// The handles `DEL h` frees, in index order: `h`, its descendants and the scroll bars whose target is among them.
+pub fn freed_by_del(t: &Table, h: u16) -> impl Iterator<Item = u16> {
     let mut s = doomed(t, h);
     if h == 0 {
         s[0] &= !1;
     }
-    Freed { t, s }
+    (1..=MAX_OBJS as u16).filter(move |&x| get(&s, x as usize))
 }
 
 #[cfg(test)]
@@ -484,8 +483,11 @@ mod tests {
         r(5, h, &p)
     }
     fn style(h: u16, prop: u16, value: i32) -> Vec<u8> {
+        style_sel(h, prop, 0, value)
+    }
+    fn style_sel(h: u16, prop: u16, sel: u32, value: i32) -> Vec<u8> {
         let mut p = prop.to_le_bytes().to_vec();
-        p.extend_from_slice(&0u32.to_le_bytes());
+        p.extend_from_slice(&sel.to_le_bytes());
         p.extend_from_slice(&value.to_le_bytes());
         r(6, h, &p)
     }
@@ -532,6 +534,10 @@ mod tests {
     fn style_props_are_sorted_unique_48() {
         assert_eq!(STYLE_PROPS.len(), 48);
         assert!(STYLE_PROPS.windows(2).all(|w| w[0] < w[1]));
+        // accepted = the stock setters minus the pointer and unproven ids
+        let deny = [40, 45, 84, 92, 93, 102];
+        let want: Vec<u16> = STYLE_PROPS.iter().copied().filter(|p| !deny.contains(p)).collect();
+        assert_eq!(ACCEPTED_PROPS, *want);
     }
 
     /// The SDK's encoder wrote this file (`cmf_wp2_app::lv` test `golden_batch_bytes`): one record of every op.
@@ -575,11 +581,11 @@ mod tests {
     }
 
     #[test]
-    fn sdk_props_are_the_stock_setters() {
+    fn sdk_props_are_the_accepted_props() {
         use cmf_wp2_app::lv::Prop;
         let mut ids: Vec<u16> = Prop::ALL.iter().map(|&p| p as u16).collect();
         ids.sort_unstable();
-        assert_eq!(ids, STYLE_PROPS);
+        assert_eq!(ids, ACCEPTED_PROPS);
         assert_eq!(Prop::TextFont as u32, LV_STYLE_TEXT_FONT);
     }
 
@@ -612,6 +618,10 @@ mod tests {
         assert_eq!(check(&[text(5, b"x")]), Err(Error::BadHandle));
         assert_eq!(check(&[del(5)]), Err(Error::BadHandle));
         assert_eq!(check(&[del(0)]), Err(Error::BadHandle));
+        // a scroll bar goes with its target only
+        let list = [create(1, 0, 0), scrollbar(2, 1)];
+        assert_eq!(check(&[list[0].clone(), list[1].clone(), del(2)]), Err(Error::BadClass));
+        assert_eq!(check(&[list[0].clone(), list[1].clone(), del(1)]), Ok(()));
         assert_eq!(check(&[create(1, 1, 0), value(1, 5)]), Err(Error::BadClass));
         assert_eq!(check(&[create(1, 4, 0), options(1, b"a\nb")]), Err(Error::BadClass));
         assert_eq!(check(&[create(1, 3, 0), text(1, b"x")]), Err(Error::BadClass));
@@ -625,6 +635,18 @@ mod tests {
     fn values_are_checked() {
         let bv = Err(Error::BadValue);
         assert_eq!(check(&[create(1, 0, 0), style(1, 2, 0)]), bv);
+        // pointer and unproven props are refused (Ruling 14)
+        for p in [40, 45, 84, 92, 93, 102] {
+            assert_eq!(check(&[create(1, 0, 0), style(1, p, 0)]), bv, "{p}");
+        }
+        assert_eq!(check(&[create(1, 0, 0), style(1, 96, 0)]), Ok(()));
+        // selector: parts 0..=5, one state of DEFAULT, CHECKED, FOCUSED, PRESSED, DISABLED (Ruling 15)
+        for sel in [0, 0x0005_0000, 0x0002_0020, 0x0001_0080, 0x01, 0x02] {
+            assert_eq!(check(&[create(1, 0, 0), style_sel(1, 32, sel, 0)]), Ok(()), "{sel:#x}");
+        }
+        for sel in [0x0006_0000, 0x000F_0000, 0x04, 0x21, 0x8000, 0x00FF_FFFF] {
+            assert_eq!(check(&[create(1, 0, 0), style_sel(1, 32, sel, 0)]), bv, "{sel:#x}");
+        }
         assert_eq!(check(&[create(1, 0, 0), flags(1, 1 << 2, 0)]), bv);
         assert_eq!(check(&[create(1, 0, 0), flags(1, 0, 1 << 7)]), bv);
         assert_eq!(check(&[create(1, 0, 0), flags(1, 0x7B, 0)]), Ok(()));
@@ -671,10 +693,8 @@ mod tests {
             create(5, 0, 0),
         ]);
         let freed: Vec<u16> = freed_by_del(&t, 1).collect();
-        assert_eq!(freed.len(), 4);
-        let pos = |h| freed.iter().position(|&x| x == h).unwrap();
-        assert!(pos(3) < pos(2) && pos(2) < pos(1) && pos(4) < pos(1));
-        assert!(!freed.contains(&5));
+        assert_eq!(freed, [1, 2, 3, 4]);
+        assert_eq!(freed_by_del(&t, 2).collect::<Vec<_>>(), [2, 3]);
 
         let mut t2 = t.clone();
         apply(&mut t2, &Rec::Del(1));

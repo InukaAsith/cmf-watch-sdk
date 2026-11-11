@@ -112,10 +112,11 @@ pub enum FlexAlign {
     SpaceBetween = 5,
 }
 
-/// The 48 `lv_obj_set_style_*` setters of the stock image, by their 8.3.10 style property id
-/// (`wp2_core::stock::STYLE_PROPS`; a wp2-core test keeps both lists equal). `Actions*` are ids the Actions fork
-/// added, name unknown. `Opa` and `AnimSpeed` are the two names left for ids 96 and 102 (by upstream order).
-/// `TextFont` takes a font slot opened with [`Batch::font`], not a pointer.
+/// The scalar `lv_obj_set_style_*` setters of the stock image, by their 8.3.10 style property id
+/// (`wp2_core::lvcmd::ACCEPTED_PROPS`; a wp2-core test keeps both lists equal). Of the 48 stock setters the loader
+/// refuses the image sources (pointers) and the Actions ids 45, 92, 93 and 102, whose value type is unproven.
+/// `Opa` is the name left for id 96 by upstream order. `TextFont` takes a font slot opened with [`Batch::font`],
+/// not a pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Prop {
@@ -137,8 +138,6 @@ pub enum Prop {
     BgColor = 32,
     BgOpa = 33,
     BgGradColor = 34,
-    BgImgSrc = 40,
-    Actions45 = 45,
     BorderColor = 48,
     BorderWidth = 50,
     OutlineWidth = 53,
@@ -151,16 +150,12 @@ pub enum Prop {
     ArcRounded = 81,
     ArcColor = 82,
     ArcOpa = 83,
-    ArcImgSrc = 84,
     TextColor = 85,
     TextOpa = 86,
     TextFont = 87,
     TextLineSpace = 89,
     TextAlign = 91,
-    Actions92 = 92,
-    Actions93 = 93,
     Opa = 96,
-    AnimSpeed = 102,
     TranslateX = 107,
     TranslateY = 108,
     FlexFlow = 113,
@@ -170,14 +165,13 @@ pub enum Prop {
 }
 
 impl Prop {
-    pub const ALL: [Prop; 48] = {
+    pub const ALL: [Prop; 42] = {
         use Prop::*;
         [
             Width, Height, MaxHeight, X, Y, Align, Layout, Radius, PadTop, PadBottom, PadLeft, PadRight, PadRow,
-            PadColumn, BaseDir, BgColor, BgOpa, BgGradColor, BgImgSrc, Actions45, BorderColor, BorderWidth,
-            OutlineWidth, OutlineColor, OutlineOpa, ImgOpa, ImgRecolor, ImgRecolorOpa, ArcWidth, ArcRounded,
-            ArcColor, ArcOpa, ArcImgSrc, TextColor, TextOpa, TextFont, TextLineSpace, TextAlign, Actions92,
-            Actions93, Opa, AnimSpeed, TranslateX, TranslateY, FlexFlow, FlexMainPlace, FlexCrossPlace,
+            PadColumn, BaseDir, BgColor, BgOpa, BgGradColor, BorderColor, BorderWidth, OutlineWidth, OutlineColor,
+            OutlineOpa, ImgOpa, ImgRecolor, ImgRecolorOpa, ArcWidth, ArcRounded, ArcColor, ArcOpa, TextColor, TextOpa,
+            TextFont, TextLineSpace, TextAlign, Opa, TranslateX, TranslateY, FlexFlow, FlexMainPlace, FlexCrossPlace,
             FlexTrackPlace,
         ]
     };
@@ -300,9 +294,10 @@ impl Batch {
         Ok(Obj(h))
     }
 
-    /// Deletes `obj`, its children and scroll bars; their handles are free again.
+    /// Deletes `obj`, its children and scroll bars; their handles are free again. A scroll bar itself is refused
+    /// (`INVALID`): it goes with its target.
     pub fn del(&mut self, obj: Obj) -> Result<(), LvError> {
-        if obj == ROOT || !self.live(obj) {
+        if obj == ROOT || !self.live(obj) || self.class[obj.0 as usize] == SCROLLBAR {
             return Err(INVALID);
         }
         self.put(0x02, obj.0, &[])?;
@@ -336,7 +331,9 @@ impl Batch {
         self.put(0x05, obj.0, &[&bits(set).to_le_bytes(), &bits(clear).to_le_bytes()])
     }
 
-    /// `sel` = LVGL part | state (0 = main part, default state). `value`: a number, a 16-bit RGB565 colour, or for
+    /// `sel` = LVGL part | state (0 = main part, default state): part `LV_PART_MAIN` .. `LV_PART_ITEMS`
+    /// (`0..=5 << 16`), at most one state of `CHECKED 0x01`, `FOCUSED 0x02`, `PRESSED 0x20`, `DISABLED 0x80`; the
+    /// loader refuses others. `value`: a number, a 16-bit RGB565 colour, or for
     /// [`Prop::TextFont`] a font slot opened before.
     pub fn style(&mut self, obj: Obj, prop: Prop, sel: u32, value: i32) -> Result<(), LvError> {
         self.put(0x06, obj.0, &[&(prop as u16).to_le_bytes(), &sel.to_le_bytes(), &value.to_le_bytes()])
@@ -347,8 +344,11 @@ impl Batch {
         self.put(0x07, 0, &[&[slot, font as u8]])
     }
 
-    /// A label's text, at most 128 bytes (the loader refuses more).
+    /// A label's text, at most 128 bytes (more is `INVALID`, nothing written).
     pub fn text(&mut self, obj: Obj, text: &str) -> Result<(), LvError> {
+        if text.len() > 128 {
+            return Err(INVALID);
+        }
         self.put(0x08, obj.0, &[text.as_bytes()])
     }
 
@@ -365,12 +365,16 @@ impl Batch {
         self.put(0x0A, obj.0, &[&min.to_le_bytes(), &max.to_le_bytes()])
     }
 
-    /// A roller's rows, `\n`-separated, at most 240 bytes; `infinite` wraps around.
+    /// A roller's rows, `\n`-separated, at most 240 bytes (more is `INVALID`, nothing written); `infinite` wraps
+    /// around.
     pub fn options(&mut self, obj: Obj, options: &str, infinite: bool) -> Result<(), LvError> {
+        if options.len() > 240 {
+            return Err(INVALID);
+        }
         self.put(0x0B, obj.0, &[&[infinite as u8], options.as_bytes()])
     }
 
-    /// Subscribes to these events of `obj` (replaces the previous set).
+    /// Subscribes to these events of `obj`, in addition to the ones subscribed before; there is no unsubscribe.
     pub fn events(&mut self, obj: Obj, events: &[Ev]) -> Result<(), LvError> {
         let mask = events.iter().fold(0u8, |m, &e| m | 1 << e as u8);
         self.put(0x0C, obj.0, &[&[mask]])
@@ -380,7 +384,8 @@ impl Batch {
         self.put(0x0D, obj.0, &[&[flow as u8, main as u8, cross as u8, track as u8]])
     }
 
-    /// The vendor round scroll bar for `target` (crown scrolls it). Its handle goes with `target`.
+    /// The vendor round scroll bar for `target` (crown scrolls it). The bar goes with `target`: [`Batch::del`]
+    /// refuses the bar's handle, since `target` keeps callbacks into it; delete `target` instead.
     pub fn scroll_bar(&mut self, target: Obj) -> Result<Obj, LvError> {
         let h = self.free_handle()?;
         self.put(0x0E, h, &[&target.0.to_le_bytes()])?;
@@ -528,10 +533,31 @@ mod tests {
     }
 
     #[test]
-    fn text_over_a_record_is_refused() {
+    fn text_and_options_over_the_limit_are_refused() {
         let mut b = batch();
         let l = b.create(Class::Label, ROOT).unwrap();
+        let r = b.create(Class::Roller, ROOT).unwrap();
+        let len = b.bytes().len();
+        assert_eq!(b.text(l, &"a".repeat(129)), Err(LvError::Code(-22)));
         assert_eq!(b.text(l, &"a".repeat(256)), Err(LvError::Code(-22)));
+        assert_eq!(b.options(r, &"a".repeat(241), false), Err(LvError::Code(-22)));
+        assert_eq!(b.bytes().len(), len);
+        assert_eq!(b.text(l, &"a".repeat(128)), Ok(()));
+        assert_eq!(b.options(r, &"a".repeat(240), false), Ok(()));
+    }
+
+    #[test]
+    fn a_scroll_bar_goes_with_its_target() {
+        let mut b = batch();
+        let list = b.create(Class::Obj, ROOT).unwrap();
+        let bar = b.scroll_bar(list).unwrap();
+        let len = b.bytes().len();
+        assert_eq!(b.del(bar), Err(LvError::Code(-22)));
+        assert_eq!(b.bytes().len(), len);
+        assert_eq!(b.create(Class::Obj, ROOT), Ok(Obj(3)));
+        b.del(list).unwrap();
+        assert_eq!(b.create(Class::Obj, ROOT), Ok(list));
+        assert_eq!(b.create(Class::Obj, ROOT), Ok(bar));
     }
 
     extern "C" fn ok(_: *const u8, _: usize) -> i32 {
