@@ -3,7 +3,7 @@
 //! happened. Touch is TOUCH_DOWN (its `y` is the reliable one).
 
 use crate::color::{BLACK, Rgb};
-use crate::draw::{arc, disc, radial, rrect, Band, Paint};
+use crate::draw::{arc, disc, radial_n, rrect, Band, Paint};
 use crate::geom::chord;
 use crate::motion::{ease_out, Tween};
 use crate::text::{big, big_width, clip, ellipsis, int, width};
@@ -392,7 +392,7 @@ pub fn page_dots(s: &mut impl Surface, y: i32, pages: usize, current: usize, on:
     for i in 0..pages {
         let (r, c) = if i == current { (5, on) } else { (4, off) };
         let x = C + (2 * i as i32 - (pages as i32 - 1)) * 8;
-        radial(s, x, y, &[Band { r, paint: Paint::Solid(c), soft: 1 }], Some([x - 6, y - 6, x + 7, y + 7]), |_, _| BLACK);
+        radial_n::<1>(s, x, y, &[Band { r, paint: Paint::Solid(c), soft: 1 }], Some([x - 6, y - 6, x + 7, y + 7]), |_, _| BLACK);
     }
 }
 

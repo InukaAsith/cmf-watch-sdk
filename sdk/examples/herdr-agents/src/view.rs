@@ -61,7 +61,7 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Ui { model: Model::new(), list: List::new(LIST_TOP, ROW_H, ROWS, 6), heard: None, flash: None, full: true, counts: None, line: None, more: None }
     }
 

@@ -91,3 +91,33 @@ impl Surface for Count {
 
     fn text(&mut self, _: i32, _: i32, _: &str, _: u16) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::color::{BLACK, Rgb, WHITE};
+    use crate::draw::*;
+
+    // `cargo test -p cmf-wp2-ui rect_counts -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn rect_counts() {
+        const GREY: Rgb = Rgb(40, 40, 50);
+        let cases: [(&str, fn(&mut Count)); 9] = [
+            ("disc r 20", |s| disc(s, C, C, 20, WHITE, BLACK)),
+            ("disc r 8", |s| disc(s, C, C, 8, WHITE, BLACK)),
+            ("ring r 24..36", |s| ring(s, C, C, 24, 36, WHITE, BLACK)),
+            ("arc r 130..150, full with track", |s| arc(s, C, C, 130, 150, 49152, 65536, WHITE, Some(GREY), BLACK)),
+            ("arc r 130..150, 1/3 with track", |s| arc(s, C, C, 130, 150, 49152, 21845, WHITE, Some(GREY), BLACK)),
+            ("line 200 px diagonal w 5", |s| line(s, 100, 100, 241, 241, 5, WHITE, BLACK)),
+            ("pill 120x40", |s| rrect(s, 100, 100, 120, 40, 20, WHITE, BLACK)),
+            ("gradient 246x36", |s| gradient(s, 100, 100, 246, 36, WHITE, BLACK, false)),
+            ("big \"12:30\" x6", |s| text::big(s, 100, 100, "12:30", 6, 0xFFFF)),
+        ];
+        for (name, f) in cases {
+            let mut c = Count::default();
+            f(&mut c);
+            std::println!("{name}: {} rects, {} px", c.rects, c.px);
+        }
+    }
+}

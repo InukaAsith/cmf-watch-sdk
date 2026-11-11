@@ -147,7 +147,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Model { agents: [Agent::EMPTY; MAX], n: 0, order: [0; MAX], seq: None, snapshot: false }
     }
 
@@ -274,21 +274,28 @@ impl Model {
 
     /// Fills the list from a saved blob (not synced: the host still sends a snapshot). Garbage loads nothing.
     pub fn load(&mut self, data: &[u8]) {
-        let mut m = Model::new();
-        let [b'H', b'1', n, rest @ ..] = data else {
-            return;
-        };
+        // checked first, then filled in place: no second Model on the 8 KiB stack
+        if Self::parse(data, |_| {}).is_some() {
+            (self.n, self.seq, self.snapshot) = (0, None, false);
+            Self::parse(data, |a| {
+                self.agents[self.n] = a;
+                self.n += 1;
+            });
+            self.sort();
+        }
+    }
+
+    fn parse(data: &[u8], mut each: impl FnMut(Agent)) -> Option<()> {
+        let [b'H', b'1', n, rest @ ..] = data else { return None };
         let mut rest: &[u8] = rest;
         for _ in 0..(*n as usize).min(MAX) {
-            let [id, st, wl, r @ ..] = rest else { return };
-            let Some((ws, [tl, r @ ..])) = r.split_at_checked(*wl as usize) else { return };
-            let Some((title, r)) = r.split_at_checked(*tl as usize) else { return };
-            m.agents[m.n] = Agent::new(*id, Status::from(*st), ws, title);
-            m.n += 1;
+            let [id, st, wl, r @ ..] = rest else { return None };
+            let Some((ws, [tl, r @ ..])) = r.split_at_checked(*wl as usize) else { return None };
+            let (title, r) = r.split_at_checked(*tl as usize)?;
+            each(Agent::new(*id, Status::from(*st), ws, title));
             rest = r;
         }
-        m.sort();
-        *self = m;
+        Some(())
     }
 }
 
