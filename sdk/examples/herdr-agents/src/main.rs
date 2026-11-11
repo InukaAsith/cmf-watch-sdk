@@ -9,7 +9,7 @@ fn main() {}
 #[cfg(target_os = "none")]
 mod device {
     use crate::model::*;
-    use cmf_wp2_app::{Api, BUTTON, CROWN, MSG_MAX, PAUSE, RESUME, STORE_MAX, TOUCH_UP};
+    use cmf_wp2_app::{Api, BUTTON, CROWN, MSG_MAX, PAUSE, RESUME, STORE_MAX, TOUCH_DOWN};
 
     cmf_wp2_app::entry!(main);
 
@@ -268,7 +268,7 @@ mod device {
                     dirty |= s as usize != ui.scroll;
                     ui.scroll = s as usize;
                 }
-                Some((TOUCH_UP, y, _)) => {
+                Some((TOUCH_DOWN, y, _)) => {
                     if let Some(i) = row_at(y as i32, ui.scroll, ui.model.len()) {
                         let id = ui.model.get(i).map_or(0, |a| a.id);
                         api.send(&[b'h', b'1', b'F', id]);
