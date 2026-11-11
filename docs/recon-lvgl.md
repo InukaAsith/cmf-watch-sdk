@@ -90,9 +90,9 @@ image** (no class descriptor derives from `lv_obj_class`; the class scan covers 
 
 | Item | Value | Confidence | How |
 |---|---|---|---|
-| `lv_obj_set_local_style_prop(obj, prop, value, selector)` | `0x101C6F9A` | high | calls `get_local_style 0x1012B7E8`, `lv_style_set_prop_internal 0x1013B0A4`, `lv_obj_refresh_style 0x1012B908`; 50 setters tail-call it |
-| `lv_obj_get_style_prop(obj, part, prop)` | `0x101C6E06` | medium | dozens of `lv_obj_get_style_*` wrappers call it with constant ids |
-| `lv_obj_set_style_*` present (46 + 4 flex) | `width 0x101C72CC`, `height`, `max_height`, `x`, `y`, `align 0x101C72FE`, `translate_x/y`, `pad_top/bottom/left/right/row/column`, `bg_color 0x101C7358`, `bg_opa 0x101C7378`, `bg_grad_color`, `bg_img_src`, `border_color`, `border_width`, `outline_width/color/opa`, `img_opa`, `img_recolor`, `img_recolor_opa`, `arc_width`, `arc_rounded`, `arc_color 0x101C7470`, `arc_opa`, `arc_img_src`, `text_color 0x101C74A4`, `text_opa`, `text_font 0x101C74CE`, `text_line_space`, `text_align`, `radius 0x101C74EC`, `opa`, `anim_speed`, `layout`, `base_dir`, Actions ids 45, 92, 93; flex `flow 0x10133534`, `main_place 0x10133564`, `cross_place 0x10133574`, `track_place 0x10133584`. Full list with entries: `lvgl_inventory.py` | high | tail calls with `movs r1, #prop` |
+| `lv_obj_set_local_style_prop(obj, prop, value, selector)` | `0x101C6F9A` | high | calls `get_local_style 0x1012B7E8`, `lv_style_set_prop_internal 0x1013B0A4`, `lv_obj_refresh_style 0x1012B908`; 48 setters (44 + 4 flex) tail-call it, see "Verified for ABI 1.2" |
+| `lv_obj_get_style_prop(obj, part, prop)` | `0x101C6E06` | high (emulator, "Verified for ABI 1.2") | dozens of `lv_obj_get_style_*` wrappers call it with constant ids |
+| `lv_obj_set_style_*` present (44 + 4 flex) | `width 0x101C72CC`, `height`, `max_height`, `x`, `y`, `align 0x101C72FE`, `translate_x/y`, `pad_top/bottom/left/right/row/column`, `bg_color 0x101C7358`, `bg_opa 0x101C7378`, `bg_grad_color`, `bg_img_src`, `border_color`, `border_width`, `outline_width/color/opa`, `img_opa`, `img_recolor`, `img_recolor_opa`, `arc_width`, `arc_rounded`, `arc_color 0x101C7470`, `arc_opa`, `arc_img_src`, `text_color 0x101C74A4`, `text_opa`, `text_font 0x101C74CE`, `text_line_space`, `text_align`, `radius 0x101C74EC`, `opa`, `anim_speed`, `layout`, `base_dir`, Actions ids 45, 92, 93; flex `flow 0x10133534`, `main_place 0x10133564`, `cross_place 0x10133574`, `track_place 0x10133584`. Full list with entries: `lvgl_inventory.py` | high | tail calls with `movs r1, #prop` |
 | Missing style setters | anything not in the list (e.g. `min_width`, `shadow_*`, `border_side`, `text_letter_space`, `transform_zoom/angle`, `clip_corner`) — call `lv_obj_set_local_style_prop` with the 8.3 id instead | high | — |
 | `lv_style_init` / `lv_obj_add_style(obj, style, selector)` / `lv_obj_remove_style` | `0x1013A8E4` / `0x1012BB14` / `0x1012BD5C` | high | `__func__` |
 | `lv_style_set_*` (shared styles) | `width 0x101CC6EA`, `height 0x101CC6F2`, `pad_top 0x101CC6FA`, `pad_bottom 0x101CC702`, `bg_color 0x101CC712`, `bg_opa 0x101CC724`, `img_recolor 0x101CC72C`, `img_recolor_opa 0x101CC73E`, `arc_width 0x101CC746`, `arc_rounded 0x101CC74E`, `arc_color 0x101CC756`, `arc_opa 0x101CC768`, `text_color 0x101CC770`, `text_opa 0x101CC782`, `text_font 0x101CC78A`, `text_align 0x101CC792`, `radius 0x101CC79A` | high | `lv_style_set_prop_internal(style, id, v)` with constant ids |
@@ -102,7 +102,7 @@ image** (no class descriptor derives from `lv_obj_class`; the class scan covers 
 | Item | Value | Confidence | How |
 |---|---|---|---|
 | `lv_obj_add_event_cb(obj, cb, filter, user_data)` / `lv_obj_remove_event_cb` / `lv_event_send` | `0x10125A94` / `0x10125BD4` / `0x101259C4` | high | `__func__` |
-| `lv_event_get_target`, `_current_target`, `_code`, `_param`, `_user_data` | `0x101C4C92`, `0x101C4C96`, `0x101C4C9A` (`code & 0x7F`), `0x101C4CA2`, `0x101C4CA6` | medium | shape (`ldr r0, [r0, #off]`) and upstream order |
+| `lv_event_get_target`, `_current_target`, `_code`, `_param`, `_user_data` | `0x101C4C92`, `0x101C4C96`, `0x101C4C9A` (`code & 0x7F`), `0x101C4CA2`, `0x101C4CA6` | `_get_target` high (emulator, "Verified for ABI 1.2"), the others medium | shape (`ldr r0, [r0, #off]`) and upstream order |
 | `lv_event_t` | `+0` target, `+4` current_target, `+8` code (u8, bit 7 = PREPROCESS), `+0xC` user_data, `+0x10` param | medium | getters |
 | `lv_event_get_indev` / `lv_event_get_draw_part_dsc` | `0x10125D40` / `0x10125D74` | high | `__func__` |
 | Event codes | upstream 8.3 numbering (`PRESSED 1`, `SHORT_CLICKED 4`, `CLICKED 7`, `RELEASED 8`, `SCROLL_BEGIN 9`, `SCROLL_END 10`, `SCROLL 11`, `VALUE_CHANGED 28`, `DELETE 33`); **`0x2D` (45, upstream `_LV_EVENT_LAST`) = crown event** added by Actions | high for 1, 4, 8, 9–11, 45; medium for the rest | callers (`jx_scroll_bar` uses 9/10/11), indev code, `docs/recon.md` |
@@ -192,6 +192,11 @@ screens build their rows themselves. The reusable pieces are widgets in `applica
 
 ## What this means for ABI 2
 
+Shipped as the compatible extension ABI 1.2 (`docs/abi-1.2.md`, `docs/specs/2026-11-11-lvgl-apps-design.md`): the app
+keeps its thread and sends command buffers; the loader runs them on `ui_service`. The bullets below are the recon-time
+analysis; where they differ from 1.2 (50 setters, `lv_arc_set_range`, "needs event-driven apps"), 1.2 and "Verified
+for ABI 1.2" win.
+
 - **Widgets available as stock code:** `lv_obj` (with flex and grid layout, scrolling, styles), `lv_label`,
   `lv_btn`, `lv_img`, `lv_arc`, `lv_bar`, `lv_slider`, `lv_roller`, `lv_canvas`, `lv_btnmatrix`, `lv_chart`,
   `lv_imgbtn`, `lv_tileview`, `lv_qrcode`, plus vendor `text_canvas`, `text_roller`, `simple_img`,
@@ -216,6 +221,61 @@ screens build their rows themselves. The reusable pieces are widgets in `applica
   takes `ui_service` down with it; leaked objects or fonts after app exit shrink the heap for stock screens;
   the knob object and default group are global; small functions were identified by shape (medium), so ABI 2
   should verify each imported entry in the emulator before use.
+
+## Verified for ABI 1.2
+
+Every entry the loader's LVGL executor calls, run on stock 1.0.0.73 in the emulator by
+`scripts/recon/lv_entries.py` (addresses read from `fw/wp2-core/src/stock.rs`, Thumb bit set there). Calls run on
+`ui_service` (`emu.call(..., thread=b"ui_s")`). Each widget is created under a root on the active screen, then
+configured and read back: the class pointer at `+0`, the size from `coords` (`+0x14..+0x20`) after a layout pass,
+values through the getters and the struct fields. At the end the font is opened and closed, everything is deleted,
+and the guest is checked for a reboot. Output of the run (`runs/lv/entries.log`, not tracked): every line `ok`,
+one boot banner.
+
+| Entry | Address | Verified by | Confidence |
+|---|---|---|---|
+| `lv_btn_create` | `0x1013D388` | class `0x101FB730`, 120×60 coords | high |
+| `lv_arc_create` | `0x1013BA54` | class `0x101FB6F0`, 200×200 coords | high |
+| `lv_arc_set_rotation` | `0x1013C054` | `rotation` (u16 `+0x2C`) = 135 | high |
+| `lv_arc_set_bg_angles(obj, start, end)` | `0x101CCC82` | new: small-function area right after `lv_arc_set_angles` `0x101CCC6A`; body `bl set_bg_end_angle(obj, end)`, `b.w set_bg_start_angle(obj, start)` (upstream 8.3); 14 stock callers, each after `set_rotation`. Emulator: `bg_start/bg_end` (u16 `+0x32/+0x34`) = 10, 270 | high |
+| `lv_arc_set_value` / `lv_arc_get_value` | `0x1013C108` / `0x1013C2EC` | `value` (i16 `+0x36`) and getter = 40; 150 clamps to 100 | high |
+| `lv_bar_create` | `0x1013CEA0` | class `0x101FB710`, 200×20 coords | high |
+| `lv_bar_set_range` | `0x1013D294` | `min/max` (i32 `+0x30/+0x34`) = -50, 150 | high |
+| `lv_bar_set_value` / `lv_bar_get_value` | `0x1013CEB8` / `0x1013D078` | `cur_value` (i32 `+0x2C`) and getter = 120; 500 clamps to 150 | high |
+| `lv_slider_create` | `0x10141EB8` | class `0x101FB810`, coords; `lv_bar_set/get_value` work on it (30) | high |
+| `lv_roller_create` | `0x10140E00` | class `0x101FB7D0`, 150×120 coords | high |
+| `lv_roller_set_options(obj, opts, mode)` | `0x10140E18` | 3 options (`"one\ntwo\nthree"`, mode 0): selecting 5 clamps to 2 (the 5 default options would give 4) | high |
+| `lv_roller_set_selected` / `lv_roller_get_selected` | `0x10141044` / `0x10141690` | select 1, read 1 | high |
+| `lv_obj_set_flex_flow` | `0x10133544` | `lv_obj_get_style_prop(obj, 0, 113)` = 1 (COLUMN), `LAYOUT` (10) = 1 (`LV_LAYOUT_FLEX`); two 50×30 children stack (second `y1` > first `y2`) | high |
+| `lv_obj_set_flex_align(obj, main, cross, track)` | `0x10133594` | style props 114, 115, 116 = 2, 1, 3 | high |
+| `lv_event_get_target` | `0x101C4C92` | `ldr r0, [r0]`; returns `+0` of a hand-made `lv_event_t` | high |
+| `jx_scroll_bar_create` | `0x100D93CC` | class `0x101F36BC`, 462×462 coords | high |
+| `jx_scroll_bar_set_scroll_obj` / `_set_knob` | `0x100D93E4` / `0x100D94EC` | after `set_scroll_obj(bar, obj)`, `set_knob(bar, 1)` sets flag `1 << 30` on obj and `set_knob(bar, 0)` clears it (`lv_obj_has_flag 0x101283DC`) | high |
+| `lvgl_bitmap_font_open` / `_close` | `0x10185C30` / `0x10185D3C` | `/NAND:A/font32M.font`: returns 0, `line_height` 33, context in `user_data` (`+0x1C`); close frees it and zeroes `+0x1C` | high |
+| `lv_obj_get_style_prop(obj, part, prop)` | `0x101C6E06` | returns the local values set above (used as the checker) | high |
+
+Facts for the executor:
+
+- **`lv_arc_set_range` is not in the image.** The image has no `lv_arc_set_range` `__func__` string, though every
+  asserting arc function in the image has one (only `set_start/end_angle`, `set_bg_start/end_angle`, `set_rotation`,
+  `set_mode`, `set_value`, `get_value`; `set_change_rate`, `get_min/max_value` and `get_angle_*` are gone too, dropped by
+  `--gc-sections`). The static `value_update` (`0x1013BC9C`) has only three callers: `set_bg_start_angle`,
+  `set_bg_end_angle` and `set_value`. No arc code stores the `min/max` pair (`+0x38/+0x3A`) outside the constructor,
+  which writes `0x00640000` at `+0x38`. **Arcs keep the default range 0..100.**
+- **Arc value, min and max are i16** (`ldrsh` at `+0x36/+0x38/+0x3A`); `set_value(obj, i16)` returns early when the
+  value is unchanged, then clamps. Bar (and slider) values are i32.
+- **Flex style ids are registered at boot**, not fixed: `lv_flex_init` registers `LV_LAYOUT_FLEX` = 1 (u16 at
+  `0x38047FEA`) and the props flow 113 (`0x38047FEE`), main_place 114 (`0x38047FF2`), cross_place 115 (`0x38047FEC`),
+  track_place 116 (`0x38047FF4`), in upstream order. The setters load them
+  (`ldr r1, =var; ldrh r1, [r1]`); the values above are read in the emulator after boot.
+- **48 style setters, not 50:** 44 tail-call `lv_obj_set_local_style_prop` with `movs r1, #id`
+  (`0x101C72CC…0x101C751A`), plus the 4 flex setters, and nothing else branches to it.
+  `wp2_core::stock::STYLE_PROPS` holds these 48 ids.
+- **`lv_disp_get_scr_act` takes the display** (`NULL` = default).
+- Emulator limit: a visible object over the default face makes LVGL redraw the face's rotated images through `sw_rotate`
+  (`sw_transform_config`, LR `0x1014381F`), which ends in a compatibility-ROM API QEMU lacks ("unsupported API
+  0x524f4d"). The probe hides its root; e2e runs that draw LVGL objects need a screen without rotated images,
+  or a face without them.
 
 ## Still unknown
 

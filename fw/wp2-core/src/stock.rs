@@ -76,6 +76,43 @@ pub const LV_STYLE_TEXT_COLOR: u32 = 0x55;
 pub const LV_STYLE_TEXT_FONT: u32 = 0x57;
 pub const LV_STYLE_TEXT_ALIGN: u32 = 0x5B;
 
+// ABI 1.2 widgets, each run in the emulator by scripts/recon/lv_entries.py (docs/recon-lvgl.md "Verified for ABI 1.2").
+// lv_arc_set_range is not in the image: arcs keep the default range 0..100; arc value/min/max are i16.
+pub const LV_BTN_CREATE: u32 = 0x1013D389;
+pub const LV_ARC_CREATE: u32 = 0x1013BA55;
+// (obj, i16): clamps to the range, returns early when unchanged
+pub const LV_ARC_SET_VALUE: u32 = 0x1013C109;
+pub const LV_ARC_GET_VALUE: u32 = 0x1013C2ED;
+// (obj, u16 start, u16 end)
+pub const LV_ARC_SET_BG_ANGLES: u32 = 0x101CCC83;
+pub const LV_ARC_SET_ROTATION: u32 = 0x1013C055;
+pub const LV_BAR_CREATE: u32 = 0x1013CEA1;
+// (obj, i32, anim); slider values go through the bar functions (lv_slider is an lv_bar)
+pub const LV_BAR_SET_VALUE: u32 = 0x1013CEB9;
+pub const LV_BAR_SET_RANGE: u32 = 0x1013D295;
+pub const LV_BAR_GET_VALUE: u32 = 0x1013D079;
+pub const LV_SLIDER_CREATE: u32 = 0x10141EB9;
+pub const LV_ROLLER_CREATE: u32 = 0x10140E01;
+// (obj, options, mode); copies the options
+pub const LV_ROLLER_SET_OPTIONS: u32 = 0x10140E19;
+// (obj, u16, anim)
+pub const LV_ROLLER_SET_SELECTED: u32 = 0x10141045;
+pub const LV_ROLLER_GET_SELECTED: u32 = 0x10141691;
+// also sets the layout to flex
+pub const LV_OBJ_SET_FLEX_FLOW: u32 = 0x10133545;
+// (obj, main, cross, track)
+pub const LV_OBJ_SET_FLEX_ALIGN: u32 = 0x10133595;
+pub const LV_EVENT_GET_TARGET: u32 = 0x101C4C93;
+// (obj, flag) -> bool; the checker of set_knob in lv_entries.py
+pub const LV_OBJ_HAS_FLAG: u32 = 0x101283DD;
+// Ids of the 48 stock lv_obj_set_style_* setters (44 tail-call set_local_style_prop with `movs r1, #id`,
+// 0x101C72CC..0x101C751A; the 4 flex setters load ids that lv_flex_init registers at boot: flow 113, main_place
+// 114, cross_place 115, track_place 116, read in the emulator). 45, 92, 93 are Actions additions. Sorted.
+pub const STYLE_PROPS: [u16; 48] = [
+    1, 4, 6, 7, 8, 9, 10, 11, 16, 17, 18, 19, 20, 21, 22, 32, 33, 34, 40, 45, 48, 50, 53, 54, 55, 70, 71, 72, 80, 81,
+    82, 83, 84, 85, 86, 87, 89, 91, 92, 93, 96, 102, 107, 108, 113, 114, 115, 116,
+];
+
 pub const PWM_DEVICE: u32 = 0x101DF1C0;
 pub const PWM_PIN_SET_CYCLES: u32 = 0x1012197D;
 pub const PWM_OFF: u32 = 0x101214AD;
