@@ -90,8 +90,8 @@ image** (no class descriptor derives from `lv_obj_class`; the class scan covers 
 
 | Item | Value | Confidence | How |
 |---|---|---|---|
-| `lv_obj_set_local_style_prop(obj, prop, value, selector)` | `0x101C6F9A` | high | calls `get_local_style 0x1012B7E8`, `lv_style_set_prop_internal 0x1013B0A4`, `lv_obj_refresh_style 0x1012B908`; 50 setters tail-call it |
-| `lv_obj_get_style_prop(obj, part, prop)` | `0x101C6E06` | medium | dozens of `lv_obj_get_style_*` wrappers call it with constant ids |
+| `lv_obj_set_local_style_prop(obj, prop, value, selector)` | `0x101C6F9A` | high | calls `get_local_style 0x1012B7E8`, `lv_style_set_prop_internal 0x1013B0A4`, `lv_obj_refresh_style 0x1012B908`; 48 setters (44 + 4 flex) tail-call it, see "Verified for ABI 1.2" |
+| `lv_obj_get_style_prop(obj, part, prop)` | `0x101C6E06` | high (emulator, "Verified for ABI 1.2") | dozens of `lv_obj_get_style_*` wrappers call it with constant ids |
 | `lv_obj_set_style_*` present (44 + 4 flex) | `width 0x101C72CC`, `height`, `max_height`, `x`, `y`, `align 0x101C72FE`, `translate_x/y`, `pad_top/bottom/left/right/row/column`, `bg_color 0x101C7358`, `bg_opa 0x101C7378`, `bg_grad_color`, `bg_img_src`, `border_color`, `border_width`, `outline_width/color/opa`, `img_opa`, `img_recolor`, `img_recolor_opa`, `arc_width`, `arc_rounded`, `arc_color 0x101C7470`, `arc_opa`, `arc_img_src`, `text_color 0x101C74A4`, `text_opa`, `text_font 0x101C74CE`, `text_line_space`, `text_align`, `radius 0x101C74EC`, `opa`, `anim_speed`, `layout`, `base_dir`, Actions ids 45, 92, 93; flex `flow 0x10133534`, `main_place 0x10133564`, `cross_place 0x10133574`, `track_place 0x10133584`. Full list with entries: `lvgl_inventory.py` | high | tail calls with `movs r1, #prop` |
 | Missing style setters | anything not in the list (e.g. `min_width`, `shadow_*`, `border_side`, `text_letter_space`, `transform_zoom/angle`, `clip_corner`) — call `lv_obj_set_local_style_prop` with the 8.3 id instead | high | — |
 | `lv_style_init` / `lv_obj_add_style(obj, style, selector)` / `lv_obj_remove_style` | `0x1013A8E4` / `0x1012BB14` / `0x1012BD5C` | high | `__func__` |
@@ -102,7 +102,7 @@ image** (no class descriptor derives from `lv_obj_class`; the class scan covers 
 | Item | Value | Confidence | How |
 |---|---|---|---|
 | `lv_obj_add_event_cb(obj, cb, filter, user_data)` / `lv_obj_remove_event_cb` / `lv_event_send` | `0x10125A94` / `0x10125BD4` / `0x101259C4` | high | `__func__` |
-| `lv_event_get_target`, `_current_target`, `_code`, `_param`, `_user_data` | `0x101C4C92`, `0x101C4C96`, `0x101C4C9A` (`code & 0x7F`), `0x101C4CA2`, `0x101C4CA6` | medium | shape (`ldr r0, [r0, #off]`) and upstream order |
+| `lv_event_get_target`, `_current_target`, `_code`, `_param`, `_user_data` | `0x101C4C92`, `0x101C4C96`, `0x101C4C9A` (`code & 0x7F`), `0x101C4CA2`, `0x101C4CA6` | `_get_target` high (emulator, "Verified for ABI 1.2"), the others medium | shape (`ldr r0, [r0, #off]`) and upstream order |
 | `lv_event_t` | `+0` target, `+4` current_target, `+8` code (u8, bit 7 = PREPROCESS), `+0xC` user_data, `+0x10` param | medium | getters |
 | `lv_event_get_indev` / `lv_event_get_draw_part_dsc` | `0x10125D40` / `0x10125D74` | high | `__func__` |
 | Event codes | upstream 8.3 numbering (`PRESSED 1`, `SHORT_CLICKED 4`, `CLICKED 7`, `RELEASED 8`, `SCROLL_BEGIN 9`, `SCROLL_END 10`, `SCROLL 11`, `VALUE_CHANGED 28`, `DELETE 33`); **`0x2D` (45, upstream `_LV_EVENT_LAST`) = crown event** added by Actions | high for 1, 4, 8, 9–11, 45; medium for the rest | callers (`jx_scroll_bar` uses 9/10/11), indev code, `docs/recon.md` |
@@ -191,6 +191,11 @@ screens build their rows themselves. The reusable pieces are widgets in `applica
 | Popups / confirm | views opened by id through `msgbox_cache_popup(id, udata) 0x100D5E34` (`jx_msgbox_creater.c`), see `docs/recon.md`; not a widget API | medium |
 
 ## What this means for ABI 2
+
+Shipped as the compatible extension ABI 1.2 (`docs/abi-1.2.md`, `docs/specs/2026-11-11-lvgl-apps-design.md`): the app
+keeps its thread and sends command buffers; the loader runs them on `ui_service`. The bullets below are the recon-time
+analysis; where they differ from 1.2 (50 setters, `lv_arc_set_range`, "needs event-driven apps"), 1.2 and "Verified
+for ABI 1.2" win.
 
 - **Widgets available as stock code:** `lv_obj` (with flex and grid layout, scrolling, styles), `lv_label`,
   `lv_btn`, `lv_img`, `lv_arc`, `lv_bar`, `lv_slider`, `lv_roller`, `lv_canvas`, `lv_btnmatrix`, `lv_chart`,
