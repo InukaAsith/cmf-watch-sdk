@@ -88,6 +88,7 @@ pub fn delete() {
 pub fn invalidate() {
     let u = ui();
     if !u.img.is_null() {
+        wp2_core::load::sync_psram(u.fb, FB_BYTES);
         stock!(LV_OBJ_INVALIDATE, fn(Obj))(u.img);
     }
 }
