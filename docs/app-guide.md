@@ -1,6 +1,6 @@
 # Writing apps for the watch
 
-How to build an app for the wp2-apps loader (ABI 1 / 1.1) on the CMF Watch Pro 2, JX402 `1.0.0.73`. Read this
+How to build an app for the wp2-apps loader (ABI 1 / 1.1 / 1.2) on the CMF Watch Pro 2, JX402 `1.0.0.73`. Read this
 before anything else. You should not need `docs/recon*.md`, the plans or agent reports to write an app; file paths
 below point at the code that backs each fact.
 
@@ -686,6 +686,93 @@ Missing today: bitmaps (only `rect`; the icon path is loader-only), touch move, 
 blanks, a random source and a phone-side host. In the kit: rounded arc caps, a scroll bar widget, and a ring that
 repaints only the changed sector.
 
+## 5a. LVGL apps (ABI 1.2)
+
+Instead of drawing with `rect`, an app can build a screen from the watch's own LVGL 8.3 widgets, fonts and
+scrolling. Contract, records and budgets: `docs/abi-1.2.md`; the reference app is `sdk/examples/lv-demo`
+(title, crown-scrolled list with a scroll bar, slider driving an arc, roller).
+
+### LVGL or `cmf-wp2-ui`?
+
+| | LVGL (`cmf_wp2_app::lv`) | pixel (`cmf-wp2-ui`) |
+|---|---|---|
+| Fits | lists, buttons, sliders, rollers, text in the stock fonts, crown scrolling, many static widgets | custom drawing: rings, glows, animation every frame, anything the widgets lack |
+| Costs | each `submit` waits up to one 10 ms UI tick; GUI heap (lv-demo's screen: 7 724 B) | app-side CPU and a full-width write-back per frame (section 2) |
+| Simulator | **not yet** (`lv_submit` returns `-95`) | yes (`scripts/sim`) |
+| Loader | needs 1.2 (`api.lv()` is `None` before) | any |
+
+An app is one or the other: the first submit hides the framebuffer image, so `rect`/`text` are no longer shown.
+
+### A minimal screen
+
+```rust
+use cmf_wp2_app::lv::*;
+use cmf_wp2_app::{Api, BUTTON, LV};
+
+fn main(api: &'static Api) -> i32 {
+    let Some(lv) = api.lv() else { return -95 };       // loader older than 1.2
+    let Some(mut b) = Batch::new() else { return -1 }; // one batch per app, a 2 KiB static
+    // fonts in a batch of their own: a missing file stops the batch
+    if b.font(0, StockFont::F32M).and_then(|_| b.submit(&lv)).is_err() { return 1; }
+    let build = |b: &mut Batch| -> Result<Obj, LvError> {
+        b.style(ROOT, Prop::TextColor, 0, 0xFFFF)?;     // inherited by every label
+        let title = b.create(Class::Label, ROOT)?;
+        b.style(title, Prop::TextFont, 0, 0)?;          // font slot 0
+        b.text(title, "Hello")?;
+        b.align(title, Align::TopMid, 0, 40)?;
+        let btn = b.create(Class::Btn, ROOT)?;
+        b.size(btn, 200, 60)?;
+        b.align(btn, Align::Center, 0, 0)?;
+        b.style(btn, Prop::BgColor, 0, 0x198E)?;        // no theme: style it or it is bare
+        b.style(btn, Prop::BgOpa, 0, 255)?;
+        b.style(btn, Prop::Radius, 0, 12)?;
+        b.events(btn, &[Ev::Clicked])?;
+        Ok(btn)
+    };
+    let Ok(btn) = build(&mut b) else { return 2 };
+    if b.submit(&lv).is_err() { return 3; }             // the whole screen: one tick
+    loop {
+        match api.event(u32::MAX) {
+            Some(e) if e.kind == BUTTON => return 0,
+            Some(e) if e.kind == LV && e.x as u16 == btn.0 && e.y == 7 => { /* CLICKED */ }
+            _ => {}
+        }
+    }
+}
+```
+
+This snippet type-checks against the SDK (`cargo check`) but was not run on the emulator. The shape (`Batch` records,
+`submit` once per screen update) is what `lv-demo` does, and that app is e2e-tested; its screen builder
+(`src/screen.rs`) is host-tested: the batch validates against the same checker as the loader and fits 2048 B.
+
+### Rules that cost time
+
+- **One batch per screen update.** Each `submit` blocks until the next UI tick (up to 10 ms). Build a screen, or a
+  group of changes, in one batch; `Batch::submit` empties the buffer, `LvError::Full` means "submit and continue".
+- **Open fonts in their own batch.** `-2` stops a batch at the failed font. Slots: 4. Names: `StockFont`.
+- **No theme.** A widget without styles for its parts is invisible or bare (slider, arc, button). Style the main part
+  and `LV_PART_INDICATOR 0x02_0000` / `KNOB 0x03_0000` / `SELECTED 0x04_0000` through the selector; copy
+  `lv-demo`'s `screen.rs`.
+- **Arcs are 0..100**, `i16` values, no `range`. Bars and sliders take `range`.
+- **Events.** Subscribe with `events`; you get `Event { kind: LV, x: handle, y: LVGL event code, delta: value }`
+  (CLICKED 7, PRESSED 1, RELEASED 8, LONG_PRESSED 5, VALUE_CHANGED 28). `VALUE_CHANGED` coalesces per (handle, code): a
+  drag leaves the latest value, so read `delta` and do not count events.
+- **Crown.** The crown goes to the root (`CROWN ±1`) unless an object is the knob. `knob(list)` makes a scrollable
+  object scroll with the crown; `scroll_bar(list)` adds the round bar. **A roller takes the crown when it is
+  created**: send `knob(...)` after creating it.
+- **A rightward drag across a slider is the stock back gesture** (`BUTTON`). Test sliders with leftward drags.
+- **Budgets.** 192 objects, 4 fonts, 128 B text, 240 B roller options, 2048 B per batch. A bad batch returns `-22` or
+  `-12` and changes nothing; the SDK's handle table is then out of step, so treat it as a bug.
+- **Lifetime.** Exit, crash, force stop and view delete delete the root, every object and the fonts. An app has
+  nothing to free. `BUTTON` still gives it 1 s.
+
+### Testing LVGL apps
+
+Host tests for the screen builder work as for any `Batch` code (`cargo test -p lv-demo`). There is no simulator yet.
+The emulator e2e is `tests/test_lv_e2e.py`: it reads the loader's `LV_STATE` for object coordinates and flags, and
+the GUI heap with `scripts/recon/gui_heap_probe.py`'s walk. Installing a 1.2 loader on a physical watch needs the
+owner's yes.
+
 ## 6. Testing
 
 ### Host unit tests
@@ -782,5 +869,7 @@ battery use with `keep_screen_on` or a polling daemon.
 - [ ] Nothing personal goes over BLE, in either direction, and nothing personal is logged or committed.
 - [ ] Host messages are parsed defensively (magic, version, lengths).
 - [ ] `keep_screen_on(true)` only with a deadline.
+- [ ] LVGL app: every widget part is styled, the screen is one batch, fonts are in their own batch, the crown goes
+      to the right object after a roller, nothing relies on a rightward slider drag.
 - [ ] `icon.svg` present (or the letter fallback is intended), version bumped, host tests pass, the e2e or a manual
       emulator run covers start, input, pause and exit.
