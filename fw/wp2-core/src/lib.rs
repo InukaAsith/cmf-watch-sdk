@@ -8,6 +8,7 @@ pub mod fs;
 pub mod gfx;
 pub mod heap;
 pub mod layout;
+pub mod lvcmd;
 #[cfg(target_os = "none")]
 pub mod load;
 pub mod pkg;
