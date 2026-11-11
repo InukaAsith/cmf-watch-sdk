@@ -35,18 +35,16 @@ mod view {
 
     struct Menu {
         entries: [Option<menu::Entry>; menu::ROWS],
-        count: usize,
-        selected: usize,
-        // (row, x, y) of the press
-        armed: Option<(usize, i32, i32)>,
-        failed: Option<(usize, i32)>,
+        // row of the running (or last) app
+        launched: usize,
+        failed: Option<usize>,
         failed_at: u32,
         // millis() | 1 of a BUTTON for the running app, 0 if none
         button_at: u32,
     }
 
     // Lives in the loader block: zero again on every open of the view.
-    static mut MENU: Menu = Menu { entries: [None; menu::ROWS], count: 0, selected: 0, armed: None, failed: None, failed_at: 0, button_at: 0 };
+    static mut MENU: Menu = Menu { entries: [None; menu::ROWS], launched: 0, failed: None, failed_at: 0, button_at: 0 };
 
     fn st() -> &'static mut Menu {
         unsafe { &mut *addr_of_mut!(MENU) }
@@ -58,12 +56,11 @@ mod view {
         match msg {
             PRELOAD => ui::preload(view_id),
             LAYOUT => {
-                let rc = ui::layout(data, input_cb, tick);
+                let scr = ui::layout(data, input_cb, tick);
                 let m = st();
                 m.entries = menu::scan();
-                m.count = m.entries.iter().flatten().count();
-                redraw();
-                rc
+                menu::lv::build(scr, &m.entries, row_cb);
+                0
             }
             FOCUS | DEFOCUS => {
                 app::DEFOCUSED.store(msg == DEFOCUS, Ordering::Release);
@@ -75,6 +72,7 @@ mod view {
             }
             DELETE => {
                 app::stop_app();
+                menu::lv::delete();
                 ui::delete();
                 0
             }
@@ -82,47 +80,55 @@ mod view {
         }
     }
 
-    fn redraw() {
-        let m = st();
-        menu::draw(&mut ui::canvas(), &m.entries, m.selected, m.failed);
-        ui::DIRTY.store(true, Ordering::Release);
+    fn show_app(on: bool) {
+        ui::show(on);
+        menu::lv::show(!on);
     }
 
-    // data: u32 key code, byte +4 = handled
+    fn fail(row: usize, code: i32) {
+        let m = st();
+        if let Some(prev) = m.failed.replace(row) {
+            restore(prev);
+        }
+        m.failed_at = app::millis();
+        menu::lv::set_row_text(row, &menu::error_text(code));
+    }
+
+    fn restore(row: usize) {
+        if let Some(e) = st().entries[row] {
+            menu::lv::set_row_text(row, &menu::name_text(&e));
+        }
+    }
+
+    // data: u32 key code, byte +4 = handled. In the menu the crown scrolls through LVGL and the button
+    // stays with the stock (it closes the view).
     fn key(data: *mut c_void) {
         let Some(e) = map_key(unsafe { *(data as *const u32) }) else { return };
-        if !app::running() && e.kind != CROWN {
+        if !app::running() {
             return;
         }
         let m = st();
         if e.kind == BUTTON && !app::paused() && m.button_at == 0 {
             m.button_at = app::millis() | 1;
         }
-        crown(e);
+        to_app(e);
         unsafe { *(data as *mut u8).add(4) = 1 };
     }
 
-    // crown or button: to the app (dropped while paused), else the crown moves the menu selection
-    fn crown(e: Event) {
-        if app::running() {
-            if !app::paused() {
-                app::QUEUE.push(e);
-            }
-            return;
-        }
-        let m = st();
-        if e.kind == CROWN && m.count > 0 {
-            m.selected = m.selected.saturating_add_signed(e.delta.into()).min(m.count - 1);
-            redraw();
+    // dropped while paused
+    fn to_app(e: Event) {
+        if app::running() && !app::paused() {
+            app::QUEUE.push(e);
         }
     }
 
+    // the image: only shown while an app runs
     extern "C" fn input_cb(e: *mut c_void) {
         let code = ui::event_code(e);
         if code == ui::KNOB {
             let step = ui::knob_step(e).signum() as i16;
             if step != 0 {
-                crown(Event { kind: CROWN, delta: step, ..Event::default() });
+                to_app(Event { kind: CROWN, delta: step, ..Event::default() });
             }
             return;
         }
@@ -130,36 +136,23 @@ mod view {
             return;
         }
         let (x, y) = ui::touch_point(e);
-        if app::running() {
-            if app::paused() {
-                return;
-            }
-            let kind = if code == ui::PRESSED { TOUCH_DOWN } else { TOUCH_UP };
-            let c = |v: i32| v.clamp(i16::MIN.into(), i16::MAX.into()) as i16;
-            app::QUEUE.push(Event { kind, x: c(x), y: c(y), ..Event::default() });
-            return;
-        }
+        let kind = if code == ui::PRESSED { TOUCH_DOWN } else { TOUCH_UP };
+        let c = |v: i32| v.clamp(i16::MIN.into(), i16::MAX.into()) as i16;
+        to_app(Event { kind, x: c(x), y: c(y), ..Event::default() });
+    }
+
+    // CLICKED on a menu row (LVGL sends none after a scroll drag)
+    extern "C" fn row_cb(e: *mut c_void) {
+        let row = menu::lv::row_of(e);
         let m = st();
-        if code == ui::PRESSED {
-            let row = i16::try_from(y).ok().and_then(menu::hit).map(|r| menu::first(m.selected) + r);
-            m.armed = row.filter(|&r| r < m.count).map(|r| (r, x, y));
-            if let Some((row, ..)) = m.armed {
-                m.selected = row;
-                redraw();
-            }
+        if app::running() {
             return;
         }
-        // the pressed row runs: the release point of a short tap is off (e2e: pressed at y 140, released at y 103);
-        // no launch after a drag (LVGL 8.3 sends SHORT_CLICKED after a drag too when nothing scrolls)
-        let Some((row, px, py)) = m.armed.take() else { return };
-        if !menu::is_tap((px, py), (x, y)) {
-            return;
-        }
-        let Some(entry) = m.entries[row] else { return };
-        if let Err(code) = app::launch(entry.slot) {
-            m.failed = Some((row, code));
-            m.failed_at = app::millis();
-            redraw();
+        let Some(entry) = m.entries.get(row).copied().flatten() else { return };
+        m.launched = row;
+        match app::launch(entry.slot) {
+            Ok(()) => show_app(true),
+            Err(code) => fail(row, code),
         }
     }
 
@@ -168,24 +161,22 @@ mod view {
         app::pause_tick();
         motor::watchdog();
         if app::running() {
-            if let Some(code) = app::exited() {
+            let exited = app::exited();
+            let escape = m.button_at != 0 && app::millis().wrapping_sub(m.button_at) >= ESCAPE_MS;
+            if exited.is_some() || escape {
                 app::stop_app();
-                if code != 0 {
-                    m.failed = Some((m.selected, code));
-                    m.failed_at = app::millis();
+                show_app(false);
+                if let Some(code) = exited.filter(|&c| c != 0) {
+                    fail(m.launched, code);
                 }
-                redraw();
-            } else if m.button_at != 0 && app::millis().wrapping_sub(m.button_at) >= ESCAPE_MS {
-                app::stop_app();
-                redraw();
             }
         }
         if !app::running() {
             m.button_at = 0;
         }
-        if m.failed.is_some() && app::millis().wrapping_sub(m.failed_at) >= ERROR_MS {
+        if let Some(row) = m.failed.filter(|_| app::millis().wrapping_sub(m.failed_at) >= ERROR_MS) {
             m.failed = None;
-            redraw();
+            restore(row);
         }
         if ui::DIRTY.swap(false, Ordering::AcqRel) {
             ui::invalidate();

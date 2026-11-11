@@ -144,7 +144,9 @@ class Emu:
         cmf = paths.cmf_watch_utils()
         self.inputs.mkdir(parents=True)
         (self.inputs / "in-nor.bin").write_bytes(self.nor)
-        argv = ["uv", "run", "--locked", "cmf-watch-utils", "emu", "run", "--headless", "--allow-reboot",
+        # WP2_GUI=1: live window (needs Tk 8.6 wish, nix-shell -p tk)
+        view = [] if os.environ.get("WP2_GUI") else ["--headless"]
+        argv = ["uv", "run", "--locked", "cmf-watch-utils", "emu", "run", *view, "--allow-reboot",
                 "--fixtures", str(self.fixtures), "--qemu", str(fast_qemu(self.inputs)), "--rom", str(cmf / "runtime/compat.bin"),
                 "--nor", str(self.inputs / "in-nor.bin"), "--qmp-port", str(self.qmp_port),
                 "--seconds", str(self.seconds), "--output", str(self.run)]
@@ -373,7 +375,7 @@ def open_menu(emu: Emu):
 
 def open_app(emu: Emu, row: int, pause: float = 2):
     open_menu(emu)
-    y = 140 + 60 * row  # menu rows: wp2-loader menu.rs
+    y = 180 + 128 * row  # menu row centres: wp2-loader menu.rs
     emu.send(f"t 1 200 {y}", f"t 0 200 {y}", pause=pause)
     if emu.peek(STUB_RAM + 6, 1) == b"\xff":  # running_slot
         raise RuntimeError(f"app in row {row} did not start")
