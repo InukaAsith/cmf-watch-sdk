@@ -211,6 +211,7 @@ def parser():
     where = herdr.add_mutually_exclusive_group(required=True)
     where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
     where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
+    where.add_argument("--sim", type=int, metavar="PORT", help="app in the host simulator (scripts/sim --tcp PORT)")
     herdr.add_argument("--herdr", default="herdr", help="herdr executable")
     herdr.add_argument("--period", type=float, default=1.0, help="seconds between `herdr agent list` polls")
     herdr.add_argument("-v", "--verbose", action="store_true", help="log what is sent, titles included")

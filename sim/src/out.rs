@@ -24,6 +24,8 @@ pub fn png(path: &Path, px: &[u16]) -> std::io::Result<()> {
     let mut enc = png::Encoder::new(BufWriter::new(fs::File::create(path)?), W as u32, H as u32);
     enc.set_color(png::ColorType::Rgb);
     enc.set_depth(png::BitDepth::Eight);
+    // unfiltered rows: tests read the pixels with zlib alone
+    enc.set_filter(png::Filter::NoFilter);
     enc.write_header()?.write_image_data(&data)?;
     Ok(())
 }

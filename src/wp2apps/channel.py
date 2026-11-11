@@ -173,3 +173,56 @@ def text(data: bytes) -> str | None:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+class SimChannel:
+    """Channel to an app in the host simulator (`scripts/sim <app> --tcp PORT`): hex lines over TCP, same send, recv,
+    slot, poll and key as Channel. The simulator queues what does not fit the inbox, so send never retries."""
+
+    def __init__(self, port: int, host: str = "127.0.0.1", slot: int = ANY):
+        self.port, self.host, self.slot, self.poll = port, host, slot, 0.25
+        self.key = None
+        self._io = None
+        self._seq = 0
+
+    async def connect(self):
+        while self._io is None:
+            try:
+                self._io = await asyncio.open_connection(self.host, self.port)
+                self.key = f"sim:{self.port}"
+            except OSError:
+                await asyncio.sleep(0.2)
+        return self._io
+
+    async def drop(self):
+        io, self._io = self._io, None
+        if io:
+            io[1].close()
+
+    close = drop
+
+    async def __aenter__(self):
+        await self.connect()
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.drop()
+
+    async def send(self, data: bytes, timeout: float = 10.0) -> None:
+        if not 1 <= len(data) <= MSG_MAX:
+            raise ValueError(f"message must be 1..{MSG_MAX} bytes, got {len(data)}")
+        async with asyncio.timeout(timeout):
+            _, w = await self.connect()
+            w.write(data.hex().encode() + b"\n")
+            await w.drain()
+
+    async def recv(self, timeout: float | None = None) -> Message:
+        async with asyncio.timeout(timeout):
+            while True:
+                r, _ = await self.connect()
+                line = await r.readline()
+                if not line:
+                    await self.drop()
+                    continue
+                self._seq = (self._seq + 1) & 0xFF
+                return Message(self._seq, 0, bytes.fromhex(line.decode().strip()))

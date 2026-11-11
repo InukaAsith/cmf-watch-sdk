@@ -196,12 +196,16 @@ class Daemon:
 
 def main(args) -> int:
     from .cli import cache_key, cached_key
-    target = f"ble:{args.address}" if args.address else f"hci:{args.hci_port}"
-    ch = channel.Channel(address=args.address, hci_port=args.hci_port)
-    ch.key = cached_key(target)  # resume the bound session: a new bind shows a popup that ends the running app
-    daemon = Daemon(ch, herdr=args.herdr, period=args.period, verbose=args.verbose,
-                    on_key=lambda key: cache_key(target, key))
-    daemon.log("connecting" + (" (cached session)" if ch.key else " (no cached session: binds, open the app after)"))
+    if getattr(args, "sim", None):
+        ch, on_key = channel.SimChannel(args.sim), None
+    else:
+        target = f"ble:{args.address}" if args.address else f"hci:{args.hci_port}"
+        ch = channel.Channel(address=args.address, hci_port=args.hci_port)
+        ch.key = cached_key(target)  # resume the bound session: a new bind shows a popup that ends the running app
+        on_key = lambda key: cache_key(target, key)  # noqa: E731
+    daemon = Daemon(ch, herdr=args.herdr, period=args.period, verbose=args.verbose, on_key=on_key)
+    daemon.log("connecting" + ("" if on_key is None else " (cached session)" if ch.key
+                               else " (no cached session: binds, open the app after)"))
     try:
         asyncio.run(daemon.run())
     except KeyboardInterrupt:
