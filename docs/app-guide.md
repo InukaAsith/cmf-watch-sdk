@@ -563,30 +563,126 @@ as `wp2apps herdr` does.
   of ours holds it). Turning the Mac's Bluetooth off and on frees it.
 - `install`, `list` and `remove` always bind (popup). Do not run them while an app that talks to a daemon is open.
 
-## 5. Reusable code today
+## 5. UI kit: `cmf-wp2-ui`
 
-There is no shared UI kit. Copy from the examples; each file below is self-contained and host-tested.
+`sdk/cmf-wp2-ui` is the shared drawing, layout, text, widget, haptic and motion code. `no_std`, no heap, no floats
+(the target has no FPU). Add `cmf-wp2-ui = { path = "../../cmf-wp2-ui" }`; `sdk/examples/ui-gallery` shows every
+piece, one page each, and `herdr-agents` and `agent-glow` are built on it.
 
-| Need | Where | What it is |
+### Surface
+
+Everything draws through `Surface { fn rect(x, y, w, h, rgb565); fn text(x, y, &str, rgb565) }` (i32 coordinates,
+`w`/`h` <= 0 draws nothing). It is implemented for `&Api` (`let mut screen = api; draw(&mut screen)`), for `Fb` (a
+466×466 host framebuffer over a `&mut [u16]` with the loader's own clipping and font, so host tests see the watch's
+pixels and count rects) and for `Count` (counts rects and pixels, draws nothing). The simulator runs the same code
+through `&Api`. Constants: `SIZE` 466, `C` 233 (centre and radius), `CHAR` 16, `ONE` 1024 (fixed-point one).
+
+### Drawing (`draw`)
+
+Every shape writes each pixel once per call (no flicker), merges same-colour neighbours on a row into one `rect`
+(`Run`) and blends its edge with a background colour you pass (the app only has opaque rects, so it must know what
+lies under an edge). Rect counts below are for the sizes given; frame cost on the watch is about 1.8 µs per rect plus
+compute (agent-glow numbers).
+
+| Call | What | Rects |
 |---|---|---|
-| Round-screen row layout | `herdr-agents/src/model.rs`: `row_geometry`, `row_at`, `max_scroll`, `isqrt`, `LIST_TOP`, `ROW_H`, `ROWS` | rows that fit the circle, chars per row, tap → row index, crown scroll by one row |
-| List screen | `herdr-agents/src/main.rs`: `Ui::draw`, `text_clipped`, `ellipsis`, `number`, `dot` | header counts, clipped rows with an ellipsis, "+N more", a 1/4-px AA status disc, row flash on tap |
-| UTF-8 cutting | `herdr-agents/src/model.rs`: `fit` (by bytes, on a char boundary), `clip` (by chars, reports a cut) | |
-| Haptic patterns | `herdr-agents/src/model.rs`: `Player`, `BLOCKED_PATTERN`, `DONE_PATTERN` | non-blocking `(duty, ms)` steps driven by `tick(now)` / `wait(now)` from the event loop |
-| Storage snapshot | `herdr-agents/src/model.rs`: `Model::save`, `Model::load` | versioned blob, garbage loads nothing |
-| Snapshot/delta protocol | `herdr-agents/src/model.rs`: `decode`, `Model::apply`, `Effect` | seq gaps, resync, buzz decisions |
-| AA shapes | `agent-glow/src/glow.rs`: `radial` (concentric bands: discs, rings, gradients with blended edges), `bar` (AA stroke at an angle), `Run` (merges same-colour pixels into one `rect`) | the `Sink` trait abstracts `rect`, so tests draw into a host framebuffer |
-| Fixed-point maths | `agent-glow/src/glow.rs`: `sin`, `cos` (Q14, 1/65536 turn), `angle` (atan2), `isqrt`, `wave`, `ease_out`, `spring`, `hue`, `Rgb` | |
-| Dirty redraw | `agent-glow/src/glow.rs`: `App::frame`, `App::redraw` | repaints only what moved; tests check incremental == full redraw |
-| Frame loop with haptic tick | `agent-glow/src/main.rs` | 33 ms frames, motor off at a deadline, PAUSE/RESUME, `STATS` for e2e |
-| Settings screen | `vibration-lab/src/main.rs`, `lab.rs` | rows selected by tap, values changed by the crown, a stepped vibration `Player` with pause |
-| Every 1.1 call | `api-demo/src/main.rs` | time, battery, counter in storage, `keep_screen_on`, echo, send retry on `-11` |
-| Text into a buffer | `Line` (`vibration-lab/src/main.rs`), `Buf<N>` (`api-demo/src/main.rs`) | `core::fmt::Write` without a heap |
+| `disc(s, cx, cy, r, c, bg)` | AA filled circle | r 20: 143, r 8: 51 |
+| `ring(s, cx, cy, r0, r1, c, bg)` | AA ring, hole untouched | r 24..36: 432 |
+| `arc(s, cx, cy, r0, r1, start, sweep, on, off, bg)` | AA ring segment, clockwise from `start` (u16 turns, 0 = 3 o'clock, 49152 = 12) over `sweep` (65536 = full); `off: Some(c)` paints the rest of the ring in the same pass (a track) | r 130..150: ~2.1 k |
+| `line(s, x0, y0, x1, y1, w, c, bg)` | AA line, butt ends | ~2 per px of length (200 px, w 5: 432) |
+| `stroke(s, ox, oy, ux, uy, r0, r1, w, old, shade, bg)` | AA stroke along a Q14 unit vector, colour by distance; `old` erases the part of the previous stroke it no longer covers, in the same pass | as `line` |
+| `rrect(s, x, y, w, h, r, c, bg)` | AA rounded rect, `r = h / 2` is a pill; the straight middle is one rect | 120×40 pill: 136 |
+| `gradient(s, x, y, w, h, from, to, vert)` | linear gradient, one rect per distinct 565 colour | one per colour step (246 px wide: 95) |
+| `radial(s, cx, cy, bands, clear, under)`, `radial_n::<N>(...)` | concentric `Band { r, paint, soft }`: `Solid`, `Skip` (shows `under`), `Keep` (already on screen, only its edge is blended) or `Conic` (colour by angle from a 256-entry table, for spinners and glows); `soft` 0 hard, 1 AA, `GRAD` a gradient into the next band | agent-glow's orb: ~6 k. Stack: `radial` takes ~2.5 KB (24 bands), `radial_n::<N>` ~100 B per band; `disc`/`ring` use 1–2 |
 
-Missing today: bitmaps (only `rect`; the icon path is loader-only), font sizes and text measuring, touch move,
-gestures and long press, any sensor (accelerometer, heart rate and GPS were looked at and not shipped,
-`docs/abi-1.1.md`), a notice before the screen blanks, a random source, a phone-side host, and a shared crate for
-the pieces above.
+Colours (`color`): `Rgb(r, g, b)` with `rgb565()` (rounded), `from565` (exact round trip), `scale(k)`, `mix(o, t)`;
+`rgb565(r, g, b)` is `const`; `blend565`, `dim565` work on 565 values.
+
+### Round screen (`geom`)
+
+`chord(y0, y1, margin) -> (x0, x1)`: the span visible on every row of `[y0, y1)`; `text_box(y, margin) -> (x, chars)`
+for a text line; `half(y)`, `inside(x, y)`, `centred(cx, w)`, `polar(r, angle)`.
+
+### Text (`text`)
+
+`fit(bytes, max)` (longest valid UTF-8 prefix by bytes), `clip(s, chars) -> (&str, cut)`, `chars`, `width`,
+`fitted(s, x, y, text, cells, c)` (cuts with a drawn ellipsis in the last cell), `centre(s, cx, y, text, c)`,
+`wrap(text, cells, &mut [&str; N]) -> lines` (greedy by words, `\n` breaks, the last slot gets the rest so `fitted`
+ends it with an ellipsis; call it with two slots per line to give each line of a round screen its own width, as
+ui-gallery's text page does), `int(n, &mut [u8; 11]) -> &str`, `big(s, x, y, text, scale, c)` (the loader's font at
+`scale` px per font pixel, Cyrillic included; `scale` 2 equals `text`; "12:30" at 6: 36 rects).
+
+### Widgets (`widget`)
+
+Widgets own no event loop: the app passes crown deltas, `TOUCH_DOWN` points (its `y` is the reliable one) and
+`now`; widgets return what happened and `draw` repaints only what changed, returning `true` when it drew (then
+`show`). `invalidate()` forces a repaint (after `RESUME`).
+
+- `List::new(top, row_h, rows, margin)`: `set_len`, `crown(delta) -> moved`, `hit(y) -> Option<item>`, `row(r) ->
+  Row { y, h, x0, x1 }` (follows the round edge; `cells(x)` chars that fit), `more()`, `invalidate(item)`,
+  `draw(s, bg, |s, item, row| ...)` repaints dirty rows only, each cleared over its chord first.
+- `Label<N>::new(cx, y, scale, fg, bg)`: centred text or a number (`set`, `set_int`, `set_colour`), clipped to the
+  circle with an ellipsis; clears only what it drew last. Use it for headers, titles and big numbers.
+- `ProgressRing::new(cx, cy, r0, r1, on, off, bg)`: `set(0..=ONE)` from 12 o'clock; redraws the whole ring on change.
+- `Toggle::new(x, y, w, h, on, off, bg)`: pill and knob, `tap(x, y, now) -> Option<new state>`, slides 150 ms;
+  `jump(on)` sets it without the slide; `animating(now)`.
+- `Button::new(x, y, w, h, label, colour, bg)`: `tap(x, y, now) -> hit`, pressed look for 150 ms, `wait(now)`.
+- `page_dots(s, y, pages, current, on, off)`.
+
+### Haptics (`haptic`)
+
+`Pattern::new(&[(duty ‰, ms), ..., (0, 0)])` is checked at compile time in a `const`: it must end with the motor off
+and no on-stretch may reach 1500 ms (the loader cuts at 2000). Ready: `TICK` (tap feedback, 250 ‰ 20 ms), `DOUBLE`,
+`ALERT` (3 × 110 ms full), `DONE` (650 ‰ 220 ms). `Player` is pure (`start(p, now)`, `poll(now) -> Option<duty>`,
+`wait(now)`, `stop() -> Some(0) if the motor may be on`); `Motor::new(api)` drives the watch at 31 Hz: `play(p)`,
+`update()` every loop turn, `wait()` to cap the event timeout, `off()` on `PAUSE`; it also turns the motor off when
+dropped (when `main` returns) and clears a `-4` lock.
+
+### Motion (`motion`)
+
+`sin`/`cos` (u16 turns → Q14), `angle(dx, dy)` (atan2, 1/256 turn), `isqrt`, `wave(t, period)` (0 → ONE → 0),
+`lerp`, easings over `0..=ONE`: `linear`, `ease_in`, `ease_out`, `ease_in_out` (cubic), `spring`.
+`Tween { from, to, start, ms, ease }`: `Tween::at(v)`, `go(to, now, ms)` (restarts from the current value, no
+jump), `value(now)`, `done(now)`; wrapping-safe millis.
+
+### A loop with the kit
+
+```rust
+let mut screen = api;
+let mut motor = Motor::new(api);
+let mut list = List::new(100, 56, 5, 10);
+list.set_len(ITEMS.len());
+loop {
+    motor.update();
+    if list.draw(&mut screen, 0, |s, i, row| { fitted(s, row.x0, row.y + 20, ITEMS[i], row.cells(row.x0), 0xFFFF); }) {
+        api.show();
+    }
+    let wait = motor.wait().unwrap_or(1000);
+    match api.event(wait) {
+        Some(e) if e.kind == BUTTON => break,
+        Some(e) if e.kind == CROWN => { list.crown(e.delta); }
+        Some(e) if e.kind == TOUCH_DOWN && list.hit(e.y as i32).is_some() => motor.play(haptic::TICK),
+        Some(e) if e.kind == PAUSE => motor.off(), // then wait for RESUME and list.invalidate_all()
+        _ => {}
+    }
+}
+```
+
+### Still in the examples
+
+| Need | Where |
+|---|---|
+| Storage snapshot (versioned blob, garbage loads nothing) | `herdr-agents/src/model.rs`: `Model::save`, `Model::load` |
+| Snapshot/delta protocol with seq gaps and resync | `herdr-agents/src/model.rs`: `decode`, `Model::apply`, `Effect` |
+| Frame loop at 33 ms with `STATS` for the e2e | `agent-glow/src/main.rs`, `ui-gallery/src/main.rs` |
+| Settings screen: tap selects, crown changes | `vibration-lab/src/main.rs`, `lab.rs` |
+| Every 1.1 call | `api-demo/src/main.rs` |
+| Text into a buffer with `core::fmt::Write` | `Buf<N>` in `api-demo/src/main.rs` |
+
+Missing today: bitmaps (only `rect`; the icon path is loader-only), touch move, gestures and long press, any sensor
+(accelerometer, heart rate and GPS were looked at and not shipped, `docs/abi-1.1.md`), a notice before the screen
+blanks, a random source and a phone-side host. In the kit: rounded arc caps, a scroll bar widget, and a ring that
+repaints only the changed sector.
 
 ## 6. Testing
 
@@ -594,8 +690,9 @@ the pieces above.
 
 Put logic that does not need `Api` (protocol, model, layout, maths, patterns) in a module and test it with
 `#[cfg(test)]` on the Mac: `(cd sdk && cargo test -p <name> --target aarch64-apple-darwin)`. For drawing, write
-against a trait like agent-glow's `Sink { fn rect(...) }` and test with a framebuffer in a `Vec<u16>`
-(`agent-glow/src/glow.rs` tests). Before a commit run the three suites from AGENTS.md.
+against `cmf_wp2_ui::Surface` and test with `cmf_wp2_ui::Fb` over a `Vec<u16>`: same pixels as the watch, and
+`fb.rects` counts the cost (`herdr-agents/src/view.rs` tests check that partial redraws end on a full redraw's
+image). Before a commit run the three suites from AGENTS.md.
 
 ### Simulator
 
