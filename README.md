@@ -84,7 +84,7 @@ Nothing gets written to a physical watch without the owner's approval.
 ## Limits
 
 - The patched firmware plays stock vibrations (notifications, calls, boot) at 35 % of their strength.
-  Change `SYSTEM_DUTY_PERMILLE` in `fw/wp2-core/src/pwm.rs` and rebuild with `make fw`.
+  `wp2apps firmware --motor PERMILLE` sets another share, `--motor 1000` leaves them stock.
 - Packages live in `/NAND:/wp2apps` on the stock FAT volume.
 - Addresses are valid for JX402 `1.0.0.73` only. Other builds need them re-derived.
 

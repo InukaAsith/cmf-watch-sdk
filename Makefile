@@ -10,10 +10,11 @@ VERSION ?= 1
 HCI_PORT ?=
 CLI := uv run --locked wp2apps
 
-.PHONY: help fw apps nor emu test e2e install list remove clean
+.PHONY: help fw fw-motor apps nor emu test e2e install list remove clean
 
 help:
 	@echo 'fw          stub firmware and loader: target/app-wp2.bin, target/loader.wp2app'
+	@echo 'fw-motor    stock firmware image with only the motor patch: target/fw-motor.bin (MOTOR=350)'
 	@echo 'apps        all example apps, or one with app-<name> (VERSION=$(VERSION))'
 	@echo 'nor         $(NOR) from $(STOCK_NOR) with the patched app.bin'
 	@echo 'emu         boot $(NOR) in the emulator, extra args in EMU_ARGS'
@@ -26,6 +27,11 @@ help:
 
 fw:
 	nix-shell -p llvm --run 'scripts/build-fw'
+
+fw-motor:
+	rm -f target/app-motor.bin target/fw-motor.bin
+	$(CLI) firmware --motor-only --motor $(or $(MOTOR),350) --output target/app-motor.bin
+	$(CLI) ota-image --app target/app-motor.bin --output target/fw-motor.bin
 
 app-%:
 	nix-shell -p llvm --run 'scripts/build-app $* $(VERSION)'

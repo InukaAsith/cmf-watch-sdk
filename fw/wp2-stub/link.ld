@@ -1,7 +1,6 @@
 MEMORY { FLASH (rx) : ORIGIN = 0x1025A080, LENGTH = 0x3000 }
 
 PROVIDE(stock_heap_init = 0x10146AA5);
-PROVIDE(stock_motor = 0x100FB4B5);
 ENTRY(wp2_boot)
 
 SECTIONS

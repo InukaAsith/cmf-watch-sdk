@@ -3,8 +3,10 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import sys
+import tempfile
 import zlib
 
 from bleak.exc import BleakError
@@ -34,9 +36,36 @@ def cmd_info(args):
 
 
 def cmd_firmware(args):
+    if args.motor_only and args.stub:
+        raise ValueError("--motor-only takes no --stub")
     stub = args.stub.read_bytes() if args.stub else None
+    motor = None if args.motor == 1000 else args.motor
+    data = firmware.patch(paths.stock_app(), stub, motor=motor, reserve=not args.motor_only)
     with args.output.open("xb") as out:
-        out.write(firmware.patch(paths.stock_app(), stub))
+        out.write(data)
+
+
+def cmd_ota_image(args):
+    stock, app = paths.stock_app(), args.app.read_bytes()
+    if len(app) != len(stock):
+        raise ValueError("fwkit edit-app patches in place: build the app.bin with `firmware --motor-only`")
+    firmware.check_acth(app)
+    ranges = firmware.changed_ranges(stock, app)
+    if not ranges:
+        raise ValueError("the app.bin is stock")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = paths.firmware()
+        for n, (a, b) in enumerate(ranges):
+            dst = Path(tmp) / f"step{n}.bin"
+            paths.fwkit("edit-app", src, hex(firmware.APP_VBASE + a), app[a:b].hex(), dst)
+            src = dst
+        if paths.app_from(src) != app:
+            raise ValueError("the rebuilt image does not carry this app.bin")
+        print(paths.fwkit("verify", src).strip())
+        with args.output.open("xb") as out, src.open("rb") as built:
+            shutil.copyfileobj(built, out)
+    for a, b in ranges:
+        print(f"app.bin {firmware.APP_VBASE + a:#x}..{firmware.APP_VBASE + b:#x}: {b - a} byte(s)")
 
 
 def cmd_nor(args):
@@ -173,10 +202,18 @@ def parser():
     info = commands.add_parser("info", help="Validate a package and print its header")
     info.add_argument("package", type=Path)
     info.set_defaults(handler=cmd_info)
-    fw = commands.add_parser("firmware", help="Patch the stock app.bin (heap reservation, stub)")
+    fw = commands.add_parser("firmware", help="Patch the stock app.bin (heap reservation, stub, motor strength)")
     fw.add_argument("--stub", type=Path)
+    fw.add_argument("--motor", type=int, default=350, metavar="PERMILLE",
+                    help="stock vibrations at this share of their strength (default 350; 1000 leaves them stock)")
+    fw.add_argument("--motor-only", action="store_true",
+                    help="only the motor patch: no heap reservation, no stub, stock app.bin size")
     fw.add_argument("--output", type=Path, required=True)
     fw.set_defaults(handler=cmd_firmware)
+    ota = commands.add_parser("ota-image", help="Full stock firmware image carrying a --motor-only app.bin")
+    ota.add_argument("--app", type=Path, required=True)
+    ota.add_argument("--output", type=Path, required=True)
+    ota.set_defaults(handler=cmd_ota_image)
     nor = commands.add_parser("nor", help="Put a patched app.bin into a NOR image")
     nor.add_argument("nor", type=Path)
     nor.add_argument("--app", type=Path, required=True)

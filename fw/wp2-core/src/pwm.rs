@@ -16,12 +16,6 @@ pub fn pwm_params(freq_hz: u16) -> Option<(u32, u16)> {
     Some((0x200 | n, (HOSC / ((n + 1) * f)) as u16))
 }
 
-// stock vibrations (notifications, calls, boot) go through the stub at this share of their strength:
-// stock drives 255/255 or 250/255 at ~31 Hz, 350 makes that 89 or 87, the vibration lab's 35 % at 31 Hz
-pub const SYSTEM_DUTY_PERMILLE: u32 = 350;
-// pulse * SYSTEM_SCALE_Q10 >> 10, so the stub's hook needs no division
-pub const SYSTEM_SCALE_Q10: u32 = (SYSTEM_DUTY_PERMILLE * 1024 + 500) / 1000;
-
 pub const CAP_MS: u32 = 2000;
 // the watchdog runs every 20 ms and trips one step early, so a run ends by CAP_MS
 const TRIP_MS: u32 = CAP_MS - 20;
@@ -77,15 +71,6 @@ mod tests {
         assert_eq!(pwm_params(20001), None);
         assert_eq!(pulse(252, 500), 126);
         assert_eq!(pulse(255, 1000), 255);
-    }
-
-    #[test]
-    fn system_scale_matches_permille() {
-        for p in 0..=255u32 {
-            assert!(((p * SYSTEM_SCALE_Q10) >> 10).abs_diff(p * SYSTEM_DUTY_PERMILLE / 1000) <= 1, "pulse {p}");
-        }
-        assert_eq!((255 * SYSTEM_SCALE_Q10) >> 10, 89); // stock level 0, boot, SETMOTOR
-        assert_eq!((250 * SYSTEM_SCALE_Q10) >> 10, 87); // stock level 1
     }
 
     #[test]
