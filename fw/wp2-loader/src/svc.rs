@@ -220,3 +220,8 @@ pub extern "C" fn keep_screen_on(on: bool) -> i32 {
     KEEP_ON.store(on, Ordering::Relaxed);
     0
 }
+
+/// ABI 1.2 placeholder until the executor lands: the table still says 1.1, so no SDK reads it.
+pub extern "C" fn lv_submit(_: *const u8, _: usize) -> i32 {
+    -95
+}

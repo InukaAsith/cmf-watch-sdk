@@ -534,30 +534,53 @@ mod tests {
         assert!(STYLE_PROPS.windows(2).all(|w| w[0] < w[1]));
     }
 
+    /// The SDK's encoder wrote this file (`cmf_wp2_app::lv` test `golden_batch_bytes`): one record of every op.
+    const GOLDEN: &[u8] = include_bytes!("../../../tests/fixtures/lvcmd-golden.bin");
+
     #[test]
     fn golden_batch_decodes() {
-        let buf = [
-            create(1, 1, 0),
-            font(0, 7),
-            style(1, TEXT_FONT, 0),
-            text(1, "Привет".as_bytes()),
-            align(1, 9),
-            events(1, 2),
-        ]
-        .concat();
-        let got: Vec<_> = records(&buf).collect::<Result<_, _>>().unwrap();
+        let got: Vec<_> = records(GOLDEN).collect::<Result<_, _>>().unwrap();
+        let ru = "Привет".as_bytes();
         assert_eq!(
             got,
             [
+                // the spec's example batch
                 Rec::Create { h: 1, class: Class::Label, parent: 0 },
                 Rec::Font { slot: 0, font: 7 },
                 Rec::Style { h: 1, prop: TEXT_FONT, sel: 0, value: 0 },
-                Rec::Text { h: 1, s: "Привет".as_bytes() },
+                Rec::Text { h: 1, s: ru },
                 Rec::Align { h: 1, align: 9, x: 0, y: 0 },
                 Rec::Events { h: 1, mask: 2 },
+                // every other class and op, payload offsets pinned by distinct values
+                Rec::Create { h: 2, class: Class::Obj, parent: 0 },
+                Rec::Create { h: 3, class: Class::Btn, parent: 2 },
+                Rec::Create { h: 4, class: Class::Arc, parent: 2 },
+                Rec::Create { h: 5, class: Class::Bar, parent: 2 },
+                Rec::Create { h: 6, class: Class::Slider, parent: 2 },
+                Rec::Create { h: 7, class: Class::Roller, parent: 2 },
+                Rec::Size { h: 2, w: 0x2000_0064, hh: 0x2000_07D1 },
+                Rec::Flags { h: 2, set: 1 << 4, clear: 1 },
+                Rec::Value { h: 4, v: -5, anim: true },
+                Rec::Range { h: 5, min: 0, max: 100 },
+                Rec::Options { h: 7, mode: 1, s: b"a\nb\nc" },
+                Rec::Flex { h: 2, flow: 1, main: 2, cross: 2, track: 0 },
+                Rec::ScrollBar { h: 8, target: 2 },
+                Rec::Knob(2),
+                Rec::Angles { h: 4, start: 135, end: 45, rot: 10 },
+                Rec::Create { h: 9, class: Class::Obj, parent: 0 },
+                Rec::Del(9),
             ]
         );
-        assert_eq!(validate(&buf, &Table::new(), 0), Ok(()));
+        assert_eq!(validate(GOLDEN, &Table::new(), 0), Ok(()));
+    }
+
+    #[test]
+    fn sdk_props_are_the_stock_setters() {
+        use cmf_wp2_app::lv::Prop;
+        let mut ids: Vec<u16> = Prop::ALL.iter().map(|&p| p as u16).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, STYLE_PROPS);
+        assert_eq!(Prop::TextFont as u32, LV_STYLE_TEXT_FONT);
     }
 
     #[test]

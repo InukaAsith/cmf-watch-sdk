@@ -2,8 +2,10 @@
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+pub mod lv;
+
 pub const ABI: u16 = 1;
-pub const ABI_MINOR: u16 = 1;
+pub const ABI_MINOR: u16 = 2;
 /// The package header's `abi_minor`: `wp2apps pack` reads this symbol from the ELF.
 #[unsafe(no_mangle)]
 pub static WP2_ABI_MINOR: u16 = ABI_MINOR;
@@ -16,6 +18,9 @@ pub const PAUSE: u8 = 5;
 pub const RESUME: u8 = 6;
 /// ABI 1.1: a host message is in the inbox, `x` = its length; read it with [`Api::recv`].
 pub const MESSAGE: u8 = 7;
+/// ABI 1.2: an LVGL object event. `x` = the object's handle, `y` = the LVGL event code, `delta` = the value
+/// (slider, arc, bar, roller); see [`lv`].
+pub const LV: u8 = 8;
 
 /// Longest message in either direction.
 pub const MSG_MAX: usize = 128;
@@ -55,6 +60,8 @@ pub struct Api {
     pub get_time: extern "C" fn(out: *mut Time) -> i32,
     pub get_battery: extern "C" fn() -> i32,
     pub screen_on: extern "C" fn(on: bool) -> i32,
+    // ABI 1.2 (docs/specs/2026-11-11-lvgl-apps-design.md): never read when `abi_minor < 2`
+    pub lv_submit: extern "C" fn(buf: *const u8, len: usize) -> i32,
 }
 
 /// Local wall-clock time as the watch shows it. `weekday` 0 = Sunday; `utc_offset_min` as set by the phone app.
@@ -148,6 +155,11 @@ impl Api {
             full: b & 0x200 != 0,
             charger: b & 0x400 != 0,
         })
+    }
+
+    /// The LVGL command channel, `None` on a loader older than 1.2 (the table has no `lv_submit` then).
+    pub fn lv(&self) -> Option<lv::Lv> {
+        (self.abi_minor >= 2).then(|| lv::Lv(self.lv_submit))
     }
 
     /// Keeps the display on while this app runs in the foreground; the loader drops it on pause and exit.
@@ -287,11 +299,11 @@ mod tests {
         0
     }
 
-    fn table(abi: u16, abi_minor: u16) -> &'static Api {
+    pub(crate) fn table(abi: u16, abi_minor: u16) -> &'static Api {
         Box::leak(Box::new(Api {
             abi, abi_minor, width: 466, height: 466, fill_rect: rect, draw_text: text, present,
             next_event: next, motor, millis, exit, send_msg: bytes, recv_msg: bytes_mut, load_data: bytes_mut,
-            save_data: bytes, get_time: time, get_battery: battery, screen_on: screen,
+            save_data: bytes, get_time: time, get_battery: battery, screen_on: screen, lv_submit: bytes,
         }))
     }
 

@@ -792,6 +792,11 @@ extern "C" fn screen_on(on: bool) -> i32 {
     call(|s| s.screen_on(on))
 }
 
+/// ABI 1.2: LVGL apps are not simulated (a later plan).
+extern "C" fn lv_submit(_: *const u8, _: usize) -> i32 {
+    -95
+}
+
 static API: Api = Api {
     abi: ABI,
     abi_minor: ABI_MINOR,
@@ -811,6 +816,7 @@ static API: Api = Api {
     get_time,
     get_battery,
     screen_on,
+    lv_submit,
 };
 
 fn app_name() -> String {
