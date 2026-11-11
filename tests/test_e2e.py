@@ -382,7 +382,7 @@ class LoaderTest(unittest.TestCase):
 @skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
 class AppListTest(unittest.TestCase):
     # (list scrolled to the end, row y, view id from the stock table 0x101EAF40)
-    STOCK_SAMPLE = ((False, 130, 0x6A), (True, 132, 0x43), (True, 236, 0x44))  # Exercise, row 23, Settings
+    STOCK_SAMPLE = ((False, 232, 0x6A), (True, 236, 0x43), (True, 340, 0x44))  # Exercise, row 23, Settings
 
     def test_apps_entry_opens_menu(self):
         from tests.e2e.netsim import netsim
@@ -404,7 +404,7 @@ class AppListTest(unittest.TestCase):
             self.assertEqual(emu.peek(START + 4, 2), b"\x01\x01")  # loader loaded, active
             emu.send("c 1", "c 0", pause=3)
             self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
-            harness.to_app_list(emu, bottom=False)  # the list with the Apps row is built and unloaded again
+            harness.to_app_list(emu, bottom=False)  # the list with the Custom Apps row is built and unloaded again
             emu.send("c 1", "c 0", pause=3)
             self.assertNotEqual(harness.focused(emu), harness.APPLIST_VIEW)
             uart = emu.uart()
@@ -790,7 +790,7 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(uart.count("*** Booting Zephyr"), boots)
 
     def open_apps(self, emu) -> int:
-        """Taps "Apps" in the stock list; returns the view the stock focused afterwards."""
+        """Taps "Custom Apps" in the stock list; returns the view the stock focused afterwards."""
         mark = len(emu.uart())
         harness.open_apps(emu)
         return 0xF0 if "]: view 240 focused" in emu.uart()[mark:] else harness.focused(emu)
@@ -811,7 +811,7 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual(harness.focused(emu), FACE)
         harness.to_app_list(emu, bottom=True)
         mark = len(emu.uart())
-        emu.send("t 1 233 236", "t 0 233 236", pause=3)
+        emu.send("t 1 233 340", "t 0 233 340", pause=3)  # Settings, the last row
         self.assertIn(f"]: view {SETTINGS} focused", emu.uart()[mark:])
         emu.send("c 1", "c 0", pause=3)
         self.assertEqual(harness.focused(emu), FACE)

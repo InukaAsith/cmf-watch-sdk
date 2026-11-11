@@ -423,7 +423,7 @@ def swipe(emu: Emu, x0, y0, x1, y1, steps=2, pause=2):
 
 
 APPLIST_VIEW = 18
-APPS_ROW_Y = 340  # "Apps" (26th row) once the list is scrolled to the end (docs/recon.md)
+APPS_ROW_Y = 128  # "Custom Apps" (first row) with the list scrolled to the top (docs/recon.md)
 
 
 def focused(emu: Emu) -> int:
@@ -446,8 +446,8 @@ def to_app_list(emu: Emu, *, bottom: bool):
 
 
 def open_apps(emu: Emu):
-    """Opens view 0xF0 through the "Apps" row of the stock app list; the list frame goes to list.ppm."""
-    to_app_list(emu, bottom=True)
+    """Opens view 0xF0 through the "Custom Apps" row of the stock app list; the list frame goes to list.ppm."""
+    to_app_list(emu, bottom=False)
     shutil.copy(emu.run / "frame.ppm", emu.run / "list.ppm")
     emu.send(f"t 1 233 {APPS_ROW_Y}", f"t 0 233 {APPS_ROW_Y}", pause=3)
 

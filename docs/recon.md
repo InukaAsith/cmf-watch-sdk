@@ -208,7 +208,7 @@ Ghidra (`scripts/recon/decomp`) on `0x1013E9AC`, `0x1013E52C`, `0x1012F38C`, `0x
 | View delete order (`FUN_1018DC9C` area) | display op `+0x10` → `proc(id, 4, view+0x1C)` → … → scene cleanup `FUN_1018E6BC` (display op `+4`). The view's own `lv_obj_del` in msg 4 runs before the scene is torn down | medium |
 | Layout after preload | the view manager sends msg 3 only after a `{9, 3, id}` message: `ui_view_layout(id)` `0x101D72FF` (`0x10182060(id, 3, 0, 0)`). Stock preload handlers (`goodbye_view`) end with `return ui_view_layout(id)`; a preload that just returns 0 leaves the view created and focused but never laid out (e2e: no `view 240 layout started`) | high |
 
-## Plan 2, task 10: "Apps" row in the stock app list
+## Plan 2, task 10: "Custom Apps" row in the stock app list
 
 Ghidra (`scripts/recon/decomp`) on `0x1005E790..0x1005F300`, emulator probes on stock and patched NOR.
 
@@ -236,26 +236,41 @@ vendor image `set_zoom 0x1005A2D1`.
 ### The patch (P5, option D)
 
 The rodata word `0x101EB160` (list desc `+0xC`, stock `0x1005EEE5`) points to the stub's `wp2_applist_layout`. It
-calls the stock layout and, when that returns 0 with `data[8] == 25` and 25 children in the container, appends a 26th
-row built exactly like the stock rows. Its own cb on event 4 calls `FUN_101898bc(0xF0, 0)`. The table, the count, the
-indices and the view data stay stock; the row dies with the screen in the stock unload. Only the list style is
-covered: with property `0x2C == 1` (waterfall) there is no "Apps" row.
+calls the stock layout and, when that returns 0 with `data[8] == 25` and 25 children in the container, adds a
+"Custom Apps" row built exactly like the stock rows and shows it first. Its own cb on event 4 calls
+`FUN_101898bc(0xF0, 0)`. The table, the count, the indices and the view data stay stock; the row dies with the screen
+in the stock unload. Only the list style is covered: with property `0x2C == 1` (waterfall) there is no such row.
 
-- Icon: own `LV_IMG_CF_INDEXED_1BIT` 96×96 in stub flash (`header = 0x0C018007`, 1160 B: palette `00000000`
-  transparent, `FFFFFFFF` white as B,G,R,A, then 12 B per row, MSB = left pixel), a 2×2 grid of rounded squares.
-  The stock LVGL 8.3 decoder (`0x1012F921`) handles INDEXED_1/2/4/8 and ALPHA_1/2/4/8; stock icons are
-  `TRUE_COLOR_ALPHA` 96×96 (27648 B), too big for the stub.
-- **Never zoom the 1-bit icon**: `set_zoom(img, 0xC0)` stops QEMU on an unimplemented Display Engine write
-  (`0x4006C020`). The row is therefore outside the stock fisheye (which walks `data[8]` rows) and stays at `x = 0x10`.
-- Label: `TextRec {"Apps", 0}` in stub flash. The vendor label keeps the pointer (static flag) and re-reads
+- Order: the row stays the **last child** (index 25), because the stock fisheye `0x1005ED98` (cont event 11, user
+  data `data`) walks `children[0 .. data[8]]`. The row is placed with `lv_obj_align(row, 1, 0x10, 0x50)` (stock row 0's
+  spot), then each stock row is re-chained with `lv_obj_align_to(row_i, prev, 0xD, 0, 8)`. A stub cb on cont event 11
+  applies the stock fisheye to our row, then `lv_event_send(cont, 11, NULL)` (`0x101259C5`) re-runs both. No child-move
+  API is needed; clicks use `row->user_data`, so stock rows keep their indices.
+- Fisheye (`0x1005ED98`): `mid = (FUN_101298b8(row) + FUN_10129b04(row)) >> 1` (top and bottom y in the content),
+  `d = |mid − 233 − lv_obj_get_scroll_y(cont)|`; `d < 104`: zoom 256, opacity 255, `x = d / 3.25 + 16`;
+  `d < 281`: zoom `256 − (90d − 9360) / 177`, opacity `255 − (180d − 18720) / 177`, `x = (d − 104) / 1.92 + 48`
+  (floats at `0x1005EEC0/C4`); else untouched. Zoom goes to `simple_img_set_zoom 0x1005A2D1` (row child 0), opacity
+  to `0x101C74C5(label, opa, 0)` (row child 1), x to `lv_obj_set_x`. The stub's integer version matches the float
+  one for every `d < 281`.
+- Icon: stock format `TRUE_COLOR_ALPHA` 96×96 (`header 0x0C018005`, RGB565 LE + A8, 27648 B), own artwork (circle
+  `0x2966` with 2×2 rounded squares `0xF79E`, the stock circle and glyph colours, glyph box 40 px like the stock one),
+  drawn at layout time into one RES block `[64 B][pixels][lv_img_dsc_t]` (≈ 27.7 KiB), freed by a cb on the image's
+  `LV_EVENT_DELETE` (33). Unaligned pixel data (block + 12) stops QEMU on the Display Engine write `0x4006C020`; the
+  stock icons are 64-byte aligned and so is ours. The emulator's VG-Lite model reads 3-byte pixels only behind the
+  stock resource-cache header (`cmf-watch-utils` `acts_vg_resource_packed`: `+8` size `align64(64 + w·h·3)`, `+16/+20`
+  w/h, `+24` 3, `+32` pixel address) and otherwise assumes ARGB8888 (garbage). The firmware programs the GPU the same
+  way for stock icons and ours, so the 64 B mimic that header; the hardware does not read it.
+- Label: `TextRec {"Custom Apps", 0}` in stub flash. The vendor label keeps the pointer (static flag) and re-reads
   `rec->text` on every refresh (language change), so both must live as long as the label.
 - RES heap: the label canvas (A4, 280×39) takes ≈ 5.5 KiB while the list is open and is freed by its destructor
-  (`0x101ACB9F`); no leak after unload (emulator).
-- The saved scroll position includes the extra row, but the stock layout restores it before the row exists; at
-  most the list opens slightly above the end.
-- Harness: after 16 swipes `(233,400)→(233,120)` the "Apps" row is last, at `y ≈ 340`; rows 24/23 at `y ≈ 236/132`.
+  (`0x101ACB9F`); the icon block is freed on delete. `ResFbHeap` free bytes are equal after each list open/close
+  cycle (emulator).
+- The saved scroll position is restored by the stock layout before the rows move; positions are the same, only the
+  end of the list may come up one row short.
+- Harness: list scrolled to the top: "Custom Apps" at `y ≈ 128`, Exercise (row 0) at `y ≈ 232`; scrolled to the end
+  (16 swipes `(233,400)→(233,120)`): Settings (row 24) at `y ≈ 340`, row 23 at `y ≈ 236`.
   The stock view manager logs `view <id> focused` for every view (including `0xF0`); `_view_focus:1` is logged
-  only by stock procs.
+  only by stock procs. The crown scrolls the list as in stock (same frame deltas).
 
 Rejected alternatives: a settings entry (`sysmenulist_view` `0x4C`, same static table shape), a long crown press in
 the list (desc `+0x28` key handler; the long-press code and whether the system swallows it are unknown), own

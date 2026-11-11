@@ -1,18 +1,28 @@
-// 26th "Apps" row in the stock app list (list style), built like the stock rows (docs/recon.md).
+// "Custom Apps" row at the top of the stock app list (list style), built like the stock rows (docs/recon.md).
 use core::mem::transmute;
+use wp2_core::heap::{self, RES};
+use wp2_core::load::sync_psram;
 
 const STOCK_LAYOUT: u32 = 0x1005EEE5;
 const OBJ_CREATE: u32 = 0x10127CFD;
 const OBJ_GET_CHILD: u32 = 0x1012C3DD;
 const OBJ_GET_CHILD_CNT: u32 = 0x1012C4AD;
+const OBJ_GET_Y: u32 = 0x101298B9;
+const OBJ_GET_Y2: u32 = 0x10129B05;
+const OBJ_GET_SCROLL_Y: u32 = 0x101C6515;
 const OBJ_SET_SIZE: u32 = 0x101294C9;
 const OBJ_SET_X: u32 = 0x101290CD;
+const OBJ_SET_OPA: u32 = 0x101C74C5;
+const OBJ_ALIGN: u32 = 0x101C5DE5;
 const OBJ_ALIGN_TO: u32 = 0x1012A87D;
 const OBJ_ADD_FLAG: u32 = 0x10128D39;
 const OBJ_ADD_EVENT_CB: u32 = 0x10125A95;
 const OBJ_ADD_STYLE: u32 = 0x1012BB15;
+const EVENT_SEND: u32 = 0x101259C5;
+const EVENT_GET_USER_DATA: u32 = 0x101C4CA7;
 const VIMG_CREATE: u32 = 0x1005A015;
 const VIMG_SET_SRC: u32 = 0x1005A02D;
+const VIMG_SET_ZOOM: u32 = 0x1005A2D1;
 const VLABEL_CREATE: u32 = 0x1005B579;
 const VLABEL_SET_LONG_MODE: u32 = 0x101ACBA5;
 const VLABEL_SET_TEXT: u32 = 0x1005B70D;
@@ -20,12 +30,22 @@ const OPEN_VIEW: u32 = 0x101898BD;
 
 const ROWS: u8 = 25;
 const SHORT_CLICKED: u32 = 4;
+const SCROLL: u32 = 11;
+const DELETE: u32 = 33;
 const EVENT_BUBBLE: u32 = 0x4000;
+const ALIGN_TOP_LEFT: u32 = 1;
 const OUT_BOTTOM_LEFT: u32 = 0xD;
 const OUT_RIGHT_MID: u32 = 0x14;
-const ICON: u32 = 96;
-const STRIDE: usize = (ICON as usize + 7) / 8;
-const PIXELS: usize = 8 + STRIDE * ICON as usize;
+
+// Stock icons: LV_IMG_CF_TRUE_COLOR_ALPHA 96x96 (RGB565 LE + alpha), a filled circle with a light glyph.
+const ICON: usize = 96;
+const PIXELS: usize = ICON * ICON * 3;
+// The emulator's GPU model reads 3-byte pixels only behind this header (cmf-watch-utils acts_vg_resource_packed);
+// the firmware programs the GPU the same way for stock icons and ours.
+const HEAD: usize = 64;
+const BLOCK: usize = HEAD + PIXELS + size_of::<ImgDsc>();
+const CIRCLE: u16 = 0x2966;
+const GLYPH: u16 = 0xF79E;
 
 type Obj = *mut u8;
 
@@ -42,46 +62,9 @@ struct TextRec {
     zero: u32,
 }
 
-unsafe impl Sync for ImgDsc {}
 unsafe impl Sync for TextRec {}
 
-// LV_IMG_CF_INDEXED_1BIT: palette (transparent, white) in B,G,R,A, then MSB-first rows.
-static ICON_DATA: [u8; PIXELS] = icon();
-static ICON_DSC: ImgDsc = ImgDsc { header: 7 | ICON << 10 | ICON << 21, size: PIXELS as u32, data: ICON_DATA.as_ptr() };
-static LABEL: TextRec = TextRec { text: b"Apps\0".as_ptr(), zero: 0 };
-
-// 2x2 grid of rounded squares.
-const fn icon() -> [u8; PIXELS] {
-    const S: usize = 32;
-    const GAP: usize = 10;
-    const R: usize = 8;
-    const M: usize = (ICON as usize - 2 * S - GAP) / 2;
-    let mut out = [0u8; PIXELS];
-    let mut i = 4;
-    while i < 8 {
-        out[i] = 0xFF;
-        i += 1;
-    }
-    let mut y = 0;
-    while y < ICON as usize {
-        let mut x = 0;
-        while x < ICON as usize {
-            let (cx, cy) = (x.wrapping_sub(M), y.wrapping_sub(M));
-            let inside = cx < 2 * S + GAP && cy < 2 * S + GAP;
-            if inside && cx % (S + GAP) < S && cy % (S + GAP) < S {
-                let (px, py) = (cx % (S + GAP), cy % (S + GAP));
-                let dx = if px < R { R - px } else if px >= S - R { px + 1 + R - S } else { 0 };
-                let dy = if py < R { R - py } else if py >= S - R { py + 1 + R - S } else { 0 };
-                if dx * dx + dy * dy <= R * R {
-                    out[8 + y * STRIDE + x / 8] |= 0x80 >> (x % 8);
-                }
-            }
-            x += 1;
-        }
-        y += 1;
-    }
-    out
-}
+static LABEL: TextRec = TextRec { text: b"Custom Apps\0".as_ptr(), zero: 0 };
 
 macro_rules! stock {
     ($addr:expr, fn($($t:ty),*) -> $r:ty) => {
@@ -102,21 +85,39 @@ unsafe fn add_row(data: *mut u8) {
     if cont.is_null() || unsafe { *data.add(8) } != ROWS || stock!(OBJ_GET_CHILD_CNT, fn(Obj) -> u32)(cont) != ROWS as u32 {
         return;
     }
-    let last = stock!(OBJ_GET_CHILD, fn(Obj, i32) -> Obj)(cont, -1);
-    let row = stock!(OBJ_CREATE, fn(Obj) -> Obj)(cont);
-    if last.is_null() || row.is_null() {
+    // [64 B header like the stock resource cache's][pixels, 64-byte aligned like the stock icons][ImgDsc]
+    let block = heap::alloc(RES, BLOCK as u32, 0x40);
+    if block.is_null() {
         return;
     }
+    let (pixels, dsc) = unsafe { (block.add(HEAD), block.add(HEAD + PIXELS) as *mut ImgDsc) };
+    unsafe {
+        let head = core::slice::from_raw_parts_mut(block as *mut u32, HEAD / 4);
+        head.fill(0);
+        (head[2], head[4], head[5], head[6], head[8]) = ((HEAD + PIXELS) as u32, ICON as u32, ICON as u32, 3, pixels as u32);
+        draw_icon(core::slice::from_raw_parts_mut(pixels, PIXELS));
+        dsc.write(ImgDsc { header: 5 | (ICON as u32) << 10 | (ICON as u32) << 21, size: PIXELS as u32, data: pixels });
+    }
+    sync_psram(block, BLOCK as u32);
+
+    // The row stays the last child: the stock fisheye walks children 0..24 and must keep seeing the stock rows.
+    let get_child = stock!(OBJ_GET_CHILD, fn(Obj, i32) -> Obj);
     let align_to = stock!(OBJ_ALIGN_TO, fn(Obj, Obj, u32, i32, i32) -> ());
     let add_flag = stock!(OBJ_ADD_FLAG, fn(Obj, u32) -> ());
     let set_size = stock!(OBJ_SET_SIZE, fn(Obj, i32, i32) -> ());
+    let add_cb = stock!(OBJ_ADD_EVENT_CB, fn(Obj, extern "C" fn(*mut u8), u32, *mut u8) -> *mut u8);
+    let row = stock!(OBJ_CREATE, fn(Obj) -> Obj)(cont);
+    let img = if row.is_null() { row } else { stock!(VIMG_CREATE, fn(Obj) -> Obj)(row) };
+    if img.is_null() {
+        unsafe { heap::free(RES, block) };
+        return;
+    }
+    add_cb(img, freed, DELETE, block);
     set_size(row, 0x18A, ICON as i32);
-    stock!(OBJ_ADD_EVENT_CB, fn(Obj, extern "C" fn(*mut u8), u32, *mut u8) -> *mut u8)(row, clicked, SHORT_CLICKED, core::ptr::null_mut());
-    align_to(row, last, OUT_BOTTOM_LEFT, 0, 8);
-    stock!(OBJ_SET_X, fn(Obj, i32) -> ())(row, 0x10);
-    let img = stock!(VIMG_CREATE, fn(Obj) -> Obj)(row);
+    add_cb(row, clicked, SHORT_CLICKED, core::ptr::null_mut());
+    stock!(OBJ_ALIGN, fn(Obj, u32, i32, i32) -> ())(row, ALIGN_TOP_LEFT, 0x10, 0x50);
     add_flag(img, EVENT_BUBBLE);
-    stock!(VIMG_SET_SRC, fn(Obj, *const ImgDsc) -> ())(img, &ICON_DSC);
+    stock!(VIMG_SET_SRC, fn(Obj, *const ImgDsc) -> ())(img, dsc);
     let lab = stock!(VLABEL_CREATE, fn(Obj) -> Obj)(row);
     set_size(lab, 0x172 - ICON as i32, unsafe { *(data.add(0x214) as *const i32) });
     stock!(OBJ_ADD_STYLE, fn(Obj, *mut u8, u32) -> ())(lab, unsafe { data.add(0x200) }, 0);
@@ -124,8 +125,96 @@ unsafe fn add_row(data: *mut u8) {
     stock!(VLABEL_SET_TEXT, fn(Obj, *const TextRec) -> ())(lab, &LABEL);
     add_flag(lab, EVENT_BUBBLE);
     align_to(lab, img, OUT_RIGHT_MID, 0x18, 0);
+
+    let mut prev = row;
+    for i in 0..ROWS as i32 {
+        let r = get_child(cont, i);
+        align_to(r, prev, OUT_BOTTOM_LEFT, 0, 8);
+        prev = r;
+    }
+    add_cb(cont, fisheye, SCROLL, row);
+    stock!(EVENT_SEND, fn(Obj, u32, *mut u8) -> u32)(cont, SCROLL, core::ptr::null_mut());
+}
+
+// The stock fisheye (0x1005ED98) for our row: x shift, icon zoom and label opacity by distance from the centre.
+extern "C" fn fisheye(e: *mut u8) {
+    let row = stock!(EVENT_GET_USER_DATA, fn(*mut u8) -> Obj)(e);
+    let cont = unsafe { *(row.add(4) as *const Obj) };
+    let get_child = stock!(OBJ_GET_CHILD, fn(Obj, i32) -> Obj);
+    let mid = (stock!(OBJ_GET_Y, fn(Obj) -> i32)(row) + stock!(OBJ_GET_Y2, fn(Obj) -> i32)(row)) >> 1;
+    let d = (mid - 233 - stock!(OBJ_GET_SCROLL_Y, fn(Obj) -> i32)(cont)).abs();
+    let Some((x, zoom, opa)) = shape(d) else { return };
+    stock!(VIMG_SET_ZOOM, fn(Obj, u32) -> ())(get_child(row, 0), zoom);
+    stock!(OBJ_SET_OPA, fn(Obj, u32, u32) -> ())(get_child(row, 1), opa, 0);
+    stock!(OBJ_SET_X, fn(Obj, i32) -> ())(row, x);
+}
+
+fn shape(d: i32) -> Option<(i32, u32, u32)> {
+    match d {
+        0..104 => Some((d * 4 / 13 + 16, 0x100, 0xFF)),
+        104..281 => Some(((d - 104) * 25 / 48 + 48, (256 - (90 * d - 9360) / 177) as u32, (255 - (180 * d - 18720) / 177) as u32)),
+        _ => None,
+    }
+}
+
+extern "C" fn freed(e: *mut u8) {
+    let block = stock!(EVENT_GET_USER_DATA, fn(*mut u8) -> *mut u8)(e);
+    unsafe { heap::free(RES, block) };
 }
 
 extern "C" fn clicked(_e: *mut u8) {
     stock!(OPEN_VIEW, fn(u32, u32) -> i32)(0xF0, 0);
+}
+
+// Own artwork: a filled circle with a 2x2 grid of rounded squares, antialiased; distances in 1/16 px.
+fn draw_icon(out: &mut [u8]) {
+    const C: i32 = ICON as i32 * 8;
+    const SQ: i32 = 17 * 16;
+    const GAP: i32 = 6 * 16;
+    const R: i32 = 5 * 16;
+    for y in 0..ICON {
+        for x in 0..ICON {
+            let (px, py) = (x as i32 * 16 + 8 - C, y as i32 * 16 + 8 - C);
+            let circle = cover(isqrt(px * px + py * py) - C);
+            // each square's centre is (SQ + GAP) / 2 from the icon centre on both axes
+            let (qx, qy) = (px.abs() - (SQ + GAP) / 2, py.abs() - (SQ + GAP) / 2);
+            let (qx, qy) = (qx.abs() - (SQ / 2 - R), qy.abs() - (SQ / 2 - R));
+            let glyph = cover(isqrt(qx.max(0).pow(2) + qy.max(0).pow(2)) + qx.max(qy).min(0) - R);
+            let c = mix(CIRCLE, GLYPH, glyph);
+            let i = (y * ICON + x) * 3;
+            out[i..i + 3].copy_from_slice(&[c as u8, (c >> 8) as u8, (circle * 255 / 16) as u8]);
+        }
+    }
+}
+
+// 0..=16 of a pixel covered by a shape whose edge is `d` (1/16 px, negative inside) from the pixel centre
+fn cover(d: i32) -> i32 {
+    (8 - d).clamp(0, 16)
+}
+
+fn mix(a: u16, b: u16, t: i32) -> u16 {
+    let ch = |shift: u32, mask: i32| {
+        let (ca, cb) = ((a >> shift) as i32 & mask, (b >> shift) as i32 & mask);
+        (((ca * (16 - t) + cb * t + 8) / 16) as u16) << shift
+    };
+    ch(11, 31) | ch(5, 63) | ch(0, 31)
+}
+
+fn isqrt(n: i32) -> i32 {
+    let mut x = n as u32;
+    let mut r = 0u32;
+    let mut bit = 1u32 << 30;
+    while bit > x {
+        bit >>= 2;
+    }
+    while bit != 0 {
+        if x >= r + bit {
+            x -= r + bit;
+            r = (r >> 1) + bit;
+        } else {
+            r >>= 1;
+        }
+        bit >>= 2;
+    }
+    r as i32
 }
