@@ -29,7 +29,7 @@ fn load_open(slot: u8, file: &mut File, scratch: &mut [u8]) -> Result<(*mut u8, 
     let image = unsafe { core::slice::from_raw_parts_mut(block, header.image_size as usize) };
     match fill(file, image, scratch, &header) {
         Ok(()) => {
-            sync_code(block, header.image_size);
+            sync_psram(block, header.image_size);
             Ok((block, header))
         }
         Err(e) => {
@@ -39,9 +39,9 @@ fn load_open(slot: u8, file: &mut File, scratch: &mut [u8]) -> Result<(*mut u8, 
     }
 }
 
-// Code written through the cached 0x38… PSRAM mapping must reach PSRAM before it is fetched
-// (docs/recon.md, "Hardware: caches and MPU").
-fn sync_code(block: *mut u8, len: u32) {
+// Code or pixels written through the cached 0x38… PSRAM mapping must reach PSRAM before they are
+// fetched or read by display DMA (docs/recon.md, "Hardware: caches and MPU"). Not from an ISR.
+pub fn sync_psram(block: *mut u8, len: u32) {
     let f: extern "C" fn(*mut u8, u32) -> i32 =
         unsafe { core::mem::transmute(PSRAM_CACHE_FLUSH_INVALIDATE as usize) };
     unsafe { core::arch::asm!("dsb sy", options(nostack)) };
