@@ -12,8 +12,8 @@ except (FileNotFoundError, ImportError):
 HAVE_STOCK = STOCK is not None
 
 
-def fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100, applist=0):
-    return b"WP2S" + struct.pack("<IIIIIII", 1, boot, ble, view_proc, view_name, applist, 0) + bytes(0x100)
+def fake_stub(boot=0x1025A0A1, ble=0x1025A0C1, view_proc=0x1025A0E1, view_name=0x1025A100, applist=0, motor=0):
+    return b"WP2S" + struct.pack("<IIIIIII", 1, boot, ble, view_proc, view_name, applist, motor) + bytes(0x100)
 
 
 class FirmwareTest(unittest.TestCase):
@@ -119,6 +119,16 @@ class FirmwareTest(unittest.TestCase):
         self.assertEqual(base[desc:desc + 0x30], STOCK[desc:desc + 0x30])
         diff = {i & ~3 for i in range(0x200, 0x25A080) if out[i] != base[i]}
         self.assertEqual(diff, {desc + 0xC})
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_motor_patch(self):
+        out = firmware.patch(STOCK, fake_stub(motor=0x1025A141))
+        self.assertEqual(STOCK[0xFB398:0xFB39C], firmware.thumb_bl(0x100FB398, 0x100FB4B4))
+        self.assertEqual(out[0xFB398:0xFB39C], firmware.thumb_bl(0x100FB398, 0x1025A140))
+        base = firmware.patch(STOCK, fake_stub())
+        self.assertEqual({i for i in range(0x200, 0x25A080) if out[i] != base[i]}, set(range(0xFB398, 0xFB39C)))
+        with self.assertRaisesRegex(ValueError, "stub"):
+            firmware.patch(STOCK, fake_stub(motor=0x1025A140))
 
     @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
     def test_applist_needs_thumb(self):
