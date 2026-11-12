@@ -70,7 +70,10 @@ def patched_nor() -> bytes:
 
 
 def patched_paired_nor() -> bytes:
-    """Paired stock NOR (synthetic secret) with target/app-wp2.bin."""
+    """Paired stock NOR (synthetic secret) with target/app-wp2.bin; WP2_NOR=<file> boots that NOR instead
+    (e.g. runs/ota/install/nor.bin after an emulated OTA, docs/ota.md)."""
+    if os.environ.get("WP2_NOR"):
+        return Path(os.environ["WP2_NOR"]).read_bytes()
     from .netsim import paired_nor
     app = paths.ROOT / "target" / "app-wp2.bin"
     if not app.is_file():
