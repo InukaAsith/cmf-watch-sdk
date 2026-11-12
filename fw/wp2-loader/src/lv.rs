@@ -198,12 +198,14 @@ fn exec(r: &Rec) -> Result<(), i32> {
             (s.objs[h], s.events[h], s.options[h]) = (obj, 0, 0);
         }
         Rec::Del(h) => {
-            stock!(LV_OBJ_DEL, fn(Obj))(o(h));
-            // the focus container's children may have shifted: shape them all again
-            s.focus_last = [0; FOCUS_MAX];
+            // before the delete: deleting children sends the container LAYOUT_CHANGED, and its fisheye must not touch
+            // objects LVGL is freeing (it did: garbage reached the display engine)
             if lvcmd::freed_by_del(&s.table, h).any(|x| x == s.focus) {
                 s.focus = 0;
             }
+            stock!(LV_OBJ_DEL, fn(Obj))(o(h));
+            // the focus container's children may have shifted: shape them all again
+            s.focus_last = [0; FOCUS_MAX];
             // scroll bars targeting the subtree sit on the root: deleted after their target, as stock lists do.
             // A bar handle never gets here (validate refuses DEL of a bar).
             for x in lvcmd::freed_by_del(&s.table, h) {
@@ -420,6 +422,7 @@ extern "C" fn on_event(e: *mut c_void) {
 /// UI thread, app thread aborted, before the app block is freed: nothing of the app is left in LVGL.
 pub fn teardown() {
     let s = st();
+    s.focus = 0; // before the delete, as in DEL
     if !s.objs[0].is_null() {
         // children first, scroll bars after their targets (created later)
         stock!(LV_OBJ_DEL, fn(Obj))(s.objs[0]);

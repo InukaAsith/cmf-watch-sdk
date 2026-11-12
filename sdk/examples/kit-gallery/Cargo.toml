@@ -1,0 +1,14 @@
+[package]
+name = "kit-gallery"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+cmf-wp2-app = { path = "../../cmf-wp2-app" }
+cmf-wp2-ui = { path = "../../cmf-wp2-ui" }
+
+[[bin]]
+name = "kit-gallery"
+bench = false
+
