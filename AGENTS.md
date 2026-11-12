@@ -6,7 +6,9 @@ Make the CMF Watch Pro 2 run separately installable apps: a minimal stub in the 
 `app.bin`, a loader on NAND, a Rust SDK and apps installed over BLE. The first app is a
 vibration lab. See `docs/specs/` for the design and `docs/plans/` for the current plan.
 
-Building an app → read `docs/app-guide.md` first.
+Building an app → read `docs/app-guide.md` first. LVGL apps always use the system font and the stock look from
+`cmf_wp2_app::stock` (`stock::font`, `stock::theme`, `page`/`title`/`row`): never LVGL's default font or an own
+palette unless the owner asks.
 
 ## Hard rules
 

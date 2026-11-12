@@ -404,6 +404,12 @@ impl Batch {
         self.put(0x10, obj.0, &[&start.to_le_bytes(), &end.to_le_bytes(), &rotation.to_le_bytes()])
     }
 
+    /// Drops the records not submitted yet. Their handles stay taken: use it only for records the loader has
+    /// already seen another way (host tests), or not at all.
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
     /// Sends the records and empties the buffer, even on an error. An empty batch sends nothing.
     pub fn submit(&mut self, lv: &Lv) -> Result<(), LvError> {
         let r = if self.len == 0 { 0 } else { lv.submit(self.bytes()) };

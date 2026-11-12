@@ -1,5 +1,6 @@
-//! lv-demo: an ABI 1.2 app on the watch's own LVGL widgets. A title in a stock font, a crown-scrolled list of 12
-//! rows (a tap plays the haptic pattern the roller picks), a slider that drives an arc; BUTTON exits.
+//! lv-demo: an ABI 1.2 app on the watch's own LVGL widgets in the stock look (`cmf_wp2_app::stock`): a
+//! crown-scrolled page with the title, a slider that drives an arc, and a row per haptic pattern (a tap plays it);
+//! BUTTON exits.
 //! Host messages for tests/test_lv_e2e.py: `!bad` submits a batch the loader must reject, `!del` deletes the list
 //! (rows, labels and scroll bar go with it), `!list` builds it again, `!spin` submits forever and never reads BUTTON
 //! again (the loader force stops it).
@@ -23,7 +24,7 @@ mod device {
 
     const CLICKED: i16 = 7; // LVGL 8.3 event codes
     const VALUE_CHANGED: i16 = 28;
-    const PATTERNS: [Pattern; 4] = [TICK, DOUBLE, ALERT, DONE]; // the roller's options
+    const PATTERNS: [Pattern; screen::ROWS] = [TICK, DOUBLE, ALERT, DONE]; // screen::NAMES
 
     // read by tests/test_lv_e2e.py: submit results, the last LV event, handles
     const FONT_RC: usize = 0;
@@ -38,7 +39,7 @@ mod device {
     const SPINS: usize = 11;
     const LIST: usize = 12;
     const MSGS: usize = 13; // !bad, !del and !list handled; MSG_RC holds the last one's result
-    const ROWS: usize = 14; // .. 12 row handles
+    const ROWS: usize = 14; // .. 4 row handles
     // FONT_RC and SCREEN_RC start at NOT_YET (no lv_submit code), so the e2e sees whether the submits returned;
     // the non-zero initialiser puts STATS in .data, copied fresh at every launch
     const NOT_YET: i32 = 1;
@@ -82,14 +83,13 @@ mod device {
                 return 1;
             }
         };
-        set(SCREEN_RC, code(b.submit(&lv)));
+        set(SCREEN_RC, code(b.submit(&lv).and_then(|_| screen::list(&mut b, &mut s)).and_then(|_| b.submit(&lv))));
         set(ARC_VALUE, ARC_START);
         set(ARC, s.arc.0 as i32);
         publish(&s);
         set(SLIDER, s.slider.0 as i32); // last: the e2e waits for it
 
         let mut motor = Motor::new(api);
-        let mut pattern = TICK;
         let mut msg = [0u8; MSG_MAX];
         loop {
             motor.update();
@@ -103,10 +103,8 @@ mod device {
                     set(LAST_H + 1, e.y.into());
                     set(LAST_H + 2, e.delta.into());
                     let h = e.x as u16;
-                    if e.y == CLICKED && s.rows.iter().any(|r| r.0 == h) {
-                        motor.play(pattern);
-                    } else if e.y == VALUE_CHANGED && h == s.roller.0 {
-                        pattern = PATTERNS[(e.delta as usize).min(PATTERNS.len() - 1)];
+                    if let Some(i) = s.rows.iter().position(|r| r.0 == h).filter(|_| e.y == CLICKED) {
+                        motor.play(PATTERNS[i]);
                     } else if e.y == VALUE_CHANGED && h == s.slider.0 {
                         // events coalesce: delta is the slider's latest value
                         let v = (e.delta as i32).clamp(0, 100);
@@ -122,7 +120,7 @@ mod device {
                                 let r = match m {
                                     b"!bad" => screen::bad(&mut b, &s),
                                     b"!del" => screen::del_list(&mut b, &s),
-                                    _ => screen::rebuild_list(&mut b, &mut s),
+                                    _ => screen::list(&mut b, &mut s),
                                 };
                                 set(MSG_RC, code(r.and_then(|_| b.submit(&lv))));
                                 publish(&s);

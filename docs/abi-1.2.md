@@ -102,7 +102,7 @@ open returns `-2`). Fonts the app does not open use the built-in font. Each open
 | label text | ≤ 128 B (`MAX_TEXT`) |
 | roller options | ≤ 240 B (`MAX_OPTIONS`) |
 | batch | ≤ 2048 B; one record ≤ 4 + 255 B |
-| GUI heap | lv-demo's screen (31 objects, one font, a scroll bar) used 7 724 B of the GUI heap: menu 94 732 B free, with the app 87 008 B (`tests/test_lv_e2e.py`). The design budget is 32–40 KB of objects (`docs/recon-lvgl.md`); an LVGL assert or heap exhaustion resets the watch |
+| GUI heap | lv-demo's screen (28 objects, one font, a scroll bar; stock look since 2026-11-12) used 6 868 B of the GUI heap: menu 94 728 B free, with the app 87 860 B (`tests/test_lv_e2e.py`). The design budget is 32–40 KB of objects (`docs/recon-lvgl.md`); an LVGL assert or heap exhaustion resets the watch |
 
 ## Events
 
@@ -127,7 +127,7 @@ For `VALUE_CHANGED` `delta` is the arc, bar, slider or roller value (clamped to 
 - **A plain `obj` is scrollable by default** (LVGL 8). `KNOB(panel)` meant to bring `CROWN` events then scrolls the
   panel instead (often with nothing to scroll), and the app gets no `CROWN`. Clear `SCROLLABLE` with `FLAGS` first.
 - **Creating a roller makes it the knob** (the stock constructor sets `1 << 30` on itself): send `KNOB` to the
-  object that should take the crown after the roller is created, as lv-demo does (`KNOB(list)` last).
+  object that should take the crown after the roller is created (`KNOB(list)` last).
 - **A rightward drag across a slider is the stock back gesture**: the app gets `BUTTON` and has 1 s to leave
   (`docs/app-guide.md`, section 1, "Install and run"). A leftward drag works. Design sliders for taps and left drags.
 
