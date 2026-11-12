@@ -86,8 +86,42 @@ class StubTest(unittest.TestCase):
         self.assertNotEqual(ops, 0)
         self.assertNotEqual(harness.u32(emu, ops + 0x3C), 0)
 
-    def test_stock_vibration_scaled(self):
-        assert_stock_vibration_scaled(self, self.emu, START + 0xE30)
+    def test_weak_vibration_level(self):
+        # `wp2apps firmware` default: stock strengths plus level 3 at 350 permille (89/255)
+        emu, value = self.emu, START + 0xE30
+        duty = {}
+        for level in (1, 2, 3):
+            n = len(emu.motor())
+            emu.poke(value, struct.pack("<i", level))
+            emu.call(0x100E17CD, value, 0, 0)  # property 0x25, level preview
+            emu.sleep(1)
+            duty[level] = [d for _, d, _ in emu.motor()[n:] if d > 0]
+        print(f"\nlevel duty {duty}")
+        self.assertTrue(duty[1] and all(abs(d - 980) <= 3 for d in duty[1]), duty)
+        self.assertEqual(duty[2], [])
+        self.assertTrue(duty[3] and all(abs(d - 349) <= 3 for d in duty[3]), duty)
+
+    def test_vibration_roller_has_weak_row(self):
+        from tests.test_demo_e2e import save_png
+        emu, index = self.emu, 0x38019A8C  # setvib_view's roller index (the crown handler's global)
+        emu.call(harness.OPEN_VIEW, 0x56, 0)
+        emu.sleep(2)
+        save_png(emu.run / "setvib-open.png", *emu.frame())
+        n = len(emu.motor())
+        for _ in range(4):
+            emu.send(*["r -80"] * 3, pause=1)
+        save_png(emu.run / "setvib-weak.png", *emu.frame())
+        duty = [d for _, d, _ in emu.motor()[n:] if d > 0]
+        print(f"\nroller index {harness.u32(emu, index)}, preview duty {duty}, frames in {emu.run}")
+        self.assertEqual(harness.u32(emu, index), 3)
+        self.assertTrue(duty and abs(duty[-1] - 349) <= 3, duty)
+        emu.send("t 1 233 398", "t 0 233 398", pause=2)  # the check button saves the level
+        self.assertEqual(harness.u32(emu, 0x380077F8 + 0x2C), 3)
+        emu.poke(START + 0xE30, struct.pack("<I", 0))
+        emu.call(0x100E17F5, START + 0xE30, 0, 0)  # plays pattern *arg at the saved level's strength
+        emu.sleep(1)
+        played = [d for _, d, _ in emu.motor()[n:] if d > 0][len(duty):]
+        self.assertTrue(played and abs(played[-1] - 349) <= 3, played)
 
     def test_patched_boots_and_view_without_loader_fails_cleanly(self):
         emu = self.emu

@@ -1,7 +1,7 @@
 # Firmware image for OTA
 
-`make fw-ota VERSION_CODE=0x10002` builds `target/fw-wp2.bin`. It is the stock `1.0.0.73` image with the patched
-`app.bin` (stub, heap reservation, stock vibrations at 35 %; `wp2apps firmware --motor` sets the share). All other
+`make fw-ota VERSION_CODE=0x10003` builds `target/fw-wp2.bin`. It is the stock `1.0.0.73` image with the patched
+`app.bin` (stub, heap reservation, a fourth vibration level at 35 %; see `wp2apps firmware --help`). All other
 partitions (`res`, `fonts`, `res_e`, `sdfs_k`, AGPS trailer) are stock. `make fw-motor` uses the same builder for
 the motor-only image.
 
