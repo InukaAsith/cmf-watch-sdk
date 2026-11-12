@@ -1,5 +1,6 @@
-"""lv-demo (ABI 1.2, stock LVGL widgets) in the emulator: the screen, LV events, crown scrolling with the round
-scroll bar, a rejected batch, DEL of the list, GUI heap after exit and a force stop while the app sits in lv_submit.
+"""lv-demo (ABI 1.2, stock LVGL widgets in the stock look) in the emulator: the screen, LV events, crown scrolling
+with the round scroll bar, a rejected batch, DEL of the list, GUI heap after exit and a force stop while the app sits
+in lv_submit.
 Needs target/{loader,lv-demo}.wp2app. WP2_NETSIM_INSTANCE=93."""
 import asyncio
 from contextlib import ExitStack
@@ -18,37 +19,29 @@ RUNNING = S + 6
 ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/lv-demo"
 LOADER_ELF = paths.ROOT / "fw/target/thumbv7em-none-eabi/release/wp2-loader"
 OUT = paths.ROOT / "runs" / "lv"
-# sdk/examples/lv-demo/src/screen.rs
-LIST_Y, ROW_H, ROW_GAP = 76, 50, 8
-SLIDER_Y = 298  # centre line
-ARC_BOX = (103, 322, 223, 442)
+# sdk/examples/lv-demo/src/screen.rs and cmf_wp2_app::stock
+LIST_TOP, ROW_H, ROW_GAP = 348, 120, 8
+PAGE, BAR, TITLE, CARD = 1, 2, 3, 4  # handles in creation order
+ROW_X = 330  # right of a row's name, inside the round screen
 CLICKED, VALUE_CHANGED = 7, 28
 # STATS indices (lv-demo main.rs)
-(FONT_RC, SCREEN_RC, MSG_RC, EVENTS, LAST_H, LAST_CODE, LAST_DELTA, ARC_VALUE, SLIDER, ARC, BAR, SPINS, LIST, MSGS,
+(FONT_RC, SCREEN_RC, MSG_RC, EVENTS, LAST_H, LAST_CODE, LAST_DELTA, ARC_VALUE, SLIDER, ARC, BAR_STAT, SPINS, LIST, MSGS,
  ROWS) = range(15)
-N_STATS = ROWS + 12
+N_ROWS = 4
+N_STATS = ROWS + N_ROWS
+LIST_HANDLES = 1 + N_ROWS * 5  # the list, then per row: row, circle, letter, name, detail
 COORDS, FLAGS = 0x14, 0x24  # lv_obj_t: i32 x1 y1 x2 y2; flags (bit 0 HIDDEN), docs/recon-lvgl.md
 CROWN_DOWN = "r -80"  # one detent
 
 
-def cyan(p) -> bool:
+def accent(p) -> bool:
     r, g, b = p
-    return g > r + 60 and b > r + 60
+    return r > g + 60 and r > b + 60
 
 
-def widgets_drawn(px) -> list[str]:
-    """What is missing of the slider (cyan indicator, left of its value) and the arc (cyan indicator)."""
-    x0, y0, x1, y1 = ARC_BOX
-    missing = []
-    if not cyan(px(110, SLIDER_Y)):
-        missing.append("slider indicator")
-    if not any(cyan(px(x, y)) for x in range(x0, x1, 2) for y in range(y0, y1, 2)):
-        missing.append("arc indicator")
-    return missing
-
-
-def row_y(i: int) -> int:
-    return LIST_Y + i * (ROW_H + ROW_GAP) + ROW_H // 2
+def row_bg(p) -> bool:
+    """The stock row colour: dark, nearly grey, not black."""
+    return 10 < max(p) < 90 and max(p) - min(p) < 24
 
 
 @skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd, gdb and llvm-nm)")
@@ -138,6 +131,26 @@ class LvDemoTest(unittest.TestCase):
 
         asyncio.run(run())
 
+    def widgets_drawn(self, px) -> list[str]:
+        """What is missing of the slider (accent indicator, left of its value) and the arc (accent indicator)."""
+        st = self.stats()
+        x0, y0, x1, y1 = self.coords(st[SLIDER])
+        ax0, ay0, ax1, ay1 = self.coords(st[ARC])
+        missing = []
+        if not accent(px(x0 + 20, (y0 + y1) // 2)):
+            missing.append("slider indicator")
+        if not any(accent(px(x, y)) for x in range(ax0, ax1, 2) for y in range(ay0, ay1, 2)):
+            missing.append("arc indicator")
+        return missing
+
+    def slider_y(self) -> int:
+        _, y0, _, y1 = self.coords(self.stats()[SLIDER])
+        return (y0 + y1) // 2
+
+    def row_y(self, i: int) -> int:
+        _, y0, _, y1 = self.coords(self.stats()[ROWS + i])
+        return (y0 + y1) // 2
+
     def wait_stat(self, i: int, pred, what: str):
         for _ in range(40):
             if pred(self.stats()[i]):
@@ -150,45 +163,21 @@ class LvDemoTest(unittest.TestCase):
     def test_screen_events_crown(self):
         s = self.launch()
         rgb, px = self.frame("screen.png")
-        title = {px(x, y) for x in range(130, 336) for y in range(28, 70)}
-        grey = {p for p in title if 30 < p[0] < 220 and max(p) - min(p) < 24}
-        print(f"\ntitle: {len(grey)} grey levels")
-        self.assertGreaterEqual(len(grey), 3, "title is not drawn with an anti-aliased stock font")
-        for i in (0, 1, 2):
-            r, g, b = px(110, row_y(i))
-            self.assertGreater(b, r + 40, f"row {i} background")
-        self.assertEqual(px(110, row_y(0) + ROW_H // 2 + ROW_GAP // 2), (0, 0, 0), "gap between rows 0 and 1")
-        self.assertEqual(widgets_drawn(px), [])
-
-        # tap on row 2: CLICKED for its handle, one motor tick
-        n = len(self.emu.motor())
-        self.emu.send(f"t 1 233 {row_y(2)}", f"t 0 233 {row_y(2)}", pause=1)
-        s = self.stats()
-        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[ROWS + 2], CLICKED), s)
-        tick = self.emu.motor()[n:]
-        print(f"row tap motor.log {tick}")
-        self.assertEqual([d for _, d, _ in tick], [250, 0], tick)
-        self.assertLessEqual(tick[1][0] - tick[0][0], 60)
-
-        # crown: the list scrolls, row 0 moves up, the round scroll bar shows
-        row0 = s[ROWS]
-        y0 = self.coords(row0)[1]
-        self.assertEqual(y0, LIST_Y, "row 0 top before the crown")
-        self.assertTrue(self.hidden(s[BAR]), "scroll bar before the crown")
-        self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
-        shown = not self.hidden(s[BAR])
-        self.frame("crown.png")
-        y1 = self.coords(row0)[1]
-        print(f"crown x4: row 0 top {y0} -> {y1}, scroll bar shown {shown}")
-        self.assertLess(y1, y0, "crown did not scroll the list")
-        self.assertTrue(shown, "round scroll bar not shown while scrolling")
-        self.emu.sleep(1.5)
-        self.assertTrue(self.hidden(s[BAR]), "scroll bar did not hide again")
+        title = {px(x, y) for x in range(130, 336) for y in range(56, 112)}
+        shades = {p for p in title if accent(p)}
+        print(f"\ntitle: {len(shades)} accent shades")
+        self.assertGreaterEqual(len(shades), 3, "title is not drawn with an anti-aliased stock font in the accent")
+        self.assertTrue(row_bg(px(60, 180)), f"card background {px(60, 180)}")
+        self.assertTrue(row_bg(px(ROW_X, LIST_TOP + 32)), f"row 0 background {px(ROW_X, LIST_TOP + 32)}")
+        self.assertEqual(self.coords(s[ROWS])[1], LIST_TOP, "row 0 top")
+        self.assertEqual(self.widgets_drawn(px), [])
 
         # slider: drag leftward (a rightward drag is the stock back gesture: the app gets BUTTON and exits)
+        x0, _, x1, _ = self.coords(s[SLIDER])
+        ax0, ay0, ax1, ay1 = self.coords(s[ARC])
         _, before = self.frame("before-slider.png")
         arc_before = self.stats()[ARC_VALUE]
-        harness.swipe(self.emu, 330, SLIDER_Y, 150, SLIDER_Y, steps=4, pause=1)
+        harness.swipe(self.emu, x1 - 50, self.slider_y(), x0 + 60, self.slider_y(), steps=4, pause=1)
         s = self.stats()
         _, after = self.frame("after-slider.png")
         print(f"slider: arc {arc_before} -> {s[ARC_VALUE]}, last event {s[LAST_H]} {s[LAST_CODE]} {s[LAST_DELTA]}")
@@ -196,9 +185,32 @@ class LvDemoTest(unittest.TestCase):
         self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[SLIDER], VALUE_CHANGED), s)
         self.assertEqual(s[ARC_VALUE], s[LAST_DELTA])
         self.assertLess(s[ARC_VALUE], arc_before)
-        x0, y0, x1, y1 = ARC_BOX
-        self.assertNotEqual([before(x, y) for x in range(x0, x1, 3) for y in range(y0, y1, 3)],
-                            [after(x, y) for x in range(x0, x1, 3) for y in range(y0, y1, 3)], "arc did not change")
+        self.assertNotEqual([before(x, y) for x in range(ax0, ax1, 3) for y in range(ay0, ay1, 3)],
+                            [after(x, y) for x in range(ax0, ax1, 3) for y in range(ay0, ay1, 3)], "arc did not change")
+
+        # tap on row 0 (Tick): CLICKED for its handle, one motor tick
+        n = len(self.emu.motor())
+        y = min(self.row_y(0), 440)
+        self.emu.send(f"t 1 {ROW_X} {y}", f"t 0 {ROW_X} {y}", pause=1)
+        s = self.stats()
+        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[ROWS], CLICKED), s)
+        tick = self.emu.motor()[n:]
+        print(f"row tap motor.log {tick}")
+        self.assertEqual([d for _, d, _ in tick], [250, 0], tick)
+        self.assertLessEqual(tick[1][0] - tick[0][0], 60)
+
+        # crown: the page scrolls, row 0 moves up, the round scroll bar shows
+        y0 = self.coords(s[ROWS])[1]
+        self.assertTrue(self.hidden(BAR), "scroll bar before the crown")
+        self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
+        shown = not self.hidden(BAR)
+        self.frame("crown.png")
+        y1 = self.coords(s[ROWS])[1]
+        print(f"crown x4: row 0 top {y0} -> {y1}, scroll bar shown {shown}")
+        self.assertLess(y1, y0, "crown did not scroll the page")
+        self.assertTrue(shown, "round scroll bar not shown while scrolling")
+        self.emu.sleep(1.5)
+        self.assertTrue(self.hidden(BAR), "scroll bar did not hide again")
 
         self.emu.send("c 1", "c 0", pause=2)
         self.assertTrue(self.in_menu(), "BUTTON did not exit to the menu")
@@ -223,12 +235,12 @@ class LvDemoTest(unittest.TestCase):
         return self.wait_stat(MSGS, lambda v: v >= n, f"no result for {text}")
 
     def test_del_list(self):
-        """DEL of a subtree on the device: the list, its 12 rows, their labels and the list's scroll bar."""
+        """DEL of a subtree on the device: the list, its rows and their circles and labels."""
         s = self.launch()
         self.emu.sleep(1)
-        doomed = range(s[LIST], s[BAR] + 1)  # list, rows and labels, bar: created in one run
-        kept = (1, s[SLIDER], s[ARC])  # title, slider, arc
-        self.assertEqual(len(doomed), 26)
+        doomed = range(s[LIST], s[LIST] + LIST_HANDLES)
+        kept = (PAGE, BAR, TITLE, CARD, s[SLIDER], s[ARC])
+        self.assertEqual(s[ROWS + N_ROWS - 1], doomed[-5], "rows are not the list's last handles")
         self.assertTrue(all(self.obj(h) for h in [*doomed, *kept]), "objects before DEL")
         with_list = self.gui_free()
 
@@ -240,29 +252,29 @@ class LvDemoTest(unittest.TestCase):
         print(f"\nGUI heap free: with the list {with_list}, after DEL {gone} (the list cost {gone - with_list})")
         self.assertEqual([h for h in doomed if self.obj(h)], [], "LV_STATE.objs of freed handles")
         self.assertTrue(all(self.obj(h) for h in kept), "DEL took objects outside the list")
-        self.assertGreater(gone - with_list, 2000, "DEL freed too little GUI heap")
-        for i in (0, 1, 2):
-            self.assertEqual(px(110, row_y(i)), (0, 0, 0), f"row {i} still drawn")
-        self.assertEqual(widgets_drawn(px), [])
+        self.assertGreater(gone - with_list, 1000, "DEL freed too little GUI heap")
+        self.assertEqual(px(ROW_X, LIST_TOP + 32), (0, 0, 0), "row 0 still drawn")
+        self.assertEqual(self.widgets_drawn(px), [])
 
-        # the crown's knob was the list: turning it must not touch the freed list or bar
+        # touch still works: the slider reports
+        x0, _, x1, _ = self.coords(s[SLIDER])
+        harness.swipe(self.emu, x1 - 50, self.slider_y(), x0 + 60, self.slider_y(), steps=4, pause=1)
+        s = self.stats()
+        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[SLIDER], VALUE_CHANGED), s)
+        # the crown still scrolls the page, past the place of the freed rows
         self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
         self.emu.sleep(1.5)  # past the bar's 1 s hide timer
         self.assertEqual(self.running(), 0, "crown after DEL")
-        # touch still works: the slider reports
-        harness.swipe(self.emu, 330, SLIDER_Y, 150, SLIDER_Y, steps=4, pause=1)
-        s = self.stats()
-        self.assertEqual((s[LAST_H], s[LAST_CODE]), (s[SLIDER], VALUE_CHANGED), s)
 
-        # the same list again: the same handles, and the GUI heap of the first list (DEL leaked nothing)
+        # the same list again: the same handles, under the card, and the GUI heap of the first list
         s = self.handled(b"!list", 2)
         self.assertEqual(s[MSG_RC], 0, s)
-        self.assertEqual(range(s[LIST], s[BAR] + 1), doomed)
+        self.assertEqual(range(s[LIST], s[LIST] + LIST_HANDLES), doomed)
         self.emu.sleep(0.5)
         again = self.gui_free()
         print(f"GUI heap free with the list again: {again}")
         self.assertLessEqual(abs(again - with_list), 256)
-        self.assertEqual(self.coords(s[ROWS])[1], LIST_Y, "rebuilt row 0 at the top")
+        self.assertEqual(self.coords(s[ROWS])[1], self.coords(CARD)[3] + 1 + ROW_GAP, "rebuilt row 0 under the card")
         y0 = self.coords(s[ROWS])[1]
         self.emu.send(*[CROWN_DOWN] * 4, pause=0.25)
         self.assertLess(self.coords(s[ROWS])[1], y0, "crown does not scroll the rebuilt list")
@@ -309,11 +321,9 @@ class LvDemoTest(unittest.TestCase):
         self.launch()
         self.emu.sleep(1)
         _, px = self.frame("relaunch.png")
-        self.assertEqual(widgets_drawn(px), [], "relaunched screen")
-        for i in (0, 1):
-            r, g, b = px(110, row_y(i))
-            self.assertGreater(b, r + 40, f"relaunch: row {i} background")
-        self.assertEqual(self.coords(self.stats()[ROWS])[1], LIST_Y, "relaunch: row 0 at the top")
+        self.assertEqual(self.widgets_drawn(px), [], "relaunched screen")
+        self.assertTrue(row_bg(px(ROW_X, LIST_TOP + 32)), "relaunch: row 0 background")
+        self.assertEqual(self.coords(self.stats()[ROWS])[1], LIST_TOP, "relaunch: row 0 top")
         self.emu.send("c 1", "c 0", pause=2)
         self.assertTrue(self.in_menu())
 

@@ -690,14 +690,23 @@ repaints only the changed sector.
 
 Instead of drawing with `rect`, an app can build a screen from the watch's own LVGL 8.3 widgets, fonts and
 scrolling. Contract, records and budgets: `docs/abi-1.2.md`; the reference app is `sdk/examples/lv-demo`
-(title, crown-scrolled list with a scroll bar, slider driving an arc, roller).
+(a crown-scrolled page with the title, a card with a slider driving an arc, a row per haptic pattern).
+
+**Always the stock look: `cmf_wp2_app::stock`.** The firmware has no theme: a label without a font falls back to
+LVGL's small built-in one, a widget without styles is bare. `stock` gives:
+- the system font: `stock::font` (its own batch), then `stock::theme` (first in the screen batch);
+- the stock colours: `ACCENT`, `ROW_BG`, `GREY` and the others;
+- the parts of the Apps menu and the stock Settings list: `page` (full-screen, crown, round scroll bar), `title`,
+  `row` (letter circle, name, grey detail), `card`, plus `slider` and `arc` styles.
+
+Do not pick other fonts or colours unless the owner asks for them.
 
 ### LVGL or `cmf-wp2-ui`?
 
 | | LVGL (`cmf_wp2_app::lv`) | pixel (`cmf-wp2-ui`) |
 |---|---|---|
 | Fits | lists, buttons, sliders, rollers, text in the stock fonts, crown scrolling, many static widgets | custom drawing: rings, glows, animation every frame, anything the widgets lack |
-| Costs | each `submit` waits up to one 10 ms UI tick; GUI heap (lv-demo's screen: 7 724 B) | app-side CPU and a full-width write-back per frame (section 2) |
+| Costs | each `submit` waits up to one 10 ms UI tick; GUI heap (lv-demo's screen: 6 868 B) | app-side CPU and a full-width write-back per frame (section 2) |
 | Simulator | **not yet** (`lv_submit` returns `-95`) | yes (`scripts/sim`) |
 | Loader | needs 1.2 (`api.lv()` is `None` before) | any |
 
@@ -707,57 +716,49 @@ An app is one or the other: the first submit hides the framebuffer image, so `re
 
 ```rust
 use cmf_wp2_app::lv::*;
-use cmf_wp2_app::{Api, BUTTON, LV};
+use cmf_wp2_app::{stock, Api, BUTTON, LV};
 
 fn main(api: &'static Api) -> i32 {
     let Some(lv) = api.lv() else { return -95 };       // loader older than 1.2
     let Some(mut b) = Batch::new() else { return -1 }; // one batch per app, a 2 KiB static
-    // fonts in a batch of their own: a missing file stops the batch
-    if b.font(0, StockFont::F32M).and_then(|_| b.submit(&lv)).is_err() { return 1; }
-    let build = |b: &mut Batch| -> Result<Obj, LvError> {
-        b.style(ROOT, Prop::TextColor, 0, 0xFFFF)?;     // inherited by every label
-        let title = b.create(Class::Label, ROOT)?;
-        b.style(title, Prop::TextFont, 0, 0)?;          // font slot 0
-        b.text(title, "Hello")?;
-        b.align(title, Align::TopMid, 0, 40)?;
-        let btn = b.create(Class::Btn, ROOT)?;
-        b.size(btn, 200, 60)?;
-        b.align(btn, Align::Center, 0, 0)?;
-        b.style(btn, Prop::BgColor, 0, 0x198E)?;        // no theme: style it or it is bare
-        b.style(btn, Prop::BgOpa, 0, 255)?;
-        b.style(btn, Prop::Radius, 0, 12)?;
-        b.events(btn, &[Ev::Clicked])?;
-        Ok(btn)
+    // the system font in a batch of its own: a missing file stops the batch
+    if stock::font(&mut b).and_then(|_| b.submit(&lv)).is_err() { return 1; }
+    let build = |b: &mut Batch| -> Result<[Obj; 2], LvError> {
+        stock::theme(b)?;                                // every label: system font, white
+        let (page, _bar) = stock::page(b)?;              // crown scrolls it, round scroll bar
+        stock::title(b, page, "Hello")?;
+        Ok([stock::row(b, page, "W", "Wi-Fi", "On")?, stock::row(b, page, "B", "Bluetooth", "")?])
     };
-    let Ok(btn) = build(&mut b) else { return 2 };
+    let Ok(rows) = build(&mut b) else { return 2 };
     if b.submit(&lv).is_err() { return 3; }             // the whole screen: one tick
     loop {
         match api.event(u32::MAX) {
             Some(e) if e.kind == BUTTON => return 0,
-            Some(e) if e.kind == LV && e.x as u16 == btn.0 && e.y == 7 => { /* CLICKED */ }
+            Some(e) if e.kind == LV && e.y == 7 && e.x as u16 == rows[0].0 => { /* row 0 CLICKED */ }
             _ => {}
         }
     }
 }
 ```
 
-This snippet type-checks against the SDK (`cargo check`) but was not run on the emulator. The shape (`Batch` records,
-`submit` once per screen update) is what `lv-demo` does, and that app is e2e-tested; its screen builder
-(`src/screen.rs`) is host-tested: the batch validates against the same checker as the loader and fits 2048 B.
+This snippet was not run on the emulator. The same calls are what `lv-demo` does, and that app is e2e-tested. Its
+screen builder (`src/screen.rs`) is host-tested: each batch validates against the loader's checker and fits 2048 B.
 
 ### Rules that cost time
 
 - **One batch per screen update.** Each `submit` blocks until the next UI tick (up to 10 ms). Build a screen, or a
   group of changes, in one batch; `Batch::submit` empties the buffer, `LvError::Full` means "submit and continue".
-- **Open fonts in their own batch.** `-2` stops a batch at the failed font. Slots: 4. Names: `StockFont`.
-- **No theme.** A widget without styles for its parts is invisible or bare (slider, arc, button). Style the main part
-  and `LV_PART_INDICATOR 0x02_0000` / `KNOB 0x03_0000` / `SELECTED 0x04_0000` through the selector; copy
-  `lv-demo`'s `screen.rs`. A selector holds one part (MAIN..ITEMS) and at most one state; image sources and the
+- **Open fonts in their own batch.** `-2` stops a batch at the failed font. Slots: 4 (`stock::FONT` is slot 0).
+  Names: `StockFont`.
+- **No theme.** A widget without styles for its parts is invisible or bare (slider, arc, button). Use `stock`, or style
+  the main part and `stock::INDICATOR` / `KNOB` / `SELECTED` through the selector. A selector holds one part (MAIN..ITEMS) and at most one state; image sources and the
   Actions style ids are not available (`docs/abi-1.2.md`, STYLE).
 - **Arcs are 0..100**, `i16` values, no `range`. Bars and sliders take `range`.
 - **Events.** Subscribe with `events` (it adds; there is no unsubscribe); you get `Event { kind: LV, x: handle, y: LVGL event code, delta: value }`
   (CLICKED 7, PRESSED 1, RELEASED 8, LONG_PRESSED 5, VALUE_CHANGED 28). `VALUE_CHANGED` coalesces per (handle, code): a
   drag leaves the latest value, so read `delta` and do not count events.
+- **Children of a flex column keep their order.** There is no "move to index": an object created later lands at the
+  end. Rebuild a part that must stay above others, or put changing parts last (lv-demo's rows).
 - **Crown.** The crown goes to the root (`CROWN ±1`) unless an object is the knob. `knob(list)` makes a scrollable
   object scroll with the crown; `scroll_bar(list)` adds the round bar, which goes with `list` (`del` refuses the bar
   itself). **A roller takes the crown when it is created**: send `knob(...)` after creating it. A plain `obj` is
@@ -871,7 +872,8 @@ battery use with `keep_screen_on` or a polling daemon.
 - [ ] Nothing personal goes over BLE, in either direction, and nothing personal is logged or committed.
 - [ ] Host messages are parsed defensively (magic, version, lengths).
 - [ ] `keep_screen_on(true)` only with a deadline.
-- [ ] LVGL app: every widget part is styled, the screen is one batch, fonts are in their own batch, the crown goes
-      to the right object after a roller, nothing relies on a rightward slider drag.
+- [ ] LVGL app: the system font and stock look through `cmf_wp2_app::stock` (no LVGL default font, no own palette),
+      every widget part is styled, the screen is one batch, fonts are in their own batch, the crown goes to the right
+      object after a roller, nothing relies on a rightward slider drag.
 - [ ] `icon.svg` present (or the letter fallback is intended), version bumped, host tests pass, the e2e or a manual
       emulator run covers start, input, pause and exit.
