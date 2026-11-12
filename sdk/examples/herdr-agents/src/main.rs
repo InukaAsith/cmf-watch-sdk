@@ -3,7 +3,7 @@
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 mod model;
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
-mod view;
+mod screen;
 
 #[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}
@@ -11,8 +11,9 @@ fn main() {}
 #[cfg(any(target_os = "none", wp2_sim))]
 mod device {
     use crate::model::*;
-    use crate::view::Ui;
-    use cmf_wp2_app::{Api, BUTTON, CROWN, MSG_MAX, PAUSE, RESUME, STORE_MAX, TOUCH_DOWN};
+    use crate::screen::{self, Screen};
+    use cmf_wp2_app::lv::{Batch, LvError, FOCUSED};
+    use cmf_wp2_app::{Api, BUTTON, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
     use cmf_wp2_ui::haptic::Motor;
 
     cmf_wp2_app::entry!(main);
@@ -20,10 +21,36 @@ mod device {
 
     const ASK_MS: u32 = 3000;
     const AWAKE_MS: u32 = 20_000;
-    const ANIM_MS: u32 = 80;
+    // working dots: a colour step per tick
+    const PULSE_MS: u32 = 100;
+    const CLICKED: i16 = 7;
     static mut STORE: [u8; STORE_MAX] = [0; STORE_MAX];
-    // ~3 KB: off the 8 KiB app stack
-    static mut UI: Ui = Ui::new();
+    // ~3 KB each: off the 8 KiB app stack
+    static mut MODEL: Model = Model::new();
+    static mut SCREEN: Option<Screen> = None;
+
+    // read by tests/test_herdr_e2e.py: the first sync's result, FOCUSED events, the centred row, CLICKED rows
+    const SYNC_RC: usize = 0;
+    const FOCUS_EVENTS: usize = 1;
+    const SEL: usize = 2;
+    const CLICKS: usize = 3;
+    // non-zero: in .data, fresh at every launch; SYNC_RC 1 until the first sync returned
+    #[unsafe(no_mangle)]
+    static mut STATS: [i32; 4] = [1, 0, -1, 0];
+
+    fn set(i: usize, v: i32) {
+        unsafe { (&raw mut STATS[i]).write_volatile(v) }
+    }
+    fn get(i: usize) -> i32 {
+        unsafe { (&raw const STATS[i]).read_volatile() }
+    }
+    fn code(r: Result<(), LvError>) -> i32 {
+        match r {
+            Ok(()) => 0,
+            Err(LvError::Code(c)) => c,
+            Err(_) => -1000,
+        }
+    }
 
     fn after(now: u32, t: u32) -> bool {
         (now.wrapping_sub(t) as i32) >= 0
@@ -47,20 +74,30 @@ mod device {
     }
 
     fn main(api: &'static Api) -> i32 {
-        let ui = unsafe { &mut *&raw mut UI };
+        let Some(lv) = api.lv() else { return -95 }; // loader older than ABI 1.2
+        let Some(mut b) = Batch::new() else { return -1 };
+        let model = unsafe { &mut *&raw mut MODEL };
         let buf = unsafe { &mut *&raw mut STORE };
         let n = api.load(buf);
         if n > 0 {
-            ui.model.load(&buf[..n as usize]);
-            ui.changed();
+            model.load(&buf[..n as usize]);
         }
-        let mut screen = api;
+        if Screen::fonts(&mut b).and_then(|_| b.submit(&lv)).is_err() {
+            return 1;
+        }
+        let scr = unsafe { &mut *&raw mut SCREEN };
+        let Ok(s) = Screen::build(&mut b) else { return 2 };
+        let s = scr.insert(s);
+        let mut flush = |b: &mut Batch| b.submit(&lv);
+        let mut heard: Option<u32> = None;
+        set(SYNC_RC, code(s.sync(&mut b, &mut flush, model, screen::status_line(heard, api.now()), api.now())));
+
         let mut motor = Motor::new(api);
         let mut want = true;
         let mut asked: Option<u32> = None;
         let mut awake: Option<u32> = None;
         let mut unsaved = false;
-        let mut animated = 0u32;
+        let mut pulsed = 0u32;
         loop {
             let now = api.now();
             motor.update();
@@ -68,43 +105,36 @@ mod device {
                 api.keep_screen_on(false);
                 awake = None;
             }
-            if ui.draw(&mut screen, now) {
-                api.show();
-                animated = now;
-            } else if now.wrapping_sub(animated) >= ANIM_MS {
-                if ui.animate(&mut screen, now) {
-                    api.show();
-                }
-                animated = now;
+            if now.wrapping_sub(pulsed) >= PULSE_MS {
+                let _ = s.sync(&mut b, &mut flush, model, screen::status_line(heard, now), now);
+                pulsed = now;
             }
-            let stale = ui.heard.is_none_or(|t| now.wrapping_sub(t) > crate::view::STALE_MS);
+            let stale = heard.is_none_or(|t| now.wrapping_sub(t) > screen::STALE_MS);
             if (want || stale) && asked.is_none_or(|t| now.wrapping_sub(t) >= ASK_MS) {
                 api.send(REQUEST);
                 asked = Some(now);
             }
 
-            let wait = motor.wait().unwrap_or(ANIM_MS).min(ANIM_MS);
-            match api.event(wait).map(|e| (e.kind, e.y, e.delta)) {
-                Some((BUTTON, _, _)) => break,
-                Some((PAUSE, _, _)) => {
+            let wait = motor.wait().unwrap_or(PULSE_MS).min(PULSE_MS);
+            match api.event(wait) {
+                Some(e) if e.kind == BUTTON => break,
+                Some(e) if e.kind == PAUSE => {
                     motor.off();
                     if !paused(api) {
                         break;
                     }
                     want = true;
                     asked = None;
-                    ui.redraw();
                 }
-                Some((RESUME, _, _)) => {
-                    want = true;
-                    ui.redraw();
+                Some(e) if e.kind == RESUME => want = true,
+                Some(e) if e.kind == LV && e.y == FOCUSED => {
+                    set(FOCUS_EVENTS, get(FOCUS_EVENTS) + 1);
+                    set(SEL, e.delta.into());
                 }
-                Some((CROWN, _, delta)) if delta != 0 => {
-                    ui.crown(delta, api.now());
-                }
-                Some((TOUCH_DOWN, y, _)) => {
-                    if let Some(id) = ui.tap(y as i32, api.now()) {
-                        api.send(&[b'h', b'1', b'F', id]);
+                Some(e) if e.kind == LV && e.y == CLICKED => {
+                    if let Some(a) = s.row_of(e.x as u16).and_then(|i| model.get(i)) {
+                        set(CLICKS, get(CLICKS) + 1);
+                        api.send(&[b'h', b'1', b'F', a.id]);
                     }
                 }
                 _ => {}
@@ -112,14 +142,13 @@ mod device {
 
             let mut msg = [0u8; MSG_MAX];
             let mut buzz = None;
+            let mut changed = false;
             while let Some(m) = api.recv(&mut msg) {
-                let fx = ui.model.apply(m);
+                let fx = model.apply(m);
                 if decode(m).is_some() {
-                    ui.heard = Some(api.now());
+                    heard = Some(api.now());
                 }
-                if fx.changed {
-                    ui.changed();
-                }
+                changed |= fx.changed;
                 unsaved |= fx.changed;
                 buzz = buzz.max(fx.buzz);
                 if fx.resync {
@@ -128,9 +157,12 @@ mod device {
                 }
                 if fx.synced {
                     want = false;
-                    save(api, &ui.model);
+                    save(api, model);
                     unsaved = false;
                 }
+            }
+            if changed {
+                pulsed = pulsed.wrapping_sub(PULSE_MS); // sync on the next turn
             }
             if let Some(b) = buzz {
                 motor.play(b.pattern());
@@ -140,7 +172,7 @@ mod device {
         }
         motor.off();
         if unsaved {
-            save(api, &ui.model);
+            save(api, model);
         }
         0
     }

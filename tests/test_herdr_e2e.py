@@ -1,9 +1,11 @@
-"""herdr-agents in the emulator: the daemon (fake herdr) binds first, the app opens, the list renders, a blocked
-transition buzzes, a tap reaches `herdr agent focus`, and a reopened app shows the stored list while it waits.
+"""herdr-agents (LVGL, stock focus list) in the emulator: the daemon (fake herdr) binds first, the app opens, the list
+renders, the crown moves the centred row (FOCUSED), a blocked transition buzzes, a tap reaches `herdr agent focus`,
+and a reopened app shows the stored list while it waits.
 Needs target/{loader,herdr-agents}.wp2app. WP2_NETSIM_INSTANCE=87."""
 import asyncio
 import json
 import os
+import struct
 import tempfile
 import threading
 import time
@@ -18,8 +20,12 @@ from wp2apps import channel, herdr, paths
 FAKE = Path(__file__).parent / "fixtures" / "fake_herdr.py"
 OUT = paths.ROOT / "runs" / "herdr-agents"
 RUNNING = harness.STUB_RAM + 6
-# view.rs focus_geometry: the selected item's dot on the focus line, the next two below it
-DOTS = [(33, 250), (55, 310), (99, 370)]
+# screen.rs: the page is y 104..466, its centre line 285; row 0 is centred, row 1 a row (104 px) lower, shifted
+# 32 px right by the stock fisheye; a row's dot: x1 16 + shift + 24, 36 px
+DOTS = [(58, 285), (90, 389)]
+ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/herdr-agents"
+SYNC_RC, FOCUS_EVENTS, SEL, CLICKS = range(4)  # STATS, main.rs
+CROWN_DOWN = "r -80"
 BLOCKED, DONE, WORKING, IDLE = "blocked", "done", "working", "idle"
 WORKSPACES = [{"workspace_id": "w1", "label": "проект"}, {"workspace_id": "w2", "label": "infra"}]
 
@@ -84,6 +90,10 @@ class HerdrAgentsTest(unittest.TestCase):
         save_png(OUT / name, w, h, rgb)
         return lambda x, y: tuple(rgb[(y * w + x) * 3:][:3])
 
+    def stats(self):
+        at = harness.u32(self.emu, harness.STUB_RAM + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
+        return struct.unpack("<4i", self.emu.peek(at, 16))
+
     def write(self, agents):
         self.state.write_text(json.dumps({"agents": agents, "workspaces": WORKSPACES}))
 
@@ -103,12 +113,27 @@ class HerdrAgentsTest(unittest.TestCase):
                 daemon.wait_log("asked for a snapshot")
                 self.emu.sleep(2)
                 px = self.frame("1-list.png")
-                # blocked p4 selected on the focus line, then done p3, working infra/tests
-                for (x, y), colour in zip(DOTS, [BLOCKED, DONE, WORKING]):
+                st = self.stats()
+                self.assertEqual(st[SYNC_RC], 0, st)
+                # blocked p4 on the centre line, done p3 under it
+                for (x, y), colour in zip(DOTS, [BLOCKED, DONE]):
                     got = px(x, y)
                     self.assertEqual(hue(got), colour, f"dot at {x},{y}: {got}")
                 self.assertEqual({hue(px(x, 52)) for x in range(140, 330)} - {None, IDLE}, {BLOCKED, DONE, WORKING},
                                  "header dots missing")
+
+                # the crown scrolls the page: row 1 comes to the centre line and the app hears FOCUSED
+                events = st[FOCUS_EVENTS]
+                self.emu.send(*[CROWN_DOWN] * 3, pause=0.3)
+                self.emu.sleep(1)
+                st = self.stats()
+                self.frame("1b-crown.png")
+                print(f"\ncrown x3: STATS {st}")
+                self.assertGreater(st[FOCUS_EVENTS], events, "no FOCUSED event")
+                self.assertGreaterEqual(st[SEL], 1, "the centred row did not move")
+                self.emu.send(*["r 80"] * 6, pause=0.3)  # back to the top
+                self.emu.sleep(1)
+                self.assertEqual(self.stats()[SEL], 0)
 
                 n = len(self.emu.motor())
                 self.write([dict(a, agent_status="blocked") if a["pane_id"] == "w1:p1" else a for a in AGENTS])
@@ -126,6 +151,7 @@ class HerdrAgentsTest(unittest.TestCase):
 
                 y = DOTS[1][1]
                 self.emu.send(f"t 1 233 {y}", f"t 0 233 {y}", pause=0.5)
+                self.assertEqual(self.stats()[CLICKS], 1)
                 self.frame("3-tap.png")
                 daemon.wait_log("focus w1:p1", 20)
                 self.assertEqual(focus_log.read_text(), "agent focus w1:p1\n")

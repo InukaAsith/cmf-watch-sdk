@@ -8,6 +8,9 @@ version.workspace = true
 cmf-wp2-app = { path = "../../cmf-wp2-app" }
 cmf-wp2-ui = { path = "../../cmf-wp2-ui" }
 
+[dev-dependencies]
+wp2-core = { path = "../../../fw/wp2-core" }
+
 [[bin]]
 name = "herdr-agents"
 bench = false

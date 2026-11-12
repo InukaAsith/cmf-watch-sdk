@@ -627,8 +627,8 @@ Widgets own no event loop: the app passes crown deltas, `TOUCH_DOWN` points (its
   now)` and `select(i, now)` move it with a 160 ms glide (`GLIDE_MS`), `jump(i)` without; `hit(y, now)`,
   `selected()`, `set_len`, `moving(now)`. `draw(s, now, bg, |s, item, focus| ...)` clears `top..bottom` and paints
   the items that fit, each with `Focus { y, x0, x1, d, t }`: `t` is ONE on the centre line and 0 a pitch away, so
-  highlight and enlarge by `t` and dim by `d`. Redraws only while it moves (or after `invalidate`). herdr-agents
-  uses it.
+  highlight and enlarge by `t` and dim by `d`. Redraws only while it moves (or after `invalidate`). For an LVGL app
+  use the native one instead: `stock::focus_page` (section 5a).
 - `Label<N>::new(cx, y, scale, fg, bg)`: centred text or a number (`set`, `set_int`, `set_colour`), clipped to the
   circle with an ellipsis; clears only what it drew last. Use it for headers, titles and big numbers.
 - `ProgressRing::new(cx, cy, r0, r1, on, off, bg)`: `set(0..=ONE)` from 12 o'clock; redraws the whole ring on change.
@@ -704,6 +704,11 @@ LVGL's small built-in one, a widget without styles is bare. `stock` gives:
 - the stock colours: `ACCENT`, `ROW_BG`, `GREY` and the others;
 - the parts of the Apps menu and the stock Settings list: `page` (full-screen, crown, round scroll bar), `title`,
   `row` (letter circle, name, grey detail), `card`, plus `slider` and `arc` styles.
+
+- the stock app list: `focus_page(b, icon)` and `focus_row` (FOCUS: the fisheye, the centred row CHECKED, `FOCUSED`
+  events with its index), as herdr-agents uses them.
+
+Labels with a fixed size: `b.long_mode(label, LongMode::Dot)` keeps them on one line ending in "...".
 
 Do not pick other fonts or colours unless the owner asks for them.
 

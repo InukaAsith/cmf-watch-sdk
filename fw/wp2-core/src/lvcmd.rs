@@ -91,6 +91,8 @@ pub enum Rec<'a> {
     ScrollBar { h: u16, target: u16 },
     Knob(u16),
     Angles { h: u16, start: u16, end: u16, rot: u16 },
+    Focus { h: u16, icon: u16 },
+    LongMode { h: u16, mode: u8 },
 }
 
 /// Handle table: class per handle (`0xFF` = free; 0 is the root, class Obj) and the parent
@@ -226,6 +228,14 @@ fn decode<'a>(buf: &mut &'a [u8]) -> Result<Rec<'a>, Error> {
         0x10 => {
             need(6)?;
             Rec::Angles { h, start: u16le(p), end: u16le(&p[2..]), rot: u16le(&p[4..]) }
+        }
+        0x11 => {
+            need(2)?;
+            Rec::Focus { h, icon: u16le(p) }
+        }
+        0x12 => {
+            need(1)?;
+            Rec::LongMode { h, mode: p[0] }
         }
         _ => return Err(Error::Malformed),
     })
@@ -379,6 +389,17 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
             want(t, h, &[Class::Arc])?;
             bad(start > 360 || end > 360 || rot > 360)?;
         }
+        Rec::Focus { h, icon } => {
+            if child(t, h)? != Class::Obj {
+                return Err(Error::BadClass);
+            }
+            bad(icon > 466)?;
+        }
+        Rec::LongMode { h, mode } => {
+            want(t, h, &[Class::Label])?;
+            // LV_LABEL_LONG_WRAP, DOT, SCROLL, SCROLL_CIRCULAR, CLIP
+            bad(mode > 4)?;
+        }
     }
     Ok(())
 }
@@ -451,6 +472,20 @@ pub fn freed_by_del(t: &Table, h: u16) -> impl Iterator<Item = u16> {
         s[0] &= !1;
     }
     (1..=MAX_OBJS as u16).filter(move |&x| get(&s, x as usize))
+}
+
+/// FOCUS: the most children a focus container shapes (later ones are left as they are).
+pub const FOCUS_MAX: usize = 32;
+/// FOCUS: the LV event code the app gets when the child nearest the centre changes (`delta` = its index).
+pub const FOCUSED: i16 = 100;
+
+/// The stock app list's fisheye (`0x1005ED98`, docs/recon.md) for a child `d` px from the centre line: (x shift,
+/// zoom of child 0 in 1/256, text opacity). The stock x is `16 + shift`; past 280 px it stays as at 280.
+pub fn focus_shape(d: i32) -> (i32, u32, u32) {
+    match d.clamp(0, 280) {
+        d @ 0..104 => (d * 4 / 13, 0x100, 0xFF),
+        d => ((d - 104) * 25 / 48 + 32, (256 - (90 * d - 9360) / 177) as u32, (255 - (180 * d - 18720) / 177) as u32),
+    }
 }
 
 #[cfg(test)]
@@ -573,11 +608,14 @@ mod tests {
                 Rec::ScrollBar { h: 8, target: 2 },
                 Rec::Knob(2),
                 Rec::Angles { h: 4, start: 135, end: 45, rot: 10 },
+                Rec::Focus { h: 2, icon: 96 },
+                Rec::LongMode { h: 1, mode: 1 },
                 Rec::Create { h: 9, class: Class::Obj, parent: 0 },
                 Rec::Del(9),
             ]
         );
         assert_eq!(validate(GOLDEN, &Table::new(), 0), Ok(()));
+        assert_eq!(cmf_wp2_app::lv::FOCUSED, FOCUSED);
     }
 
     #[test]
@@ -719,5 +757,45 @@ mod tests {
         let batch = [create(2, 0, 1), create(3, 1, 2), del(1), create(4, 0, 0), style(3, 2, 0)].concat();
         assert_eq!(validate(&batch, &t, 0), Err(Error::BadHandle));
         assert_eq!(t, before);
+    }
+
+    #[test]
+    fn focus_record_and_shape() {
+        let mut t = Table::new();
+        let mut b = std::vec::Vec::new();
+        b.extend([0x01, 3, 1, 0, 0, 0, 0]); // CREATE obj 1 on the root
+        b.extend([0x01, 3, 2, 0, 1, 0, 0]); // CREATE label 2
+        let f = |h: u16, icon: u16| {
+            let mut r = std::vec::Vec::from([0x11u8, 2]);
+            r.extend(h.to_le_bytes());
+            r.extend(icon.to_le_bytes());
+            r
+        };
+        assert_eq!(validate(&[&b[..], &f(1, 96)].concat(), &t, 0), Ok(()));
+        assert_eq!(records(&f(1, 96)).next(), Some(Ok(Rec::Focus { h: 1, icon: 96 })));
+        for r in records(&b) {
+            apply(&mut t, &r.unwrap());
+        }
+        assert_eq!(validate(&f(0, 96), &t, 0), Err(Error::BadHandle), "the root");
+        assert_eq!(validate(&f(2, 96), &t, 0), Err(Error::BadClass), "a label");
+        assert_eq!(validate(&f(3, 96), &t, 0), Err(Error::BadHandle), "a free handle");
+        assert_eq!(validate(&f(1, 467), &t, 0), Err(Error::BadValue));
+        assert_eq!(validate(&[0x11, 1, 1, 0, 9], &t, 0), Err(Error::Malformed));
+        assert_eq!(validate(&[0x12, 1, 2, 0, 1], &t, 0), Ok(()), "LONG_MODE DOT on a label");
+        assert_eq!(validate(&[0x12, 1, 2, 0, 5], &t, 0), Err(Error::BadValue));
+        assert_eq!(validate(&[0x12, 1, 1, 0, 1], &t, 0), Err(Error::BadClass), "not a label");
+        // the stub's float-matched integers (fw/wp2-stub applist.rs shape) less its base x of 16
+        assert_eq!(focus_shape(0), (0, 256, 255));
+        assert_eq!(focus_shape(103), (31, 256, 255));
+        assert_eq!(focus_shape(104), (32, 256, 255));
+        assert_eq!(focus_shape(280), (123, 167, 77));
+        assert_eq!(focus_shape(5000), focus_shape(280));
+        assert_eq!(focus_shape(-5), focus_shape(0));
+        let mut last = focus_shape(0);
+        for d in 1..=280 {
+            let s = focus_shape(d);
+            assert!(s.0 >= last.0 && s.1 <= last.1 && s.2 <= last.2, "monotonic at {d}");
+            last = s;
+        }
     }
 }

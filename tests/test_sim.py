@@ -15,9 +15,9 @@ from wp2apps.channel import SimChannel
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = "wait 300; t 233 233; wait 300; c 1; wait 300; c -1; wait 300; m hi; wait 300; shot mid; b"
-# end reason, draws something
+# end reason, draws something. LVGL apps (lv-demo, herdr-agents) need the watch's LVGL: not in the simulator yet
 APPS = {"hello": ("exit", True), "vibration-lab": ("exit", True), "agent-glow": ("exit", True),
-        "api-demo": ("exit", True), "herdr-agents": ("exit", True),
+        "api-demo": ("exit", True),
         "motor-hog": ("killed", False), "motor-hold": ("killed", True)}
 
 

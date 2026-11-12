@@ -30,13 +30,13 @@ uv run --locked wp2apps herdr --address <UUID>      # leave it running; -v also 
 
 - Header: blocked, done and working counts. Below it "waiting for Mac..." until the first message, or
   "stale N s" when nothing came for 25 s.
-- Focus list (`cmf_wp2_ui::widget::FocusList`): the selected agent sits on the centre line on a highlighted pill
-  with a bigger title, the others dim with distance; the crown moves the selection one agent with a 160 ms glide,
-  and the selection stays on the same agent when the list is reordered. "n/N" below. Order: blocked (red), done
-  (green), working (blue, pulsing), idle (grey), unknown; then by workspace and title. Each row: title, workspace
-  label under it, cut on a char boundary with an ellipsis.
+- An LVGL app (ABI 1.2) in the stock look: system font, a focus page (`stock::focus_page`) with the stock app list's
+  fisheye: the agent nearest the centre line sits on a pill, the others shift along the edge, fade and their dots
+  shrink; the crown scrolls with the round scroll bar. Order: blocked (red), done (green), working (blue, pulsing),
+  idle (grey), unknown; then by workspace and title. Each row: status dot, title, workspace label under it, one line
+  each ending in "..." (`LONG_MODE` DOT). Not in the simulator (no LVGL there yet).
 - Blocked transition: three 110 ms pulses; done: one 220 ms pulse. Snapshots never buzz.
-- Tap a row: it becomes the selection and the Mac focuses that agent's pane (`herdr agent focus`, else `herdr tab focus`). Button exits.
+- Tap a row: the Mac focuses that agent's pane (`herdr agent focus`, else `herdr tab focus`). Button exits.
 - The last list is saved in app storage after each snapshot and at exit, and fills the screen at the next start.
 
 ## Protocol

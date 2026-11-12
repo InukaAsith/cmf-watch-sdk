@@ -116,6 +116,41 @@ pub fn row(b: &mut Batch, parent: Obj, letter: &str, name: &str, detail: &str) -
     Ok(row)
 }
 
+/// Row height of a focus page: the stock app list's 96 px icon and its 8 px gap.
+pub const FOCUS_ROW_H: i32 = ICON + 8;
+
+/// A full-screen page like the stock app list: the crown scrolls it, the round scroll bar shows, and its children
+/// follow the stock fisheye ([`Batch::focus`]): the one nearest the centre line is CHECKED and the app gets
+/// `FOCUSED` events. The padding lets the first and the last child reach the centre line. `icon` is the side of each
+/// child's child 0 on the centre line (0: none). Returns (page, bar).
+pub fn focus_page(b: &mut Batch, icon: u16) -> Result<(Obj, Obj), LvError> {
+    let (page, bar) = page(b)?;
+    let pad = (SCREEN - FOCUS_ROW_H) / 2;
+    b.style(page, Prop::PadTop, 0, pad)?;
+    b.style(page, Prop::PadBottom, 0, pad)?;
+    b.style(page, Prop::PadRow, 0, 0)?;
+    b.focus(page, icon)?;
+    Ok((page, bar))
+}
+
+/// A row of a focus page, [`FOCUS_ROW_H`] high: transparent, a pill in the stock row colour while it is the centred
+/// one (CHECKED), lighter while pressed. It sends CLICKED. Its first child is the one the fisheye scales.
+pub fn focus_row(b: &mut Batch, parent: Obj) -> Result<Obj, LvError> {
+    let row = b.create(Class::Obj, parent)?;
+    b.size(row, ROW_W, FOCUS_ROW_H)?;
+    for p in [Prop::PadTop, Prop::PadBottom, Prop::PadLeft, Prop::PadRight, Prop::BorderWidth, Prop::BgOpa] {
+        b.style(row, p, 0, 0)?;
+    }
+    b.style(row, Prop::Radius, 0, FOCUS_ROW_H / 2)?;
+    b.style(row, Prop::BgColor, CHECKED, ROW_BG)?;
+    b.style(row, Prop::BgOpa, CHECKED, 255)?;
+    b.style(row, Prop::BgColor, PRESSED, ROW_PRESSED)?;
+    b.style(row, Prop::BgOpa, PRESSED, 255)?;
+    b.flags(row, &[], &[Flag::Scrollable])?;
+    b.events(row, &[Ev::Clicked])?;
+    Ok(row)
+}
+
 /// A row-coloured, rounded panel of height `h` for controls; not scrollable, so a drag on it scrolls the page.
 pub fn card(b: &mut Batch, parent: Obj, h: i32) -> Result<Obj, LvError> {
     let c = b.create(Class::Obj, parent)?;
