@@ -86,8 +86,10 @@ Nothing gets written to a physical watch without the owner's approval.
 
 ## Limits
 
-- The patched firmware plays stock vibrations (notifications, calls, boot) at 35 % of their strength.
-  `wp2apps firmware --motor PERMILLE` sets another share, `--motor 1000` leaves them stock.
+- The patched firmware adds a fourth row to Settings → Vibration, after Off: "Weak" at 35 %
+  (`wp2apps firmware --weak PERMILLE`, `--weak 0` drops it). It is English in every UI language: a translation needs
+  `res` edits (strings, scene, a glyph in the roller font). Stock levels
+  keep their strength; `--motor PERMILLE` scales every stock vibration instead.
 - Packages live in `/NAND:/wp2apps` on the stock FAT volume.
 - Addresses are valid for JX402 `1.0.0.73` only. Other builds need them re-derived.
 

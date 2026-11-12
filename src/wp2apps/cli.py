@@ -40,7 +40,7 @@ def cmd_firmware(args):
         raise ValueError("--motor-only takes no --stub")
     stub = args.stub.read_bytes() if args.stub else None
     motor = None if args.motor == 1000 else args.motor
-    data = firmware.patch(paths.stock_app(), stub, motor=motor, reserve=not args.motor_only)
+    data = firmware.patch(paths.stock_app(), stub, motor=motor, reserve=not args.motor_only, weak=None if args.motor_only else args.weak or None)
     with args.output.open("xb") as out:
         out.write(data)
 
@@ -232,10 +232,12 @@ def parser():
     info = commands.add_parser("info", help="Validate a package and print its header")
     info.add_argument("package", type=Path)
     info.set_defaults(handler=cmd_info)
-    fw = commands.add_parser("firmware", help="Patch the stock app.bin (heap reservation, stub, motor strength)")
+    fw = commands.add_parser("firmware", help="Patch the stock app.bin (heap reservation, stub, motor strength, weak vibration level)")
     fw.add_argument("--stub", type=Path)
-    fw.add_argument("--motor", type=int, default=350, metavar="PERMILLE",
-                    help="stock vibrations at this share of their strength (default 350; 1000 leaves them stock)")
+    fw.add_argument("--motor", type=int, default=1000, metavar="PERMILLE",
+                    help="stock vibrations at this share of their strength (default 1000: stock)")
+    fw.add_argument("--weak", type=int, default=350, metavar="PERMILLE",
+                    help="a fourth vibration level in Settings at this share (default 350; 0: none)")
     fw.add_argument("--motor-only", action="store_true",
                     help="only the motor patch: no heap reservation, no stub, stock app.bin size")
     fw.add_argument("--output", type=Path, required=True)
