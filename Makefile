@@ -4,7 +4,7 @@
 CMF_WATCH_UTILS ?= ../cmf-watch-utils
 STOCK_NOR ?= $(CMF_WATCH_UTILS)/fixtures/nor.bin
 NOR ?= target/nor-wp2.bin
-APPS ?= hello vibration-lab motor-hog motor-hold agent-glow api-demo herdr-agents
+APPS ?= hello vibration-lab motor-hog motor-hold agent-glow api-demo herdr-agents ui-gallery kit-gallery lv-demo
 E2E_APPS := hello vibration-lab motor-hog motor-hold
 VERSION ?= 1
 HCI_PORT ?=

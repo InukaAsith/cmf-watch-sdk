@@ -1,6 +1,6 @@
-"""ui-gallery (cmf-wp2-ui) in the emulator: every page renders, the crown pages (and scrolls the list first),
+"""kit-gallery (cmf-wp2-ui) in the emulator: every page renders, the crown pages (and scrolls the list first),
 taps play the kit's haptic patterns and end with the motor off, PAUSE stops frames, BUTTON exits.
-Needs target/{loader,ui-gallery}.wp2app. WP2_NETSIM_INSTANCE=89."""
+Needs target/{loader,kit-gallery}.wp2app. WP2_NETSIM_INSTANCE=89."""
 import struct
 import unittest
 from unittest import skipUnless
@@ -10,7 +10,7 @@ from tests.test_demo_e2e import save_png
 from wp2apps import paths
 
 START = harness.STUB_RAM
-ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/ui-gallery"
+ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/kit-gallery"
 OUT = paths.ROOT / "runs" / "uikit"
 PAGES = ["shapes", "progress", "list", "buttons", "text", "motion"]
 DOTS = [(233 + (2 * i - 5) * 8, 440) for i in range(6)]  # page_dots in gallery.rs
@@ -45,7 +45,7 @@ class UiGalleryTest(unittest.TestCase):
 
     def test_pages_haptics_pause_button(self):
         OUT.mkdir(parents=True, exist_ok=True)
-        with harness.installed(["loader", "ui-gallery"], name="uikit") as (emu, port):
+        with harness.installed(["loader", "kit-gallery"], name="uikit") as (emu, port):
             harness.open_app(emu, row=0)
             stats_at = harness.u32(emu, START + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
             stats = lambda: struct.unpack("<12I", emu.peek(stats_at, 48))  # per page: frames, draw ms

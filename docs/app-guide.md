@@ -568,7 +568,7 @@ as `wp2apps herdr` does.
 ## 5. UI kit: `cmf-wp2-ui`
 
 `sdk/cmf-wp2-ui` is the shared drawing, layout, text, widget, haptic and motion code. `no_std`, no heap, no floats
-(the target has no FPU). Add `cmf-wp2-ui = { path = "../../cmf-wp2-ui" }`; `sdk/examples/ui-gallery` shows every
+(the target has no FPU). Add `cmf-wp2-ui = { path = "../../cmf-wp2-ui" }`; `sdk/examples/kit-gallery` shows every
 piece, one page each, and `herdr-agents` and `agent-glow` are built on it.
 
 ### Surface
@@ -611,7 +611,7 @@ for a text line; `half(y)`, `inside(x, y)`, `centred(cx, w)`, `polar(r, angle)`.
 `fitted(s, x, y, text, cells, c)` (cuts with a drawn ellipsis in the last cell), `centre(s, cx, y, text, c)`,
 `wrap(text, cells, &mut [&str; N]) -> lines` (greedy by words, `\n` breaks, the last slot gets the rest so `fitted`
 ends it with an ellipsis; call it with two slots per line to give each line of a round screen its own width, as
-ui-gallery's text page does), `int(n, &mut [u8; 11]) -> &str`, `big(s, x, y, text, scale, c)` (the loader's font at
+kit-gallery's text page does), `int(n, &mut [u8; 11]) -> &str`, `big(s, x, y, text, scale, c)` (the loader's font at
 `scale` px per font pixel, Cyrillic included; `scale` 2 equals `text`; "12:30" at 6: 36 rects).
 
 ### Widgets (`widget`)
@@ -682,9 +682,10 @@ loop {
 |---|---|
 | Storage snapshot (versioned blob, garbage loads nothing) | `herdr-agents/src/model.rs`: `Model::save`, `Model::load` |
 | Snapshot/delta protocol with seq gaps and resync | `herdr-agents/src/model.rs`: `decode`, `Model::apply`, `Effect` |
-| Frame loop at 33 ms with `STATS` for the e2e | `agent-glow/src/main.rs`, `ui-gallery/src/main.rs` |
+| Frame loop at 33 ms with `STATS` for the e2e | `agent-glow/src/main.rs`, `kit-gallery/src/main.rs` |
 | Settings screen: tap selects, crown changes | `vibration-lab/src/main.rs`, `lab.rs` |
 | Every 1.1 call | `api-demo/src/main.rs` |
+| LVGL with a framebuffer fallback (simulator); a growing log, newest on top, oldest deleted | `api-demo/src/main.rs`, `log.rs` |
 | Text into a buffer with `core::fmt::Write` | `Buf<N>` in `api-demo/src/main.rs` |
 
 Missing today: bitmaps (only `rect`; the icon path is loader-only), touch move, gestures and long press, any sensor
@@ -695,7 +696,9 @@ repaints only the changed sector.
 ## 5a. LVGL apps (ABI 1.2)
 
 Instead of drawing with `rect`, an app can build a screen from the watch's own LVGL 8.3 widgets, fonts and
-scrolling. Contract, records and budgets: `docs/abi-1.2.md`; the reference app is `sdk/examples/lv-demo`
+scrolling. Contract, records and budgets: `docs/abi-1.2.md`. Examples: `sdk/examples/ui-gallery` (every widget in
+the stock look: a stock focus list of sections with buttons, switches, gauges, a time picker and the stock fonts),
+`herdr-agents` (a live focus list) and `sdk/examples/lv-demo`
 (a crown-scrolled page with the title, a card with a slider driving an arc, a row per haptic pattern).
 
 **Always the stock look: `cmf_wp2_app::stock`.** The firmware has no theme: a label without a font falls back to
@@ -709,6 +712,9 @@ LVGL's small built-in one, a widget without styles is bare. `stock` gives:
   events with its index), as herdr-agents uses them.
 
 Labels with a fixed size: `b.long_mode(label, LongMode::Dot)` keeps them on one line ending in "...".
+
+No borders (`BorderWidth` > 0): on a rounded object they stop the emulator (its display engine lacks the path; the
+watch is untested), so draw an outline as a pill inside a pill (ui-gallery's "More").
 
 Do not pick other fonts or colours unless the owner asks for them.
 
@@ -805,7 +811,7 @@ the round panel mask, its event queue (15 events, input dropped while paused), `
 cap and lock, the 1 s button escape, storage (`runs/sim/<name>/data.dat`, same format, limit and atomic replace),
 local time (`TZ`), a configurable battery, and the channel (`send` is a stdout line, collected every 250 ms like
 a PING poll). Build and launch take ~2 s cold, ~0.3 s warm. A no_std app with the `entry!` at the crate root
-(hello, api-demo) needs no change; an app with a `device` module needs the cfg lines of the template above.
+(hello) needs no change; an app with a `device` module needs the cfg lines of the template above.
 
 - **Window** (default): mouse = touch, wheel or arrows = crown, Esc or B = button, P = pause/resume, M = type a
   message (Enter sends), lines on stdin = messages. The status bar shows shows/s, the motor, keep-on and sent
