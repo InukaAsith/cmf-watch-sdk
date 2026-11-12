@@ -38,7 +38,19 @@ WP2_NOR=runs/ota/install/nor.bin WP2_E2E=1 nix-shell -p gdb llvm --run \
   - The install step is the emulator's host model, not the watch's bootloader.
   - The full image's other partitions were not transferred in the emulator. They are stock bytes.
 
-## Real watch
+## Real watch (2026-11-12, owner's approval)
 
-Not done yet. It needs the owner's yes for the exact image (`AGENTS.md`, rule 1), sent with the stock OTA sequence
-(rule 3).
+Installed `fw-wp2.bin` (`VERSION_CODE=0x10002`) with the stock client of cmf-watch-utils
+(`tools/ota_client.py --image …`), then the loader and apps with `wp2apps install --address`.
+
+- The watch pulled only what differs: TEMP.bin and a short range near the end, 1.6 MB of 57 MB, in 1.5 min. Then
+  `A041 01` came, `0x9041 A5` (END) was sent, and the watch installed the update and rebooted. `AT GETVERSION` still
+  reads `1.0.0.73`.
+- **A stale authkey makes INIT2 reboot the watch.** With the authkey from an older bind, `A052` came but INIT2 got no
+  `A040`, and the watch rebooted (no data had been sent; it came back on stock). Every bind, by the phone too, makes a
+  new random authkey. `cmf_watch.py pair` (a fresh bind) fixed it, and `--stop-after-a040` confirmed it before
+  the transfer.
+- **macOS keeps the watch connected after `wp2apps install`.** After one or two installs, the system showed the watch
+  as `Connected` with no client running, the watch stopped advertising, and the next install found nothing.
+  Switching the Mac's Bluetooth off and on (`blueutil -p 0; blueutil -p 1`) released it.
+- Turn off the phone's Bluetooth during the update so it does not bind in between.
