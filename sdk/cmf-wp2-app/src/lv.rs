@@ -11,6 +11,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Batch buffer size; a record that does not fit gives [`LvError::Full`]: submit and continue.
 pub const BUF: usize = 2048;
+/// `Event.y` of the FOCUS event (see [`Batch::focus`]).
+pub const FOCUSED: i16 = 100;
+/// `LV_STATE_CHECKED` in a style selector: the FOCUS child nearest the centre.
+pub const CHECKED: u32 = 0x01;
 const MAX_OBJS: usize = 192;
 const FREE: u8 = 0xFF;
 const SCROLLBAR: u8 = 7;
@@ -197,6 +201,19 @@ pub enum StockFont {
     F36R,
     F44L,
     F48M,
+}
+
+/// `lv_label_long_mode_t`: what a label with a fixed size does with text that does not fit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LongMode {
+    /// Wrap into more lines (the default).
+    Wrap = 0,
+    /// One line ending in "...".
+    Dot = 1,
+    Scroll = 2,
+    ScrollCircular = 3,
+    Clip = 4,
 }
 
 /// `LV_PCT(n)` for a size, x or y value.
@@ -404,6 +421,20 @@ impl Batch {
         self.put(0x10, obj.0, &[&start.to_le_bytes(), &end.to_le_bytes(), &rotation.to_le_bytes()])
     }
 
+    /// The stock app list's fisheye on `obj`'s children (loader with FOCUS; an older 1.2 loader answers -22): each
+    /// child's content shifts right (its `PadLeft`), its text fades and its child 0 shrinks from `icon` px with its distance from `obj`'s centre
+    /// line; the nearest child gets `LV_STATE_CHECKED` (style it with the `CHECKED` selector) and the app gets
+    /// `Event { kind: LV, x: obj, y: FOCUSED, delta: index }` when it changes. `icon` 0 leaves child 0 alone. The
+    /// loader owns the children's `PadLeft` and `TextOpa`. One FOCUS container per app: a new one replaces it.
+    pub fn focus(&mut self, obj: Obj, icon: u16) -> Result<(), LvError> {
+        self.put(0x11, obj.0, &[&icon.to_le_bytes()])
+    }
+
+    /// How a sized label shows text that does not fit (loader with LONG_MODE; an older 1.2 loader answers -22).
+    pub fn long_mode(&mut self, obj: Obj, mode: LongMode) -> Result<(), LvError> {
+        self.put(0x12, obj.0, &[&[mode as u8]])
+    }
+
     /// Drops the records not submitted yet. Their handles stay taken: use it only for records the loader has
     /// already seen another way (host tests), or not at all.
     pub fn clear(&mut self) {
@@ -452,6 +483,8 @@ mod tests {
         b.scroll_bar(o).unwrap();
         b.knob(o).unwrap();
         b.angles(arc, 135, 45, 10).unwrap();
+        b.focus(o, 96).unwrap();
+        b.long_mode(l, LongMode::Dot).unwrap();
         let tmp = b.create(Class::Obj, ROOT).unwrap();
         b.del(tmp).unwrap();
         b

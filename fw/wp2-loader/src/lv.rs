@@ -7,7 +7,7 @@ use core::ptr::{addr_of_mut, null_mut};
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
 use wp2_core::events::{Event, CROWN, LV};
 use wp2_core::layout::stub_ram;
-use wp2_core::lvcmd::{self, Class, Rec, Table, MAX_FONTS, MAX_OBJS, MAX_OPTIONS};
+use wp2_core::lvcmd::{self, Class, Rec, Table, FOCUS_MAX, MAX_FONTS, MAX_OBJS, MAX_OPTIONS};
 use wp2_core::stock::*;
 
 type Obj = *mut c_void;
@@ -26,6 +26,15 @@ const VALUE_CHANGED: u32 = 28;
 const CODES: [u32; 5] = [1, 7, 5, 8, VALUE_CHANGED];
 // events[h] bit: the crown callback is registered
 const KNOB_CB: u8 = 0x80;
+// events[h] bit: the FOCUS callbacks are registered
+const FOCUS_CB: u8 = 0x40;
+// LVGL 8.3 event codes the FOCUS container listens to
+const SCROLL: u32 = 11;
+const LAYOUT_CHANGED: u32 = 43;
+const STATE_CHECKED: u32 = 0x01;
+// lv_obj_t coords: i32 x1 y1 x2 y2 at +0x14 (docs/recon-lvgl.md)
+const Y1: usize = 0x18;
+const Y2: usize = 0x20;
 const FONT_NAMES: [&[u8; 3]; lvcmd::FONT_FILES as usize] = [
     b"18M", b"24L", b"24M", b"24R", b"28M", b"28R", b"30R", b"32M", b"32R", b"34R", b"36L", b"36M", b"36N", b"36R",
     b"44L", b"48M",
@@ -53,6 +62,12 @@ struct Lv {
     fonts: [[u32; 8]; MAX_FONTS as usize],
     fonts_open: u8,
     table: Table,
+    // FOCUS: the container (0 = none), its child 0 side at the centre, the child nearest the centre (-1 = none
+    // yet), the shape last set on each child (0 = none)
+    focus: u16,
+    focus_icon: u16,
+    focus_sel: i16,
+    focus_last: [u32; FOCUS_MAX],
 }
 
 // Lives in the loader block: zero again on every open of the view. Table::new() is not const: the zeroed table is
@@ -64,6 +79,10 @@ static mut LV_STATE: Lv = Lv {
     fonts: [[0; 8]; MAX_FONTS as usize],
     fonts_open: 0,
     table: unsafe { core::mem::zeroed() },
+    focus: 0,
+    focus_icon: 0,
+    focus_sel: -1,
+    focus_last: [0; FOCUS_MAX],
 };
 
 fn st() -> &'static mut Lv {
@@ -180,6 +199,11 @@ fn exec(r: &Rec) -> Result<(), i32> {
         }
         Rec::Del(h) => {
             stock!(LV_OBJ_DEL, fn(Obj))(o(h));
+            // the focus container's children may have shifted: shape them all again
+            s.focus_last = [0; FOCUS_MAX];
+            if lvcmd::freed_by_del(&s.table, h).any(|x| x == s.focus) {
+                s.focus = 0;
+            }
             // scroll bars targeting the subtree sit on the root: deleted after their target, as stock lists do.
             // A bar handle never gets here (validate refuses DEL of a bar).
             for x in lvcmd::freed_by_del(&s.table, h) {
@@ -267,8 +291,82 @@ fn exec(r: &Rec) -> Result<(), i32> {
             stock!(LV_ARC_SET_BG_ANGLES, fn(Obj, u16, u16))(o(h), start, end);
             stock!(LV_ARC_SET_ROTATION, fn(Obj, u16))(o(h), rot);
         }
+        Rec::LongMode { h, mode } => stock!(LV_LABEL_SET_LONG_MODE, fn(Obj, u32))(o(h), mode.into()),
+        Rec::Focus { h, icon } => {
+            if s.events[h as usize] & FOCUS_CB == 0 {
+                add_cb(o(h), on_focus, SCROLL, h as usize);
+                add_cb(o(h), on_focus, LAYOUT_CHANGED, h as usize);
+                s.events[h as usize] |= FOCUS_CB;
+            }
+            (s.focus, s.focus_icon, s.focus_sel, s.focus_last) = (h, icon, -1, [0; FOCUS_MAX]);
+            // before the first layout the coords are stale; LAYOUT_CHANGED shapes the children again
+            shape_focus();
+        }
     }
     Ok(())
+}
+
+fn mid_y(obj: Obj) -> i32 {
+    unsafe { (*(obj.cast::<u8>().add(Y1) as *const i32) + *(obj.cast::<u8>().add(Y2) as *const i32)) / 2 }
+}
+
+// user_data = handle; an older FOCUS container keeps its callbacks but is no longer shaped
+extern "C" fn on_focus(e: *mut c_void) {
+    if stock!(LV_EVENT_GET_USER_DATA, fn(*mut c_void) -> usize)(e) as u16 == st().focus {
+        shape_focus();
+    }
+}
+
+// The stock app list's fisheye on every child of the FOCUS container: x shift, text opacity and the
+// side of child 0 by distance from the container's centre line; the nearest child is CHECKED and the app gets
+// FOCUSED with its index when it changes. The shift is the child's PAD_LEFT, so its content moves inside it: a
+// TRANSLATE_X widens the container's content and makes it scroll sideways (and lv_obj_set_scroll_dir is not
+// found in the image). A shape is set only when it changed: a style change relayouts the container, which sends
+// LAYOUT_CHANGED again.
+fn shape_focus() {
+    let s = st();
+    let h = s.focus;
+    let cont = s.objs[h as usize];
+    if h == 0 || cont.is_null() {
+        return;
+    }
+    let child = |o: Obj, i: usize| stock!(LV_OBJ_GET_CHILD, fn(Obj, i32) -> Obj)(o, i as i32);
+    let n = (stock!(LV_OBJ_GET_CHILD_CNT, fn(Obj) -> u32)(cont) as usize).min(FOCUS_MAX);
+    let cy = mid_y(cont);
+    let mut best = (i32::MAX, -1i16);
+    for i in 0..n {
+        let c = child(cont, i);
+        let d = (mid_y(c) - cy).abs();
+        if d < best.0 {
+            best = (d, i as i16);
+        }
+        let (shift, zoom, opa) = lvcmd::focus_shape(d);
+        // shift < 256, zoom <= 256, opa < 256
+        let packed = shift as u32 | zoom << 8 | opa << 20;
+        if s.focus_last[i] == packed {
+            continue;
+        }
+        s.focus_last[i] = packed;
+        style(c, LV_STYLE_PAD_LEFT, shift as u32, 0);
+        style(c, LV_STYLE_TEXT_OPA, opa, 0);
+        let icon = if s.focus_icon != 0 { child(c, 0) } else { null_mut() };
+        if !icon.is_null() {
+            let side = (u32::from(s.focus_icon) * zoom / 256) as i32;
+            stock!(LV_OBJ_SET_SIZE, fn(Obj, i32, i32))(icon, side, side);
+        }
+    }
+    if best.1 == s.focus_sel {
+        return;
+    }
+    s.focus_sel = best.1;
+    // clear_state on a child without CHECKED returns early (lv_obj_set_state)
+    for i in 0..n {
+        let set = if i as i16 == best.1 { LV_OBJ_ADD_STATE } else { LV_OBJ_CLEAR_STATE };
+        stock!(set, fn(Obj, u32))(child(cont, i), STATE_CHECKED);
+    }
+    if best.1 >= 0 && app::running() && !app::paused() {
+        app::QUEUE.coalesce(Event { kind: LV, x: h as i16, y: lvcmd::FOCUSED, delta: best.1, ..Event::default() });
+    }
 }
 
 // A failed open leaves the built-in font in the slot (styles may already point at it) and the slot closed.
@@ -336,5 +434,6 @@ pub fn teardown() {
     s.events = [0; MAX_OBJS + 1];
     s.options = [0; MAX_OBJS + 1];
     s.table.reset();
+    (s.focus, s.focus_icon, s.focus_sel, s.focus_last) = (0, 0, -1, [0; FOCUS_MAX]);
     STATE.store(IDLE, Ordering::Release);
 }

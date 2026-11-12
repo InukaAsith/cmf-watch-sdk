@@ -70,9 +70,11 @@ pub const LV_FONT_DEFAULT: u32 = 0x101FB6BC;
 // style property ids of this build (8.3.10 numbering, read from the lv_obj_set_style_* setters)
 pub const LV_STYLE_RADIUS: u32 = 0x0B;
 pub const LV_STYLE_PAD_BOTTOM: u32 = 0x11;
+pub const LV_STYLE_PAD_LEFT: u32 = 0x12;
 pub const LV_STYLE_BG_COLOR: u32 = 0x20;
 pub const LV_STYLE_BG_OPA: u32 = 0x21;
 pub const LV_STYLE_TEXT_COLOR: u32 = 0x55;
+pub const LV_STYLE_TEXT_OPA: u32 = 0x56;
 pub const LV_STYLE_TEXT_FONT: u32 = 0x57;
 pub const LV_STYLE_TEXT_ALIGN: u32 = 0x5B;
 
@@ -105,6 +107,12 @@ pub const LV_OBJ_SET_FLEX_ALIGN: u32 = 0x10133595;
 pub const LV_EVENT_GET_TARGET: u32 = 0x101C4C93;
 // (obj, flag) -> bool; the checker of set_knob in lv_entries.py
 pub const LV_OBJ_HAS_FLAG: u32 = 0x101283DD;
+// FOCUS (docs/recon-lvgl.md, `__func__`, high): (obj, i32 index) -> child, negative from the end; child count;
+// (obj, state)
+pub const LV_OBJ_GET_CHILD: u32 = 0x1012C3DD;
+pub const LV_OBJ_GET_CHILD_CNT: u32 = 0x1012C4AD;
+pub const LV_OBJ_ADD_STATE: u32 = 0x10128245;
+pub const LV_OBJ_CLEAR_STATE: u32 = 0x10128311;
 // Ids of the 48 stock lv_obj_set_style_* setters (44 tail-call set_local_style_prop with `movs r1, #id`,
 // 0x101C72CC..0x101C751A; the 4 flex setters load ids that lv_flex_init registers at boot: flow 113, main_place
 // 114, cross_place 115, track_place 116, read in the emulator). 45, 92, 93 are Actions additions. Sorted.
