@@ -206,6 +206,32 @@ def cmd_listen(args):
     asyncio.run(with_watch(args, listen, resume=True))
 
 
+def cmd_chat(args):
+    """Lines typed here go to the running app; what it sends back is printed (api-demo shows both in its log)."""
+    async def chat(s):
+        loop, lines = asyncio.get_running_loop(), asyncio.Queue()
+        loop.add_reader(sys.stdin, lambda: lines.put_nowait(sys.stdin.readline()))
+        print("chat: type a line and Enter; Ctrl-C ends", flush=True)
+        while True:
+            while not lines.empty():
+                line = lines.get_nowait()
+                if line == "":  # EOF
+                    return
+                if line.strip():
+                    await channel.send(s, line.rstrip("\n").encode(), args.slot, 5.0)
+            try:
+                m = await channel.recv(s, 0.3)
+            except TimeoutError:
+                continue
+            if args.slot in (channel.ANY, m.slot):
+                print(f"< {channel.text(m.data)}", flush=True)
+
+    try:
+        asyncio.run(with_watch(args, chat, resume=True))
+    except KeyboardInterrupt:
+        pass
+
+
 def cmd_herdr(args):
     from . import herdr
     return herdr.main(args)
@@ -257,14 +283,15 @@ def parser():
                                  ("remove", cmd_remove, "Delete a slot and its app data"),
                                  ("list", cmd_list, "List installed packages"),
                                  ("send", cmd_send, "Send one message to the running app (ABI 1.1)"),
-                                 ("listen", cmd_listen, "Print the running app's messages as JSON lines")):
+                                 ("listen", cmd_listen, "Print the running app's messages as JSON lines"),
+                                 ("chat", cmd_chat, "Type lines to the running app, print what it sends back")):
         sub = commands.add_parser(name, help=help_)
         if name == "install":
             sub.add_argument("package", type=Path)
             sub.add_argument("--slot", type=slot_arg)
         if name == "remove":
             sub.add_argument("--slot", type=slot_arg, required=True)
-        if name in ("send", "listen"):
+        if name in ("send", "listen", "chat"):
             sub.add_argument("--slot", type=app_slot_arg, default=channel.ANY,
                              help="only this app slot (default: whatever runs)")
         if name == "send":
@@ -286,6 +313,8 @@ def parser():
     herdr.add_argument("--herdr", default="herdr", help="herdr executable")
     herdr.add_argument("--period", type=float, default=1.0, help="seconds between `herdr agent list` polls")
     herdr.add_argument("-v", "--verbose", action="store_true", help="log what is sent, titles included")
+    herdr.add_argument("--chat", action="store_true",
+                       help="also a chat: typed lines go to the running app, its other messages are printed")
     herdr.set_defaults(handler=cmd_herdr)
     scan = commands.add_parser("scan", help="List nearby CMF watches (read-only; address redacted by default)")
     scan.add_argument("--timeout", type=float, default=5.0)

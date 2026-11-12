@@ -118,8 +118,11 @@ class Daemon:
     The app asks for a snapshot (R) on start, on resume and after a gap; until then nothing is sent."""
 
     def __init__(self, ch: channel.Channel, herdr: str = "herdr", period: float = 1.0, beat: float = 10.0,
-                 verbose: bool = False, log=None, on_key=None):
+                 verbose: bool = False, log=None, on_key=None, chat: bool = False):
         self.ch, self.herdr, self.period, self.beat_every, self.verbose = ch, herdr, period, beat, verbose
+        # chat: stdin lines go to whatever app runs, its non-herdr messages are printed (api-demo's log)
+        self.chat = chat
+        self.lines: asyncio.Queue[str] = asyncio.Queue()
         self.log = log or (lambda text: print(f"{time.strftime('%H:%M:%S')} {text}", file=sys.stderr, flush=True))
         self.on_key = on_key
         self.sync = Sync()
@@ -140,8 +143,17 @@ class Daemon:
             return
         self.last_sent = time.monotonic()
 
+    async def say(self, line: str) -> None:
+        try:
+            session = await self.ch.connect()
+            await channel.send(session, line.encode()[:channel.MSG_MAX], channel.ANY, wait=5.0)
+        except (channel.NoApp, TimeoutError, ValueError, *channel.LOST) as error:
+            self.log(f"chat: not sent ({type(error).__name__}: {error})")
+
     async def message(self, m: channel.Message) -> None:
         if m.data[:2] != MAGIC or len(m.data) < 3:
+            if self.chat:
+                print(f"< {channel.text(m.data) or m.data.hex()}", flush=True)
             return
         kind = m.data[2:3]
         if kind == REQUEST:
@@ -176,10 +188,17 @@ class Daemon:
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         next_poll = 0.0
+        if self.chat:
+            loop.add_reader(sys.stdin, lambda: self.lines.put_nowait(sys.stdin.readline()))
         while True:
+            while not self.lines.empty():
+                line = self.lines.get_nowait().rstrip("\n")
+                if line:
+                    await self.say(line)
             self.ch.poll = 0.25 if self.synced else 1.0  # PING cost on the watch: slow until the app is open
             try:
-                m = await self.ch.recv(timeout=max(next_poll - loop.time(), 0.05))
+                wait = max(next_poll - loop.time(), 0.05)
+                m = await self.ch.recv(timeout=min(wait, 0.3) if self.chat else wait)
             except TimeoutError:
                 m = None
             if self.ch.key != self._key:
@@ -203,7 +222,8 @@ def main(args) -> int:
         ch = channel.Channel(address=args.address, hci_port=args.hci_port)
         ch.key = cached_key(target)  # resume the bound session: a new bind shows a popup that ends the running app
         on_key = lambda key: cache_key(target, key)  # noqa: E731
-    daemon = Daemon(ch, herdr=args.herdr, period=args.period, verbose=args.verbose, on_key=on_key)
+    daemon = Daemon(ch, herdr=args.herdr, period=args.period, verbose=args.verbose, on_key=on_key,
+                    chat=getattr(args, "chat", False))
     daemon.log("connecting" + ("" if on_key is None else " (cached session)" if ch.key
                                else " (no cached session: binds, open the app after)"))
     try:
