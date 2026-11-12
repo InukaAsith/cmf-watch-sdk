@@ -198,6 +198,38 @@ class FirmwareTest(unittest.TestCase):
             firmware.patch(STOCK, fake_stub(), motor=350, reserve=False)
 
     @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_weak_row_patch(self):
+        out = firmware.patch(STOCK, fake_stub(), weak=350)
+        u32 = lambda a: struct.unpack_from("<I", out, a - 0x10000000)[0]
+        self.assertEqual(struct.unpack_from("<4I", out, 0x259E80), (255, 250, 0, 89))
+        self.assertEqual(out[0x259E90:0x259E90 + 14], b"%s\n%s\nWeak\n%s\0")
+        # the roller shows Weak at index 2, Off at 3: hooks swap 2 <-> 3 between index and level
+        hooks = {firmware.STOCK_PREVIEW: 0x10259EA0, firmware.STOCK_SET_LEVEL: 0x10259EB4,
+                 firmware.STOCK_GET_LEVEL: 0x10259EC8}
+        calls = [(a, k, firmware.STOCK_PREVIEW) for a, k in firmware.PREVIEW_CALLS]
+        calls += [(a, "bl", firmware.STOCK_SET_LEVEL) for a in firmware.SET_LEVEL_CALLS]
+        calls += [(a, "bl", firmware.STOCK_GET_LEVEL) for a in firmware.GET_LEVEL_CALLS]
+        for at, kind, stock in calls:
+            enc = firmware.thumb_bl if kind == "bl" else firmware.thumb_b_w
+            self.assertEqual(out[at - 0x10000000:at - 0x10000000 + 4], enc(at, hooks[stock]), hex(at))
+        self.assertEqual(out[0x259EA0:0x259EAE], firmware.SWAP_2_3)
+        self.assertEqual(out[0x259EAE:0x259EB2], firmware.thumb_b_w(0x10259EAE, firmware.STOCK_PREVIEW))
+        self.assertEqual(out[0x259EC8:0x259ECA] + out[0x259EDC:0x259EDE], b"\x08\xb5\x08\xbd")
+        self.assertEqual([u32(a) for a in firmware.LEVELS_LITERALS], [0x10259E80] * 2)
+        self.assertEqual([u32(a) for a in firmware.ROLLER_FORMAT_LITERALS], [0x10259E90] * 2)
+        self.assertEqual([out[a - 0x10000000:a - 0x10000000 + 2] for a in firmware.LEVELS_BOUNDS], [b"\x03\x2b"] * 2)
+        self.assertEqual(out[0xBB892:0xBB894], b"\x02\x29")
+        base = firmware.patch(STOCK, fake_stub())
+        self.assertEqual({i & ~3 for i in range(0x200, 0x259E80) if out[i] != base[i]},
+                         {0xE17CC, 0xE17F0, 0xE17F8, 0xE1810, 0xBBADC, 0xBBBD0, 0xBB890}
+                         | {(at - 0x10000000 + i) & ~3 for at, _, _ in calls for i in range(4)})
+        plain = firmware.patch(STOCK, weak=350, reserve=False)
+        firmware.check_acth(plain)
+        self.assertGreaterEqual(struct.unpack_from("<I", plain, 0x18)[0] + 0x200, 0x259EDE)
+        with self.assertRaises(ValueError):
+            firmware.patch(STOCK, weak=1000, reserve=False)
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
     def test_applist_needs_thumb(self):
         with self.assertRaisesRegex(ValueError, "stub"):
             firmware.patch(STOCK, fake_stub(applist=0x1025A120))
