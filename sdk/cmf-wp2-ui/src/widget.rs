@@ -129,6 +129,133 @@ impl List {
     }
 }
 
+/// Glide of a [`FocusList`] to the next selection.
+pub const GLIDE_MS: u32 = 160;
+
+/// Where a [`FocusList`] item is this frame: its centre line `y`, the round screen's chord over its band, its
+/// distance `d` from the focus line and `t`, ONE on the focus line falling to 0 one pitch away.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Focus {
+    pub y: i32,
+    pub x0: i32,
+    pub x1: i32,
+    pub d: i32,
+    pub t: i32,
+}
+
+/// A list whose selected item sits on the focus line `cy`, as in the stock app list: the crown moves the selection
+/// a step and the items glide there ([`GLIDE_MS`]); a tap selects the item under it. Items are `pitch` apart and
+/// drawn only while their whole band is inside `top..bottom`, which the list owns: each redraw clears it. The app
+/// paints an item from its [`Focus`] (highlight and bigger text near `t = ONE`, dimmer with `d`).
+pub struct FocusList {
+    pub top: i32,
+    pub bottom: i32,
+    pub cy: i32,
+    pub pitch: i32,
+    pub margin: i32,
+    len: usize,
+    sel: usize,
+    pos: Tween,
+    drawn: Option<i32>,
+}
+
+impl FocusList {
+    pub const fn new(top: i32, bottom: i32, cy: i32, pitch: i32, margin: i32) -> Self {
+        FocusList { top, bottom, cy, pitch, margin, len: 0, sel: 0, pos: Tween::at(0), drawn: None }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn selected(&self) -> usize {
+        self.sel
+    }
+
+    /// New item count; the selection stays where it is if it still exists. Everything is redrawn.
+    pub fn set_len(&mut self, n: usize) {
+        self.len = n;
+        if self.sel >= n {
+            let s = n.saturating_sub(1);
+            self.sel = s;
+            self.pos = Tween::at(s as i32 * self.pitch);
+        }
+        self.invalidate();
+    }
+
+    /// Selects `i` at once, no glide (e.g. the same item after the list was reordered).
+    pub fn jump(&mut self, i: usize) {
+        self.sel = i.min(self.len.saturating_sub(1));
+        self.pos = Tween::at(self.sel as i32 * self.pitch);
+        self.invalidate();
+    }
+
+    /// Selects `i` with a glide; `true` if the selection changed.
+    pub fn select(&mut self, i: usize, now: u32) -> bool {
+        let i = i.min(self.len.saturating_sub(1));
+        if i == self.sel {
+            return false;
+        }
+        self.sel = i;
+        self.pos.ease = ease_out;
+        self.pos.go(i as i32 * self.pitch, now, GLIDE_MS);
+        true
+    }
+
+    /// One crown detent: the next or previous item; `true` if the selection moved.
+    pub fn crown(&mut self, delta: i16, now: u32) -> bool {
+        let i = self.sel as i32 + delta.signum() as i32;
+        i >= 0 && self.select(i as usize, now)
+    }
+
+    /// The item drawn under a touch at `y`.
+    pub fn hit(&self, y: i32, now: u32) -> Option<usize> {
+        (0..self.len).find(|&i| self.slot(i, now).is_some_and(|f| (y - f.y).abs() * 2 < self.pitch))
+    }
+
+    /// Item `i` this frame, or `None` while its band is not wholly inside `top..bottom`.
+    pub fn slot(&self, i: usize, now: u32) -> Option<Focus> {
+        let y = self.cy + i as i32 * self.pitch - self.pos.value(now);
+        let (y0, y1) = (y - self.pitch / 2, y + self.pitch / 2);
+        if i >= self.len || y0 < self.top || y1 > self.bottom {
+            return None;
+        }
+        let (x0, x1) = chord(y0, y1, self.margin);
+        let d = (y - self.cy).abs();
+        Some(Focus { y, x0, x1, d, t: (ONE - d * ONE / self.pitch).max(0) })
+    }
+
+    /// `true` while the items glide.
+    pub fn moving(&self, now: u32) -> bool {
+        !self.pos.done(now)
+    }
+
+    pub fn invalidate(&mut self) {
+        self.drawn = None;
+    }
+
+    /// Repaints the band when the items moved or after [`invalidate`](Self::invalidate): clears it to `bg`, then
+    /// `item(s, index, focus)` paints each item that fits. `true` if it painted.
+    pub fn draw<S: Surface>(&mut self, s: &mut S, now: u32, bg: u16, mut item: impl FnMut(&mut S, usize, Focus)) -> bool {
+        let p = self.pos.value(now);
+        if self.drawn == Some(p) {
+            return false;
+        }
+        self.drawn = Some(p);
+        s.rect(0, self.top, crate::SIZE, self.bottom - self.top, bg);
+        for i in 0..self.len {
+            if let Some(f) = self.slot(i, now) {
+                item(s, i, f);
+            }
+        }
+        true
+    }
+}
+
 /// Centred text (a header, a title, a big number) of at most `N` bytes; `scale` 2 is normal text, more is big.
 /// Clipped to the round screen with an ellipsis. Redraws only when the text changes, clearing only what it drew.
 pub struct Label<const N: usize> {
@@ -405,6 +532,52 @@ mod tests {
 
     fn fb() -> std::vec::Vec<u16> {
         vec![0u16; (SIZE * SIZE) as usize]
+    }
+
+    #[test]
+    fn focus_list_glides_selects_and_clips() {
+        let mut l = FocusList::new(98, 404, 250, 60, 6);
+        l.set_len(7);
+        // the selection on the focus line, two items above it are out of the list (index < 0), two below fit
+        let ys: std::vec::Vec<_> = (0..7).map(|i| l.slot(i, 0).map(|f| f.y)).collect();
+        assert_eq!(ys, [Some(250), Some(310), Some(370), None, None, None, None]);
+        assert_eq!(l.slot(0, 0).unwrap().t, ONE);
+        assert_eq!(l.slot(1, 0).unwrap().t, 0);
+        assert!(!l.crown(-1, 0), "no item above the first");
+        assert!(l.crown(1, 1000) && l.moving(1000 + GLIDE_MS / 2) && !l.moving(1000 + GLIDE_MS));
+        let mid = l.slot(1, 1000 + GLIDE_MS / 2).unwrap();
+        assert!(mid.y > 250 && mid.y < 310 && mid.t > 0 && mid.t < ONE, "{mid:?}");
+        let end = 1000 + GLIDE_MS;
+        assert_eq!(l.slot(1, end).map(|f| (f.y, f.t)), Some((250, ONE)));
+        assert_eq!(l.slot(0, end).map(|f| f.y), Some(190));
+        // a tap selects what is drawn under it
+        assert_eq!(l.hit(190, end), Some(0));
+        assert_eq!(l.hit(250 + 29, end), Some(1));
+        assert_eq!(l.hit(250 + 31, end), Some(2));
+        assert_eq!(l.hit(60, end), None);
+        for _ in 0..10 {
+            l.crown(1, end);
+        }
+        assert_eq!(l.selected(), 6);
+        l.set_len(3);
+        assert_eq!((l.selected(), l.slot(2, end).map(|f| f.y)), (2, Some(250)));
+        l.jump(0);
+        assert_eq!(l.slot(0, end).map(|f| f.y), Some(250));
+    }
+
+    #[test]
+    fn focus_list_redraws_only_when_it_moves() {
+        let mut px = fb();
+        let mut f = Fb::new(&mut px);
+        let mut l = FocusList::new(98, 404, 250, 60, 6);
+        l.set_len(3);
+        let mut seen = std::vec::Vec::new();
+        assert!(l.draw(&mut f, 0, 0, |_, i, _| seen.push(i)));
+        assert_eq!(seen, [0, 1, 2]);
+        assert!(!l.draw(&mut f, 50, 0, |_, _, _| {}));
+        l.crown(1, 100);
+        assert!(l.draw(&mut f, 150, 0, |_, _, _| {}) && l.draw(&mut f, 100 + GLIDE_MS, 0, |_, _, _| {}));
+        assert!(!l.draw(&mut f, 400, 0, |_, _, _| {}));
     }
 
     #[test]

@@ -100,7 +100,7 @@ mod device {
                     ui.redraw();
                 }
                 Some((CROWN, _, delta)) if delta != 0 => {
-                    ui.crown(delta);
+                    ui.crown(delta, api.now());
                 }
                 Some((TOUCH_DOWN, y, _)) => {
                     if let Some(id) = ui.tap(y as i32, api.now()) {

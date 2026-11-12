@@ -18,8 +18,8 @@ from wp2apps import channel, herdr, paths
 FAKE = Path(__file__).parent / "fixtures" / "fake_herdr.py"
 OUT = paths.ROOT / "runs" / "herdr-agents"
 RUNNING = harness.STUB_RAM + 6
-LIST_TOP, ROW_H = 112, 58  # model.rs
-DOT_X = [48, 23, 21, 43, 87]  # model.rs row_geometry
+# view.rs focus_geometry: the selected item's dot on the focus line, the next two below it
+DOTS = [(33, 250), (55, 310), (99, 370)]
 BLOCKED, DONE, WORKING, IDLE = "blocked", "done", "working", "idle"
 WORKSPACES = [{"workspace_id": "w1", "label": "проект"}, {"workspace_id": "w2", "label": "infra"}]
 
@@ -103,10 +103,10 @@ class HerdrAgentsTest(unittest.TestCase):
                 daemon.wait_log("asked for a snapshot")
                 self.emu.sleep(2)
                 px = self.frame("1-list.png")
-                # blocked p4, done p3, working infra/tests, working проект, idle
-                for row, colour in enumerate([BLOCKED, DONE, WORKING, WORKING, IDLE]):
-                    got = px(DOT_X[row], LIST_TOP + row * ROW_H + ROW_H // 2)
-                    self.assertEqual(hue(got), colour, f"row {row}: {got}")
+                # blocked p4 selected on the focus line, then done p3, working infra/tests
+                for (x, y), colour in zip(DOTS, [BLOCKED, DONE, WORKING]):
+                    got = px(x, y)
+                    self.assertEqual(hue(got), colour, f"dot at {x},{y}: {got}")
                 self.assertEqual({hue(px(x, 52)) for x in range(140, 330)} - {None, IDLE}, {BLOCKED, DONE, WORKING},
                                  "header dots missing")
 
@@ -120,10 +120,12 @@ class HerdrAgentsTest(unittest.TestCase):
                 self.assertEqual(buzz[-1][1], 0, "motor left on")
                 self.assertLess(buzz[-1][0] - on[0][0], 2000)
                 px = self.frame("2-blocked.png")
-                self.assertEqual(hue(px(DOT_X[1], LIST_TOP + ROW_H + ROW_H // 2)), BLOCKED, "p1 not in row 1")
+                # the selection stays on p4; p1 sorts right after it (infra/p4 before проект/p1)
+                self.assertEqual(hue(px(*DOTS[0])), BLOCKED, "p4 not selected")
+                self.assertEqual(hue(px(*DOTS[1])), BLOCKED, "p1 not right under the selection")
 
-                y = LIST_TOP + ROW_H + ROW_H // 2  # row 1: infra/p4 sorts before проект/p1
-                self.emu.send(f"t 1 233 {y}", f"t 0 233 {y}", pause=0.2)
+                y = DOTS[1][1]
+                self.emu.send(f"t 1 233 {y}", f"t 0 233 {y}", pause=0.5)
                 self.frame("3-tap.png")
                 daemon.wait_log("focus w1:p1", 20)
                 self.assertEqual(focus_log.read_text(), "agent focus w1:p1\n")
@@ -137,7 +139,7 @@ class HerdrAgentsTest(unittest.TestCase):
             self.emu.send("t 1 200 180", "t 0 200 180", pause=1.5)
             self.assertEqual(self.emu.peek(RUNNING, 1), b"\x00")
             px = self.frame("4-reopened-waiting.png")
-            self.assertEqual(hue(px(DOT_X[0], LIST_TOP + ROW_H // 2)), BLOCKED, "stored list not shown")
+            self.assertEqual(hue(px(*DOTS[0])), BLOCKED, "stored list not shown")
             self.assertTrue(any(hue(px(x, y)) == BLOCKED for x in range(90, 380) for y in range(76, 92)),
                             "no 'waiting for Mac' line")
             self.emu.send("c 1", "c 0", pause=2)

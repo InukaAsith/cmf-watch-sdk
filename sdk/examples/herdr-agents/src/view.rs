@@ -1,16 +1,19 @@
-// The screen of herdr-agents on the UI kit: header counts, the status line, a 5-row list that follows the round
-// edge, "+N" below. Each part is repainted only when it changes; working dots pulse on their own.
+// The screen of herdr-agents on the UI kit: header counts, the status line, the agents in a focus list (the selected
+// one on the centre line, highlighted, with a bigger title; the crown moves the selection), "n/N" below. Each part
+// is repainted only when it changes; working dots pulse on their own.
 
 use crate::model::{Model, Status};
 use cmf_wp2_ui::color::Rgb;
-use cmf_wp2_ui::draw::disc;
-use cmf_wp2_ui::text::{fitted, int};
-use cmf_wp2_ui::widget::List;
-use cmf_wp2_ui::{C, CHAR, SIZE, Surface};
+use cmf_wp2_ui::draw::{disc, rrect};
+use cmf_wp2_ui::text::{big, clip, ellipsis, fitted, int};
+use cmf_wp2_ui::widget::{Focus, FocusList, GLIDE_MS};
+use cmf_wp2_ui::{C, CHAR, ONE, SIZE, Surface};
 
-pub const LIST_TOP: i32 = 112;
-pub const ROW_H: i32 = 58;
-pub const ROWS: usize = 5;
+// the list band, under the status line and above the footer; the focus line is its middle
+pub const LIST_TOP: i32 = 98;
+pub const LIST_BOTTOM: i32 = 402;
+pub const FOCUS_Y: i32 = (LIST_TOP + LIST_BOTTOM) / 2;
+pub const PITCH: i32 = 60;
 pub const FLASH_MS: u32 = 300;
 // the daemon beats every 10 s
 pub const STALE_MS: u32 = 25_000;
@@ -18,12 +21,16 @@ pub const STALE_MS: u32 = 25_000;
 const BG: u16 = 0x0000;
 const FG: u16 = 0xFFFF;
 const DIM: u16 = 0x8C71;
-const HILITE: u16 = 0x2124;
+// the selected row: the stock row colour; pressed: the stock pressed row
+const SELECTED: Rgb = Rgb(41, 44, 49);
+const PRESSED: Rgb = Rgb(66, 69, 74);
 // the status line: blocked red at 200/256
 const WARN: u16 = 0xC1E3;
 // old dots were drawn 1/2 px wider than r = 7; 8 keeps their size
 const DOT_R: i32 = 8;
 const BLACK: Rgb = Rgb(0, 0, 0);
+// the selected title is drawn at 3 px per font pixel (24 px chars), the rest at 2
+const BIG: i32 = 3;
 // parts of the screen: [y, h]
 const HEADER: [i32; 2] = [36, 28];
 const LINE: [i32; 2] = [72, 24];
@@ -51,23 +58,49 @@ type Line = Option<(&'static str, u32)>;
 
 pub struct Ui {
     pub model: Model,
-    pub list: List,
+    pub list: FocusList,
     pub heard: Option<u32>,
+    // the selected agent's id: the selection follows it when the list is reordered
+    sel_id: Option<u8>,
     flash: Option<(usize, u32)>,
     full: bool,
     counts: Option<(usize, usize, usize)>,
     line: Option<Line>,
-    more: Option<usize>,
+    footer: Option<(usize, usize)>,
+}
+
+/// Where item `i` draws its dot, and the colour behind it.
+fn dot_at(f: &Focus) -> i32 {
+    f.x0 + 22
+}
+
+fn row_bg(f: &Focus, lit: bool) -> Rgb {
+    if lit { PRESSED } else { BLACK.mix(SELECTED, f.t) }
 }
 
 impl Ui {
     pub const fn new() -> Self {
-        Ui { model: Model::new(), list: List::new(LIST_TOP, ROW_H, ROWS, 6), heard: None, flash: None, full: true, counts: None, line: None, more: None }
+        Ui {
+            model: Model::new(),
+            list: FocusList::new(LIST_TOP, LIST_BOTTOM, FOCUS_Y, PITCH, 6),
+            heard: None,
+            sel_id: None,
+            flash: None,
+            full: true,
+            counts: None,
+            line: None,
+            footer: None,
+        }
     }
 
-    /// The model changed: the list is redrawn.
+    /// The model changed: the list is redrawn, the selection stays on the same agent.
     pub fn changed(&mut self) {
         self.list.set_len(self.model.len());
+        let n = self.model.len();
+        if let Some(i) = self.sel_id.and_then(|id| (0..n).find(|&i| self.model.get(i).is_some_and(|a| a.id == id))) {
+            self.list.jump(i);
+        }
+        self.sel_id = self.model.get(self.list.selected()).map(|a| a.id);
     }
 
     /// Everything is repainted on the next draw (start, resume).
@@ -83,19 +116,20 @@ impl Ui {
         }
     }
 
-    pub fn crown(&mut self, delta: i16) -> bool {
-        self.list.crown(delta)
+    pub fn crown(&mut self, delta: i16, now: u32) -> bool {
+        let moved = self.list.crown(delta, now);
+        self.sel_id = self.model.get(self.list.selected()).map(|a| a.id);
+        moved
     }
 
-    /// The agent id under a touch at `y`; its row lights up for [`FLASH_MS`].
+    /// The agent id under a touch at `y`: it becomes the selection and its row lights up for [`FLASH_MS`].
     pub fn tap(&mut self, y: i32, now: u32) -> Option<u8> {
-        let i = self.list.hit(y)?;
-        if let Some((old, _)) = self.flash {
-            self.list.invalidate(old);
-        }
+        let i = self.list.hit(y, now)?;
+        self.list.select(i, now);
         self.flash = Some((i, now.wrapping_add(FLASH_MS)));
-        self.list.invalidate(i);
-        self.model.get(i).map(|a| a.id)
+        self.list.invalidate();
+        self.sel_id = self.model.get(i).map(|a| a.id);
+        self.sel_id
     }
 
     fn flashed(&self, i: usize) -> bool {
@@ -104,17 +138,17 @@ impl Ui {
 
     /// Paints what changed; `true` if anything was drawn (then `show`).
     pub fn draw(&mut self, s: &mut impl Surface, now: u32) -> bool {
-        if let Some((i, t)) = self.flash
+        if let Some((_, t)) = self.flash
             && (now.wrapping_sub(t) as i32) >= 0
         {
             self.flash = None;
-            self.list.invalidate(i);
+            self.list.invalidate();
         }
         let mut any = false;
         if core::mem::take(&mut self.full) {
             s.rect(0, 0, SIZE, SIZE, BG);
-            (self.counts, self.line, self.more) = (None, None, None);
-            self.list.invalidate_all();
+            (self.counts, self.line, self.footer) = (None, None, None);
+            self.list.invalidate();
             any = true;
         }
         let counts = self.model.counts();
@@ -151,44 +185,63 @@ impl Ui {
             any = true;
         }
         let (model, flash) = (&self.model, self.flash);
-        any |= self.list.draw(s, BG, |s, i, row| {
+        any |= self.list.draw(s, now, BG, |s, i, f| {
             let Some(a) = model.get(i) else { return };
-            let (dx, tx) = (row.x0 + 8, row.x0 + 22);
-            let cells = row.cells(tx);
-            let lit = flash.is_some_and(|(f, _)| f == i);
-            if lit {
-                s.rect(dx - 14, row.y + 2, tx + cells as i32 * CHAR - dx + 20, ROW_H - 4, HILITE);
+            let lit = flash.is_some_and(|(j, _)| j == i);
+            let bg = row_bg(&f, lit);
+            if f.t > 0 || lit {
+                rrect(s, f.x0, f.y - PITCH / 2 + 2, f.x1 - f.x0, PITCH - 4, PITCH / 2, bg, BLACK);
             }
+            let (dx, tx) = (dot_at(&f), f.x0 + 40);
             let level = if a.status == Status::Working { pulse(now) } else { 256 };
-            disc(s, dx, row.y + ROW_H / 2, DOT_R, colour(a.status, level), Rgb::from565(if lit { HILITE } else { BG }));
-            fitted(s, tx, row.y + 9, a.title(), cells, FG);
-            fitted(s, tx, row.y + 31, a.ws(), cells, DIM);
+            disc(s, dx, f.y, DOT_R, colour(a.status, level), bg);
+            // brighter near the focus line, DIM two pitches away
+            let fg = Rgb::from565(DIM).mix(Rgb::from565(FG), ONE - (f.d * ONE / (2 * PITCH)).min(ONE)).rgb565();
+            if f.t > ONE / 2 {
+                let cells = ((f.x1 - 8 - tx) / (8 * BIG)).max(0) as usize;
+                let (shown, cut) = clip(a.title(), cells);
+                if cut {
+                    let (shown, _) = clip(shown, cells.saturating_sub(1));
+                    big(s, tx, f.y - 26, shown, BIG, fg);
+                    ellipsis(s, tx + (cells as i32 - 1) * 8 * BIG, f.y - 22, fg);
+                } else {
+                    big(s, tx, f.y - 26, shown, BIG, fg);
+                }
+                fitted(s, tx, f.y + 2, a.ws(), ((f.x1 - 8 - tx) / CHAR).max(0) as usize, DIM);
+            } else {
+                let cells = ((f.x1 - 8 - tx) / CHAR).max(0) as usize;
+                fitted(s, tx, f.y - 17, a.title(), cells, fg);
+                fitted(s, tx, f.y + 1, a.ws(), cells, DIM);
+            }
         });
-        let more = self.list.more();
-        if self.more != Some(more) {
-            self.more = Some(more);
+        let footer = (self.list.selected(), self.list.len());
+        if self.footer != Some(footer) {
+            self.footer = Some(footer);
             s.rect(0, FOOTER[0], SIZE, FOOTER[1], BG);
-            if more > 0 {
-                let mut buf = [0u8; 11];
-                let n = int(more.min(999) as i32, &mut buf);
-                let x = C - (n.len() as i32 + 1) * CHAR / 2;
-                s.text(x, 410, "+", DIM);
-                s.text(x + CHAR, 410, n, DIM);
+            if footer.1 > 1 {
+                let (mut b0, mut b1) = ([0u8; 11], [0u8; 11]);
+                let (n, total) = (int(footer.0 as i32 + 1, &mut b0), int(footer.1.min(999) as i32, &mut b1));
+                let x = C - (n.len() + 1 + total.len()) as i32 * CHAR / 2;
+                s.text(x, 410, n, DIM);
+                s.text(x + n.len() as i32 * CHAR, 410, "/", DIM);
+                s.text(x + (n.len() + 1) as i32 * CHAR, 410, total, DIM);
             }
             any = true;
         }
         any
     }
 
-    /// Repaints only the dots of visible working agents; `true` if any.
+    /// Repaints only the dots of visible working agents; `true` if any. Skipped while the list glides (`draw`
+    /// repaints it every frame then).
     pub fn animate(&self, s: &mut impl Surface, now: u32) -> bool {
+        if self.list.moving(now) {
+            return false;
+        }
         let mut any = false;
-        for r in 0..ROWS {
-            let i = self.list.scroll() + r;
-            let Some(a) = self.model.get(i) else { break };
+        for i in 0..self.model.len() {
+            let (Some(a), Some(f)) = (self.model.get(i), self.list.slot(i, now)) else { continue };
             if a.status == Status::Working && !self.flashed(i) {
-                let row = self.list.row(r);
-                disc(s, row.x0 + 8, row.y + ROW_H / 2, DOT_R, colour(a.status, pulse(now)), BLACK);
+                disc(s, dot_at(&f), f.y, DOT_R, colour(a.status, pulse(now)), row_bg(&f, false));
                 any = true;
             }
         }
@@ -230,28 +283,43 @@ mod tests {
 
     fn full(ui: &Ui, now: u32) -> Vec<u16> {
         let mut fresh = Ui::new();
-        fresh.model = Model::new();
         let mut px = vec![0x1234u16; (SIZE * SIZE) as usize];
         load(&mut fresh, &AGENTS[..ui.model.len()]);
         fresh.heard = ui.heard;
-        for _ in 0..ui.list.scroll() {
-            fresh.crown(1);
-        }
+        fresh.list.jump(ui.list.selected());
         fresh.flash = ui.flash;
         fresh.draw(&mut Fb::new(&mut px), now);
         px
     }
 
-    // tests/test_herdr_e2e.py samples these
+    fn selected_id(ui: &Ui) -> u8 {
+        ui.model.get(ui.list.selected()).unwrap().id
+    }
+
+    // tests/test_herdr_e2e.py samples these: the selected item on the focus line, the next two below it
     #[test]
-    fn rows_follow_the_round_edge() {
-        let ui = Ui::new();
-        let dots: Vec<i32> = (0..ROWS).map(|r| ui.list.row(r).x0 + 8).collect();
-        assert_eq!(dots, [48, 23, 21, 43, 87]);
-        for r in 0..ROWS {
-            let row = ui.list.row(r);
-            assert!(row.cells(row.x0 + 22) >= 14, "row {r}");
-        }
+    fn focus_geometry() {
+        let mut ui = Ui::new();
+        load(&mut ui, AGENTS);
+        let at: Vec<(i32, i32)> = (0..3).map(|i| ui.list.slot(i, 0).map(|f| (dot_at(&f), f.y)).unwrap()).collect();
+        assert_eq!(at, [(33, 250), (55, 310), (99, 370)]);
+        assert!(ui.list.slot(3, 0).is_none());
+    }
+
+    #[test]
+    fn selection_follows_the_agent() {
+        let mut ui = Ui::new();
+        load(&mut ui, AGENTS);
+        ui.crown(1, 0);
+        ui.crown(1, 0);
+        assert_eq!(selected_id(&ui), 5); // blocked 4, done 3, working infra/tests 5
+        // agent 5 goes idle: it sorts after the working ones, the selection goes with it
+        let mut b = Vec::from([5u8, 0, 5]);
+        b.extend(b"infratests".iter());
+        ui.model.apply(&msg(b'U', 30, &b));
+        ui.changed();
+        assert_eq!(selected_id(&ui), 5);
+        assert_ne!(ui.list.selected(), 2);
     }
 
     // every change repaints only its part, and the screen ends up as one full redraw of the same state
@@ -267,17 +335,20 @@ mod tests {
         fb.rects = 0;
         assert!(ui.draw(&mut fb, 200) && fb.rects < 10, "status line only: {} rects", fb.rects);
         load(&mut ui, AGENTS);
-        assert!(ui.crown(1));
-        ui.draw(&mut fb, 300);
-        assert_eq!(ui.tap(LIST_TOP + ROW_H + 5, 300), Some(5));
-        fb.rects = 0;
-        ui.draw(&mut fb, 310);
-        assert!(fb.rects < 200, "one row: {} rects", fb.rects);
-        ui.animate(&mut fb, 310);
-        assert!(fb.px == full(&ui, 310).as_slice(), "flash");
-        ui.draw(&mut fb, 700);
-        assert!(ui.flash.is_none() && ui.animate(&mut fb, 700));
-        assert!(fb.px == full(&ui, 700).as_slice(), "flash ended");
+        assert!(ui.crown(1, 300));
+        assert!(ui.draw(&mut fb, 380), "mid-glide");
+        ui.draw(&mut fb, 300 + GLIDE_MS);
+        assert!(!ui.draw(&mut fb, 500), "still");
+        // a tap on the item under the focus line: it is selected (glide) and sent
+        assert_eq!(ui.tap(FOCUS_Y + PITCH, 600), Some(5));
+        assert_eq!(selected_id(&ui), 5);
+        let settled = 600 + GLIDE_MS;
+        ui.draw(&mut fb, settled);
+        ui.animate(&mut fb, settled);
+        assert!(fb.px == full(&ui, settled).as_slice(), "flash");
+        ui.draw(&mut fb, 1000);
+        assert!(ui.flash.is_none() && ui.animate(&mut fb, 1000));
+        assert!(fb.px == full(&ui, 1000).as_slice(), "flash ended");
         let stale = 100 + STALE_MS + 5000;
         ui.draw(&mut fb, stale);
         ui.animate(&mut fb, stale);
