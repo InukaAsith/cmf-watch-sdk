@@ -4,7 +4,7 @@ Installable apps for the CMF Watch Pro 2, board JX402, stock firmware `1.0.0.73`
 into the stock firmware, a loader lives on NAND, apps are written in Rust and installed over BLE.
 The watch is never reflashed to add or remove an app.
 
-Status: everything runs in the emulator. Only `scan` has been tried on a real watch.
+Status: proven in the emulator. On a real watch: the stub firmware (OTA), the 1.2 loader and the example apps, see [docs/ota.md](docs/ota.md).
 
 - Design: [docs/specs/2026-11-10-wp2-app-loader-design.md](docs/specs/2026-11-10-wp2-app-loader-design.md)
 - Writing an app (quick start, platform limits, API, Mac channel, testing): [docs/app-guide.md](docs/app-guide.md)
