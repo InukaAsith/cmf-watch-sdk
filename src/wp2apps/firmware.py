@@ -36,6 +36,26 @@ STOCK_MOTOR = 0x100FB4B4
 # 32 bytes at 0x10259E3B there. Inside app.bin, so a motor-only patch keeps the file size
 MOTOR_HOOK = 0x10259F00
 MOTOR_HOOK_SIZE = 14
+# vibration settings (setvib_view): an LVGL roller, options = "%s\n%s\n%s" of Strong / Standard / Off; the roller
+# index is the level (property 0x24), levels index a strength table checked with `cmp #2` (docs/recon.md)
+LEVELS = 0x101F4A00
+LEVELS_LITERALS = (0x100E17F0, 0x100E1810)
+LEVELS_BOUNDS = (0x100E17CE, 0x100E17FA)  # cmp r3, #2
+ROLLER_FORMAT = 0x1021D65D
+ROLLER_FORMAT_LITERALS = (0x100BBADC, 0x100BBBD0)  # create, language refresh
+CROWN_MAX = 0x100BB892  # cmp r1, #1: the crown steps up while index <= 1
+WEAK_TABLE = 0x10259E80  # in the zero gap, after the 32 bytes stock reads
+WEAK_FORMAT = WEAK_TABLE + 16
+# Latin label: the selected row's font48m has full ASCII but only `БИРСавгдзийклнрстуъыь` of Cyrillic ("Слабый" lacks б)
+WEAK_LABEL = "Weak"
+# Weak is shown between Standard and Off (roller index 2) but stays level 3, so Off keeps level 2 (phone sync):
+# index <-> level swaps 2 and 3 where setvib_view crosses between them
+STOCK_PREVIEW, STOCK_SET_LEVEL, STOCK_GET_LEVEL = 0x100BB730, 0x100BB6F4, 0x100BB6B8
+PREVIEW_CALLS = ((0x100BB8AE, "b.w"), (0x100BB938, "bl"))  # crown, value changed: preview(index)
+SET_LEVEL_CALLS = (0x100BBC00,)  # check button: level = index
+GET_LEVEL_CALLS = (0x100BB966, 0x100BBA3E)  # create: index = level, roller selected = level
+# cmp r0,#2; beq 1f; cmp r0,#3; bne 2f; movs r0,#2; b 2f; 1: movs r0,#3; 2:
+SWAP_2_3 = bytes.fromhex("022803d0032802d1022000e00320")
 
 
 def sum32(data: bytes) -> int:
@@ -109,9 +129,49 @@ def motor_hook(permille: int) -> bytes:
     return code + thumb_b_w(MOTOR_HOOK + len(code), STOCK_MOTOR)
 
 
+def weak_row(out: bytearray, permille: int) -> int:
+    """A fourth vibration level, shown before Off, at `permille` of full strength. Returns the end of the added data."""
+    if not 0 < permille < 1000:
+        raise ValueError("weak row strength is 1..999 permille")
+    fmt = b"%s\n%s\n" + WEAK_LABEL.encode() + b"\n%s\0"
+    put(out, WEAK_TABLE, bytes(16 + len(fmt)), struct.pack("<4I", 255, 250, 0, 255 * permille // 1000) + fmt)
+    for lit in LEVELS_LITERALS:
+        put(out, lit, struct.pack("<I", LEVELS), struct.pack("<I", WEAK_TABLE))
+    for at in LEVELS_BOUNDS:
+        put(out, at, bytes.fromhex("022b"), bytes.fromhex("032b"))
+    for lit in ROLLER_FORMAT_LITERALS:
+        put(out, lit, struct.pack("<I", ROLLER_FORMAT), struct.pack("<I", WEAK_FORMAT))
+    put(out, CROWN_MAX, bytes.fromhex("0129"), bytes.fromhex("0229"))
+    at = (WEAK_FORMAT + len(fmt) + 3) & ~3
+    preview, at = at, _swap_hook(out, at, STOCK_PREVIEW)
+    set_level, at = at, _swap_hook(out, at, STOCK_SET_LEVEL)
+    get_level = at
+    code = b"\x08\xb5" + thumb_bl(at + 2, STOCK_GET_LEVEL) + SWAP_2_3 + b"\x08\xbd"  # push {r3,lr} .. pop {r3,pc}
+    put(out, at, bytes(len(code)), code)
+    for call, kind in PREVIEW_CALLS:
+        enc = thumb_bl if kind == "bl" else thumb_b_w
+        put(out, call, enc(call, STOCK_PREVIEW), enc(call, preview))
+    for call in SET_LEVEL_CALLS:
+        put(out, call, thumb_bl(call, STOCK_SET_LEVEL), thumb_bl(call, set_level))
+    for call in GET_LEVEL_CALLS:
+        put(out, call, thumb_bl(call, STOCK_GET_LEVEL), thumb_bl(call, get_level))
+    end = at + len(code)
+    if end > MOTOR_HOOK:
+        raise ValueError("weak row code runs into the motor hook")
+    return end
+
+
+def _swap_hook(out: bytearray, at: int, target: int) -> int:
+    """SWAP_2_3 on r0, then tail-call target. Returns the next 4-aligned address."""
+    code = SWAP_2_3 + thumb_b_w(at + len(SWAP_2_3), target)
+    put(out, at, bytes(len(code)), code)
+    return (at + len(code) + 3) & ~3
+
+
 def patch(app: bytes, stub: bytes | None = None, *, motor: int | None = None, reserve: bool = True,
-          _verify: bool = True) -> bytes:
-    """motor: stock vibrations at this many permille of their strength; reserve: the loader's heap reservation."""
+          weak: int | None = None, _verify: bool = True) -> bytes:
+    """motor: stock vibrations at this many permille of their strength; reserve: the loader's heap reservation;
+    weak: a fourth vibration level at this many permille."""
     if _verify and not hashlib.sha256(app).hexdigest().startswith(STOCK_SHA256_PREFIX):
         raise ValueError("not the stock JX402 1.0.0.73 app.bin (sha256 mismatch)")
     if stub is not None and not reserve:
@@ -125,6 +185,9 @@ def patch(app: bytes, stub: bytes | None = None, *, motor: int | None = None, re
         put(out, MOTOR_HOOK, bytes(MOTOR_HOOK_SIZE), motor_hook(motor))
         put(out, MOTOR_CALL, thumb_bl(MOTOR_CALL, STOCK_MOTOR), thumb_bl(MOTOR_CALL, MOTOR_HOOK))
         size = max(size, MOTOR_HOOK + MOTOR_HOOK_SIZE + 2 - APP_VBASE - 0x200)
+    if weak is not None:
+        end = weak_row(out, weak)
+        size = max(size, (end - APP_VBASE - 0x200 + 3) & ~3)
     if stub is not None:
         add_stub(out, stub)
     out += bytes(-len(out) % 4)
