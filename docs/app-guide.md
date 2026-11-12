@@ -623,6 +623,12 @@ Widgets own no event loop: the app passes crown deltas, `TOUCH_DOWN` points (its
 - `List::new(top, row_h, rows, margin)`: `set_len`, `crown(delta) -> moved`, `hit(y) -> Option<item>`, `row(r) ->
   Row { y, h, x0, x1 }` (follows the round edge; `cells(x)` chars that fit), `more()`, `invalidate(item)`,
   `draw(s, bg, |s, item, row| ...)` repaints dirty rows only, each cleared over its chord first.
+- `FocusList::new(top, bottom, cy, pitch, margin)`: the stock app list's selection on a centre line. `crown(delta,
+  now)` and `select(i, now)` move it with a 160 ms glide (`GLIDE_MS`), `jump(i)` without; `hit(y, now)`,
+  `selected()`, `set_len`, `moving(now)`. `draw(s, now, bg, |s, item, focus| ...)` clears `top..bottom` and paints
+  the items that fit, each with `Focus { y, x0, x1, d, t }`: `t` is ONE on the centre line and 0 a pitch away, so
+  highlight and enlarge by `t` and dim by `d`. Redraws only while it moves (or after `invalidate`). herdr-agents
+  uses it.
 - `Label<N>::new(cx, y, scale, fg, bg)`: centred text or a number (`set`, `set_int`, `set_colour`), clipped to the
   circle with an ellipsis; clears only what it drew last. Use it for headers, titles and big numbers.
 - `ProgressRing::new(cx, cy, r0, r1, on, off, bg)`: `set(0..=ONE)` from 12 o'clock; redraws the whole ring on change.
