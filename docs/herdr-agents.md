@@ -11,6 +11,7 @@ nix-shell -p llvm --run 'scripts/build-app herdr-agents 1'
 uv run --locked wp2apps install target/herdr-agents.wp2app --address <UUID>
 # close the "Paired" popup on the watch with the button
 uv run --locked wp2apps herdr --address <UUID>      # leave it running; -v also logs titles
+uv run --locked wp2apps herdr --chat --address <UUID>  # also a chat: typed lines go to the running app (api-demo)
 # now open Apps → herdr-agents on the watch
 ```
 
