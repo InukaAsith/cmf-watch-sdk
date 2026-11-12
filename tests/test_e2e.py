@@ -107,14 +107,23 @@ class StubTest(unittest.TestCase):
         emu.call(harness.OPEN_VIEW, 0x56, 0)
         emu.sleep(2)
         save_png(emu.run / "setvib-open.png", *emu.frame())
+        self.assertEqual(harness.u32(emu, index), 1)  # Standard
+
+        def step_down():
+            # ponytail: one detent at a time until the row changes; crown ticks also pulse the motor at 980
+            start = harness.u32(emu, index)
+            for _ in range(6):
+                emu.send("r -80", pause=1)
+                if harness.u32(emu, index) != start:
+                    break
+
         n = len(emu.motor())
-        for _ in range(4):
-            emu.send(*["r -80"] * 3, pause=1)
+        step_down()  # Weak: index 2, level 3
         save_png(emu.run / "setvib-weak.png", *emu.frame())
         duty = [d for _, d, _ in emu.motor()[n:] if d > 0]
         print(f"\nroller index {harness.u32(emu, index)}, preview duty {duty}, frames in {emu.run}")
-        self.assertEqual(harness.u32(emu, index), 3)
-        self.assertTrue(duty and abs(duty[-1] - 349) <= 3, duty)
+        self.assertEqual(harness.u32(emu, index), 2)
+        self.assertTrue(any(abs(d - 349) <= 3 for d in duty), duty)
         emu.send("t 1 233 398", "t 0 233 398", pause=2)  # the check button saves the level
         self.assertEqual(harness.u32(emu, 0x380077F8 + 0x2C), 3)
         emu.poke(START + 0xE30, struct.pack("<I", 0))
@@ -122,6 +131,16 @@ class StubTest(unittest.TestCase):
         emu.sleep(1)
         played = [d for _, d, _ in emu.motor()[n:] if d > 0][len(duty):]
         self.assertTrue(played and abs(played[-1] - 349) <= 3, played)
+        emu.call(harness.OPEN_VIEW, 0x56, 0)  # reopened, the roller stands on Weak again
+        emu.sleep(2)
+        save_png(emu.run / "setvib-reopen.png", *emu.frame())
+        self.assertEqual(harness.u32(emu, index), 2)
+        n = len(emu.motor())
+        step_down()  # Off: index 3, level 2, no weak preview
+        self.assertEqual(harness.u32(emu, index), 3)
+        log = emu.motor()[n - 1:]  # the stop path re-applies the last duty for 0 ms; count pulses that last
+        off = [(d, t1 - t0) for (t0, d, _), (t1, _, _) in zip(log, log[1:]) if d > 0 and t1 - t0 >= 50]
+        self.assertFalse(any(abs(d - 349) <= 3 for d, _ in off), off)
 
     def test_patched_boots_and_view_without_loader_fails_cleanly(self):
         emu = self.emu

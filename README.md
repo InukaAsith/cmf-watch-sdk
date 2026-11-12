@@ -86,7 +86,7 @@ Nothing gets written to a physical watch without the owner's approval.
 
 ## Limits
 
-- The patched firmware adds a fourth row to Settings → Vibration, after Off: "Weak" at 35 %
+- The patched firmware adds a row to Settings → Vibration between Standard and Off: "Weak" at 35 %
   (`wp2apps firmware --weak PERMILLE`, `--weak 0` drops it). It is English in every UI language: a translation needs
   `res` edits (strings, scene, a glyph in the roller font). Stock levels
   keep their strength; `--motor PERMILLE` scales every stock vibration instead.
