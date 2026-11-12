@@ -1,5 +1,8 @@
 import hashlib
+import lzma
+import re
 import struct
+import zlib
 
 STOCK_SHA256_PREFIX = "30e7978c39d8fb79"
 STUB_OFFSET = 0x25A080
@@ -177,3 +180,50 @@ def stage_nor(nor: bytes, app: bytes) -> bytes:
     out = bytearray(nor)
     out[NOR_APP_OFFSET:NOR_APP_OFFSET + NOR_APP_SIZE] = app + b"\xff" * (NOR_APP_SIZE - len(app))
     return bytes(out)
+
+
+def xz_chunks(data: bytes, chunk: int = 0x200000) -> bytes:
+    """AOTA partition blob: per chunk b"LZMA", u32 16, u32 packed size, u32 size, then an XZ stream (stock: preset 6)."""
+    out = bytearray()
+    for i in range(0, len(data), chunk):
+        piece = lzma.compress(data[i:i + chunk], format=lzma.FORMAT_XZ, preset=6)
+        out += b"LZMA" + struct.pack("<III", 16, len(piece), len(data[i:i + chunk])) + piece
+    return bytes(out)
+
+
+def ota_xml_set(xml: str, file_name: str | None = None, **fields: int) -> str:
+    """Sets `<tag>0x..</tag>` fields of one partition (by file_name) or, with no file_name, of the whole manifest."""
+    if file_name is not None:
+        blocks = [m for m in re.finditer(r"<partition>.*?</partition>", xml, re.S)
+                  if f"<file_name>{file_name}</file_name>" in m.group()]
+        if len(blocks) != 1:
+            raise ValueError(f"ota.xml has {len(blocks)} partition(s) {file_name}")
+        a, b = blocks[0].span()
+        return xml[:a] + ota_xml_set(xml[a:b], **fields) + xml[b:]
+    for tag, value in fields.items():
+        xml, n = re.subn(rf"<{tag}>[^<]*</{tag}>", f"<{tag}>{value:#x}</{tag}>", xml)
+        if n != 1:
+            raise ValueError(f"ota.xml has {n} <{tag}>")
+    return xml
+
+
+def fix_aota_crc(image: bytes) -> bytes:
+    """AOTA header: data CRC32 at +0x18 over [u16 +0x12, u32 +0x14), header CRC32 at +0x04 over +0x08..0x400.
+    `fwkit pack` and `edit-app` leave the data CRC stale; the stock OTA client in the emulator checks it."""
+    out = bytearray(image)
+    start, end = struct.unpack_from("<H", out, 0x12)[0], struct.unpack_from("<I", out, 0x14)[0]
+    if not (out[:4] == b"AOTA" and 0x400 <= start <= end <= len(out)):
+        raise ValueError("not an AOTA image")
+    struct.pack_into("<I", out, 0x18, zlib.crc32(out[start:end]))
+    struct.pack_into("<I", out, 0x04, zlib.crc32(out[0x08:0x400]))
+    return bytes(out)
+
+
+def ota_xml_only(xml: str, file_name: str) -> str:
+    """The manifest with every partition but `file_name` dropped."""
+    blocks = list(re.finditer(r"\s*<partition>.*?</partition>", xml, re.S))
+    keep = [m for m in blocks if f"<file_name>{file_name}</file_name>" in m.group()]
+    if len(keep) != 1:
+        raise ValueError(f"ota.xml has {len(keep)} partition(s) {file_name}")
+    xml = xml[:blocks[0].start()] + keep[0].group() + xml[blocks[-1].end():]
+    return re.sub(r"<partitionsNum>\d+</partitionsNum>", "<partitionsNum>1</partitionsNum>", xml)

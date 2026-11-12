@@ -1,5 +1,8 @@
+import lzma
 import os
+from pathlib import Path
 import struct
+import tempfile
 import unittest
 from unittest import skipUnless
 
@@ -141,6 +144,42 @@ class FirmwareTest(unittest.TestCase):
         new[3], new[10], new[60], new[61] = 1, 1, 1, 1
         self.assertEqual(firmware.changed_ranges(old, bytes(new)), [(3, 11), (60, 62)])
         self.assertEqual(firmware.changed_ranges(old, old), [])
+
+    def test_ota_xml_set(self):
+        xml = ("<v><version_code>0x10000</version_code></v><partition><file_name>a.bin</file_name><file_size>0x1</file_size>"
+               "</partition><partition><file_name>b.bin</file_name><file_size>0x2</file_size></partition>")
+        out = firmware.ota_xml_set(xml, "b.bin", file_size=0x30)
+        self.assertIn("<file_name>a.bin</file_name><file_size>0x1</file_size>", out)
+        self.assertIn("<file_name>b.bin</file_name><file_size>0x30</file_size>", out)
+        self.assertIn("<version_code>0x10002</version_code>", firmware.ota_xml_set(xml, version_code=0x10002))
+        with self.assertRaisesRegex(ValueError, "c.bin"):
+            firmware.ota_xml_set(xml, "c.bin", file_size=1)
+        with self.assertRaisesRegex(ValueError, "file_size"):
+            firmware.ota_xml_set(xml, file_size=1)  # two of them: refuse
+
+    def test_ota_xml_only(self):
+        xml = ("<p><partitionsNum>3</partitionsNum>\n\t<partition><file_name>a.bin</file_name></partition>\n\t<partition>"
+               "<file_name>TEMP.bin</file_name></partition>\n\t<partition><file_name>c.bin</file_name></partition>\n\t</p>")
+        self.assertEqual(firmware.ota_xml_only(xml, "TEMP.bin"),
+                         "<p><partitionsNum>1</partitionsNum>\n\t<partition><file_name>TEMP.bin</file_name></partition>\n\t</p>")
+
+    @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
+    def test_xz_chunks_match_stock_temp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths.fwkit("unpack", "--no-raw", paths.firmware(), tmp)
+            stored = (Path(tmp) / "parts/TEMP.bin.part").read_bytes()
+        raw, pos = bytearray(), 0
+        while pos < len(stored):
+            _, packed, _ = struct.unpack_from("<III", stored, pos + 4)
+            raw += lzma.decompress(stored[pos + 16:pos + 16 + packed])
+            pos += 16 + packed
+        self.assertEqual(firmware.xz_chunks(bytes(raw)), stored)
+        self.assertEqual(firmware.fix_aota_crc(bytes(raw)), bytes(raw))  # stock TEMP's CRCs are right
+        stale = bytearray(raw)
+        stale[0x1000] ^= 1
+        self.assertNotEqual(firmware.fix_aota_crc(bytes(stale))[0x18:0x1C], raw[0x18:0x1C])
+        with self.assertRaisesRegex(ValueError, "AOTA"):
+            firmware.fix_aota_crc(bytes(0x1000))
 
     @skipUnless(HAVE_STOCK, "needs JX402_V1.0.0.73.bin")
     def test_motor_only_patch(self):

@@ -47,25 +47,55 @@ def cmd_firmware(args):
 
 def cmd_ota_image(args):
     stock, app = paths.stock_app(), args.app.read_bytes()
-    if len(app) != len(stock):
-        raise ValueError("fwkit edit-app patches in place: build the app.bin with `firmware --motor-only`")
     firmware.check_acth(app)
-    ranges = firmware.changed_ranges(stock, app)
-    if not ranges:
+    if app == stock:
         raise ValueError("the app.bin is stock")
+    if len(app) < len(stock):
+        raise ValueError("the app.bin is shorter than stock")
     with tempfile.TemporaryDirectory() as tmp:
-        src = paths.firmware()
-        for n, (a, b) in enumerate(ranges):
-            dst = Path(tmp) / f"step{n}.bin"
-            paths.fwkit("edit-app", src, hex(firmware.APP_VBASE + a), app[a:b].hex(), dst)
-            src = dst
-        if paths.app_from(src) != app:
+        built = ota_image(paths.firmware(), app, Path(tmp), args.version_code, temp_only=args.temp_only)
+        if paths.app_from(built) != app:
             raise ValueError("the rebuilt image does not carry this app.bin")
-        print(paths.fwkit("verify", src).strip())
-        with args.output.open("xb") as out, src.open("rb") as built:
-            shutil.copyfileobj(built, out)
-    for a, b in ranges:
-        print(f"app.bin {firmware.APP_VBASE + a:#x}..{firmware.APP_VBASE + b:#x}: {b - a} byte(s)")
+        print(paths.fwkit("verify", built).strip())
+        with args.output.open("xb") as out, built.open("rb") as src:
+            shutil.copyfileobj(src, out)
+    if len(app) == len(stock):
+        for a, b in firmware.changed_ranges(stock, app):
+            print(f"app.bin {firmware.APP_VBASE + a:#x}..{firmware.APP_VBASE + b:#x}: {b - a} byte(s)")
+    else:
+        print(f"app.bin {len(stock):#x} -> {len(app):#x} bytes")
+
+
+def _edit_xml(path: Path, file_name: str | None = None, **fields: int) -> None:
+    path.write_bytes(firmware.ota_xml_set(path.read_bytes().decode(), file_name, **fields).encode())
+
+
+def ota_image(image: Path, app: bytes, tmp: Path, version_code: int | None = None, temp_only: bool = False) -> Path:
+    """`image` with app.bin inside TEMP.bin (outer AOTA -> TEMP.bin -> app.bin) replaced by `app`."""
+    outer, inner, temp, out = tmp / "outer", tmp / "inner", tmp / "TEMP.bin", tmp / "out.bin"
+    paths.fwkit("unpack", image, outer)
+    paths.fwkit("unpack", "--no-raw", outer / "raw/TEMP.bin.bin", inner)
+    (inner / "parts/app.bin.part").write_bytes(app)
+    _edit_xml(inner / "ota.xml", "app.bin", file_size=len(app), orig_size=len(app), checksum=zlib.crc32(app))
+    paths.fwkit("pack", inner, temp)
+    stored = firmware.xz_chunks(firmware.fix_aota_crc(temp.read_bytes()))
+    (outer / "parts/TEMP.bin.part").write_bytes(stored)
+    # stock: TEMP.bin's file_size, orig_size and checksum all describe the stored (compressed) bytes
+    _edit_xml(outer / "ota.xml", "TEMP.bin", file_size=len(stored), orig_size=len(stored), checksum=zlib.crc32(stored))
+    if version_code is not None:
+        _edit_xml(outer / "ota.xml", version_code=version_code)
+    if temp_only:  # what `cmf-watch-utils emu ota` sends: entries ota.xml + TEMP.bin, no AGPS trailer
+        hdr = bytearray((outer / "hdr.bin").read_bytes())
+        if hdr[0x220:0x228] != b"TEMP.bin":
+            raise ValueError("TEMP.bin is not the first AOTA entry after ota.xml")
+        struct.pack_into("<I", hdr, 0x0C, 2)
+        (outer / "hdr.bin").write_bytes(hdr)
+        xml = outer / "ota.xml"
+        xml.write_bytes(firmware.ota_xml_only(xml.read_bytes().decode(), "TEMP.bin").encode())
+        (outer / "agps.bin").unlink()
+    paths.fwkit("pack", outer, out)
+    out.write_bytes(firmware.fix_aota_crc(out.read_bytes()))
+    return out
 
 
 def cmd_nor(args):
@@ -210,9 +240,13 @@ def parser():
                     help="only the motor patch: no heap reservation, no stub, stock app.bin size")
     fw.add_argument("--output", type=Path, required=True)
     fw.set_defaults(handler=cmd_firmware)
-    ota = commands.add_parser("ota-image", help="Full stock firmware image carrying a --motor-only app.bin")
+    ota = commands.add_parser("ota-image", help="Full stock firmware image carrying a patched app.bin")
     ota.add_argument("--app", type=Path, required=True)
     ota.add_argument("--output", type=Path, required=True)
+    ota.add_argument("--version-code", type=lambda v: int(v, 0), metavar="N",
+                     help="ota.xml version_code (stock 0x10000)")
+    ota.add_argument("--temp-only", action="store_true",
+                     help="only TEMP.bin (app + sdfs), no resources or AGPS trailer: the emulator's OTA transport")
     ota.set_defaults(handler=cmd_ota_image)
     nor = commands.add_parser("nor", help="Put a patched app.bin into a NOR image")
     nor.add_argument("nor", type=Path)

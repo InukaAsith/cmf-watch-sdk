@@ -80,6 +80,8 @@ its own instance.
 A frame longer than MTU − 3 goes out as a write with response, and the OS turns it into an ATT long
 write. That's how installs work at the default MTU of 23.
 
+Firmware image for OTA: `make fw-ota`, see [docs/ota.md](docs/ota.md).
+
 Nothing gets written to a physical watch without the owner's approval.
 
 ## Limits

@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Stock OTA of a TEMP-only image (wp2apps ota-image --temp-only) into a virtual paired watch, then the
+# emulator's install of the staged update: writes <out>/install/nor.bin. Usage: scripts/emu-ota <image> <out>
+# Needs runs/e2e/paired-nor.bin (any e2e run makes it) and netsimd (WP2_NETSIMD).
+set -uo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+image=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+mkdir -p "$2" && out=$(cd "$2" && pwd)
+cmf=${CMF_WATCH_UTILS:-$root/../cmf-watch-utils}
+netsimd=${WP2_NETSIMD:-$HOME/Library/Android/sdk/emulator/netsimd}
+hci=17396 qmp=17397
+rm -rf "$out/stage" "$out/install" "$out/transfer.json"
+cd "$cmf"
+"$netsimd" --instance "${WP2_NETSIM_INSTANCE:-96}" --hci-port $hci --no-cli-ui --no-web-ui > "$out/netsim.log" 2>&1 &
+netsim=$!
+sleep 3
+emu="uv run cmf-watch-utils emu"
+common="--fixtures fixtures --qemu runtime/qemu-system-arm --rom runtime/compat.bin"
+# the guest enters S3BT (unsupported by this QEMU) ~15 s after boot unless the OTA client is connected by then
+$emu run $common --nor "$root/runs/e2e/paired-nor.bin" --headless --allow-reboot --ota-snapshot \
+    --hci-port $hci --qmp-port $qmp --seconds 5400 --output "$out/stage" > "$out/stage.log" 2>&1 &
+run=$!
+sleep 8
+nix-shell -p gdb --run "$emu recover $common --reader runtime --gdb gdb --qmp-port $qmp \
+    --pending-nand $out/stage/nand-staged.bin --reset-timeout 5400 --output $out/install" > "$out/recover.log" 2>&1 &
+recover=$!
+sleep 2
+$emu ota --protocol stock --hci-port $hci --image "$image" --transfer --timeout 5000 --output "$out/transfer.json" \
+    > "$out/ota.log" 2>&1
+status=$?
+wait $recover || status=1
+kill $run $netsim 2>/dev/null
+grep -h '"result"\|"app_sha256"' "$out/ota.log" "$out/recover.log"
+[ $status = 0 ] && [ -f "$out/install/nor.bin" ] && echo "$out/install/nor.bin"
