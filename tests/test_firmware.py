@@ -215,6 +215,10 @@ class FirmwareTest(unittest.TestCase):
         self.assertEqual(out[0x259EA0:0x259EAE], firmware.SWAP_2_3)
         self.assertEqual(out[0x259EAE:0x259EB2], firmware.thumb_b_w(0x10259EAE, firmware.STOCK_PREVIEW))
         self.assertEqual(out[0x259EC8:0x259ECA] + out[0x259EDC:0x259EDE], b"\x08\xb5\x08\xbd")
+        # setlist_view's subtitle: level 3 -> {"Weak", 0} at 0x10259EF0, others stay view + 0x1AC + level * 8
+        self.assertEqual(out[0xB54B2:0xB54B6], firmware.thumb_bl(firmware.SETLIST_SUBTITLE, 0x10259EE0))
+        self.assertEqual(out[0xB54B8:0xB54BC], firmware.NOP_W)
+        self.assertEqual(out[0x259EF0:0x259EFD], struct.pack("<II", 0x10259EF8, 0) + b"Weak\0")
         self.assertEqual([u32(a) for a in firmware.LEVELS_LITERALS], [0x10259E80] * 2)
         self.assertEqual([u32(a) for a in firmware.ROLLER_FORMAT_LITERALS], [0x10259E90] * 2)
         self.assertEqual([out[a - 0x10000000:a - 0x10000000 + 2] for a in firmware.LEVELS_BOUNDS], [b"\x03\x2b"] * 2)
@@ -222,10 +226,11 @@ class FirmwareTest(unittest.TestCase):
         base = firmware.patch(STOCK, fake_stub())
         self.assertEqual({i & ~3 for i in range(0x200, 0x259E80) if out[i] != base[i]},
                          {0xE17CC, 0xE17F0, 0xE17F8, 0xE1810, 0xBBADC, 0xBBBD0, 0xBB890}
-                         | {(at - 0x10000000 + i) & ~3 for at, _, _ in calls for i in range(4)})
+                         | {(at - 0x10000000 + i) & ~3 for at, _, _ in calls for i in range(4)}
+                         | {0xB54B0, 0xB54B4, 0xB54B8})
         plain = firmware.patch(STOCK, weak=350, reserve=False)
         firmware.check_acth(plain)
-        self.assertGreaterEqual(struct.unpack_from("<I", plain, 0x18)[0] + 0x200, 0x259EDE)
+        self.assertGreaterEqual(struct.unpack_from("<I", plain, 0x18)[0] + 0x200, 0x259EFD)
         with self.assertRaises(ValueError):
             firmware.patch(STOCK, weak=1000, reserve=False)
 

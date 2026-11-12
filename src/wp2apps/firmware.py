@@ -56,6 +56,12 @@ SET_LEVEL_CALLS = (0x100BBC00,)  # check button: level = index
 GET_LEVEL_CALLS = (0x100BB966, 0x100BBA3E)  # create: index = level, roller selected = level
 # cmp r0,#2; beq 1f; cmp r0,#3; bne 2f; movs r0,#2; b 2f; 1: movs r0,#3; 2:
 SWAP_2_3 = bytes.fromhex("022803d0032802d1022000e00320")
+# setlist_view (0x44) row 7 shows the level's name as its subtitle: r3 = view + 0x1AC + level * 8, an array of the 3
+# scene texts {char *, u32}; level 3 read past it and showed nothing. The two adds become `bl` to a hook + nop.w
+SETLIST_SUBTITLE = 0x100B54B2  # add.w r3, r4, r3, lsl #3
+SETLIST_SUBTITLE_ADD = 0x100B54B8  # add.w r3, r3, #0x1ac
+STOCK_SUBTITLE = bytes.fromhex("04ebc303"), bytes.fromhex("03f5d673")
+NOP_W = bytes.fromhex("aff30080")
 
 
 def sum32(data: bytes) -> int:
@@ -155,10 +161,22 @@ def weak_row(out: bytearray, permille: int) -> int:
         put(out, call, thumb_bl(call, STOCK_SET_LEVEL), thumb_bl(call, set_level))
     for call in GET_LEVEL_CALLS:
         put(out, call, thumb_bl(call, STOCK_GET_LEVEL), thumb_bl(call, get_level))
-    end = at + len(code)
+    at = (at + len(code) + 3) & ~3
+    end = _subtitle_hook(out, at)
     if end > MOTOR_HOOK:
         raise ValueError("weak row code runs into the motor hook")
     return end
+
+
+def _subtitle_hook(out: bytearray, at: int) -> int:
+    """cmp r3,#3; <stock adds>; it eq; adreq r3, text; bx lr; text = {"Weak", 0}. Returns the end."""
+    code = b"\x03\x2b" + b"".join(STOCK_SUBTITLE) + b"\x08\xbf\x00\xa3\x70\x47"  # adr: Align(PC, 4) = at + 16
+    text = at + len(code)
+    data = code + struct.pack("<II", text + 8, 0) + WEAK_LABEL.encode() + b"\0"
+    put(out, at, bytes(len(data)), data)
+    put(out, SETLIST_SUBTITLE, STOCK_SUBTITLE[0], thumb_bl(SETLIST_SUBTITLE, at))
+    put(out, SETLIST_SUBTITLE_ADD, STOCK_SUBTITLE[1], NOP_W)
+    return at + len(data)
 
 
 def _swap_hook(out: bytearray, at: int, target: int) -> int:

@@ -131,6 +131,11 @@ class StubTest(unittest.TestCase):
         emu.sleep(1)
         played = [d for _, d, _ in emu.motor()[n:] if d > 0][len(duty):]
         self.assertTrue(played and abs(played[-1] - 349) <= 3, played)
+        emu.call(harness.OPEN_VIEW, 0x44, 0)  # setlist_view: the Vibration row's subtitle label points at "Weak"
+        emu.sleep(2)
+        save_png(emu.run / "setlist-weak.png", *emu.frame())
+        weak = struct.pack("<I", 0x10259EF8)  # firmware._subtitle_hook text
+        self.assertIn(weak, emu.peek(0x38067300, 0x18000))  # GUI heap (scripts/recon/gui_heap_probe.py)
         emu.call(harness.OPEN_VIEW, 0x56, 0)  # reopened, the roller stands on Weak again
         emu.sleep(2)
         save_png(emu.run / "setvib-reopen.png", *emu.frame())
