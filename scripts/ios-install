@@ -25,8 +25,8 @@ if [ "${1:-}" = "--sim" ]; then
     exit
 fi
 : "${WP2_TEAM:?set WP2_TEAM to your Apple team id (Xcode > Settings > Accounts > your team)}"
-device=$(xcrun devicectl list devices --hide-default-columns --columns Identifier --hide-headers 2>/dev/null \
-    | head -1 | tr -d ' ')
+# WP2_DEVICE: the iPhone's identifier when several are paired (`xcrun devicectl list devices`)
+device=${WP2_DEVICE:-$(xcrun devicectl list devices 2>/dev/null | grep physical | grep available | grep -m1 -oE '[0-9A-F]{8}-[0-9A-F]{16}')}
 [ -n "$device" ] || { echo "no iPhone connected (cable, unlocked, trusted, Developer Mode on)" >&2; exit 1; }
 xcodebuild -project Workout.xcodeproj -scheme Workout -configuration Release -destination "id=$device" \
     -derivedDataPath build -allowProvisioningUpdates -quiet \
