@@ -101,6 +101,10 @@ pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
     if buf.is_null() || len > BATCH_MAX || p < block || p - block > size || len > size - (p - block) {
         return E_ARG;
     }
+    // SENSOR (heart rate) needs no LVGL: a canvas app sends it too, and it must not make the root
+    if let Some((sensor, on)) = lvcmd::sensor(unsafe { core::slice::from_raw_parts(buf, len) }) {
+        return crate::hr::request(sensor, on);
+    }
     REQ_PTR.store(p as u32, Ordering::Relaxed);
     REQ_LEN.store(len as u32, Ordering::Relaxed);
     STATE.store(PENDING, Ordering::Release);

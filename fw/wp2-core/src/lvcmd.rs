@@ -496,6 +496,16 @@ pub fn focus_shape(d: i32) -> (i32, u32, u32) {
     }
 }
 
+/// SENSOR record (op 0x13, handle 0, payload `[sensor, on]`), alone in a batch: the loader takes it on the app
+/// thread before LVGL, so a canvas app may send it (docs/abi-1.4.md, "Heart rate"). Inside a longer batch, and
+/// on an older loader, op 0x13 is `Malformed` (-22).
+pub fn sensor(buf: &[u8]) -> Option<(u8, bool)> {
+    match *buf {
+        [0x13, 2, 0, 0, sensor, on @ (0 | 1)] => Some((sensor, on == 1)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -807,5 +817,18 @@ mod tests {
             assert!(s.0 >= last.0 && s.1 <= last.1 && s.2 <= last.2, "monotonic at {d}");
             last = s;
         }
+    }
+
+    #[test]
+    fn sensor_record() {
+        assert_eq!(sensor(&[0x13, 2, 0, 0, 1, 1]), Some((1, true)));
+        assert_eq!(sensor(&[0x13, 2, 0, 0, 1, 0]), Some((1, false)));
+        assert_eq!(sensor(&[0x13, 2, 0, 0, 1, 2]), None);
+        assert_eq!(sensor(&[0x13, 2, 1, 0, 1, 1]), None, "handle 0 only");
+        assert_eq!(sensor(&[0x13, 2, 0, 0, 1, 1, 0x02, 0, 1, 0]), None, "alone in its batch");
+        // the SDK's records, and the -22 an older loader (or a mixed batch) answers
+        assert_eq!(sensor(cmf_wp2_app::HEART_ON), Some((crate::heart::SENSOR_HEART, true)));
+        assert_eq!(sensor(cmf_wp2_app::HEART_OFF), Some((crate::heart::SENSOR_HEART, false)));
+        assert_eq!(validate(cmf_wp2_app::HEART_ON, &Table::new(), 0), Err(Error::Malformed));
     }
 }
