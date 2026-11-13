@@ -1,0 +1,42 @@
+# Host channel 1.4: own channel key K and unsolicited app messages
+
+Stub and loader changes for hosts that cannot bind or poll: an iPhone app next to Nothing X on the system's shared
+BLE link (design: `docs/specs/2026-11-13-workout-ios-design.md`). Proof in the emulator:
+`tests/test_chan_key_e2e.py`. Not yet on hardware. Apps see no change; `Api` is unchanged.
+
+## Channel key K
+
+- `K` = the pairing secret's 16 bytes: the 32 hex chars `AT GETSECRET` returns, which the stub reads from NVRAM
+  `APP_SECRET` (`docs/recon.md`, "Project 2"). Host: `link.channel_key`, `Session.open_channel`,
+  `Channel(channel_key=True)`.
+- Frames `0x90A0..0x90A7` (install, `MSG`, `PING`) may be sealed with `K` instead of the stock session key, in the
+  same format (`plain ‖ crc32le`, PKCS7, AES-128-CBC, IV `5051…665A`). The stub tries the stock key first, then `K`.
+  Replies and `EVENT`s go out under the key of the last frame.
+- No bind: no "Paired" popup, the stock session (Nothing X) is untouched, `K` survives reboots.
+- App messages to a `K` host need a stock session word that is not zero (a bind since the last factory reset): the
+  loader checks `session_word() == host_key`. Any watch paired with Nothing X has one.
+- Security: as before. Any BLE client reads the secret; the owner accepted that (`docs/recon.md`, threat model).
+
+## Shared link
+
+Every host on the link sees every notification. A host skips frames and `EVENT`s its key cannot open
+(`link.Session.request`, `channel.recv`). Switching between a stock host and a `K` host drops the app messages
+queued for the other one (as a new host key always did).
+
+## Unsolicited app messages
+
+- At boot the stub stores `StubRam.kick` (its `wp2_kick`) and `kick_magic = "KICK"`. The loader calls `kick` on the
+  app thread right after the app's `send` queued a message, if the magic is there (an older stub leaves it unset;
+  `api` stays 1 because loader 1.3 needs `api == 1`).
+- With a `K` host listening, `wp2_kick` sends all queued messages at once (software AES, the stock crypto buffers are
+  not used). The stock itself writes the stream from threads other than `wewear_read` (the bind popup's `0x0049`
+  reply goes out from the UI thread), and the stream write has its own lock.
+- `StubRam.busy` serializes the stub's frame path: `wewear_read` waits for it (`os_sleep(1)`), the kick skips when it
+  is taken (`wewear_read` drains after its reply anyway).
+- A stock host still polls with `PING`. A `K` host may poll too, but does not have to: 40 messages in a burst
+  arrived without a host frame, none lost, `seq` contiguous (emulator).
+
+## Install order
+
+New stub (OTA, `docs/ota.md`) and new loader (`wp2apps install target/loader.wp2app`). Each works with the other's
+old version: an old loader never calls `kick` (messages wait for the host's next frame), an old stub has no magic.

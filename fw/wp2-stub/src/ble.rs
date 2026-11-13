@@ -1,12 +1,13 @@
 // Own install channel on c1 = 0xFFFF, c2 = 0x90A0..=0x90A4 (docs/specs; Status and requests in wp2_core::proto).
 use core::mem::transmute;
+use core::sync::atomic::Ordering;
 use wp2_core::fs::{self, File};
 use wp2_core::chan::{listening, session_word, MSG_MAX};
 use wp2_core::layout::{data_path, slot_path, stub_ram, StubRam, APP_PAUSED, APP_SIZE, APP_V11, DIR, LOADER_SIZE, LOADER_SLOT};
 use wp2_core::pkg::{check_slot, crc32, parse_header, HEADER_SIZE};
 use wp2_core::proto::{parse, Request, Status, ANY_SLOT, DELETE, EVENT, INFO, MAX_DATA, PING};
 use wp2_core::aes;
-use wp2_core::stock::{APP_SECRET, AUTHKEY, KV_GET, SESSION_KEY, STREAM_SPACE, WEWEAR_CTX};
+use wp2_core::stock::{APP_SECRET, AUTHKEY, KV_GET, OS_SLEEP, SESSION_KEY, STREAM_SPACE, WEWEAR_CTX};
 
 const READ_PAYLOAD: u32 = 0x100CC285;
 const DECRYPT: u32 = 0x101B608D;
@@ -29,6 +30,32 @@ pub unsafe extern "C" fn wp2_ble_default() {
 
 // Replaces `bl 0x100CC284` (read the payload into buf) in the stock default branch; frame is host-order.
 extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
+    // the app thread may be draining (wp2_kick): wait for it, it never blocks on the stream
+    let sleep: extern "C" fn(u32) = unsafe { transmute(OS_SLEEP as usize) };
+    while stub_ram().busy.swap(1, Ordering::Acquire) != 0 {
+        sleep(1);
+    }
+    let rc = frame_c(buf, len, frame);
+    stub_ram().busy.store(0, Ordering::Release);
+    rc
+}
+
+/// Called by the loader on the app thread right after the app queued a message (api >= 2): a K host gets it at
+/// once, so a phone app asleep in the background is woken by the notification instead of having to poll. The
+/// stock sends from other threads too (the bind popup's 0x0049 reply goes out from the UI thread); the stock
+/// crypto buffers are not touched here, K frames are sealed in software.
+pub extern "C" fn wp2_kick() {
+    let ram = stub_ram();
+    if ram.busy.swap(1, Ordering::Acquire) != 0 {
+        return; // wewear_read is in the frame path and drains after its reply
+    }
+    if ram.chan_mode == 1 {
+        drain(ram);
+    }
+    ram.busy.store(0, Ordering::Release);
+}
+
+fn frame_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
     let read: extern "C" fn(*mut u8, u32) -> i32 = unsafe { transmute(READ_PAYLOAD as usize) };
     let rc = read(buf, len as u32);
     let f = unsafe { core::slice::from_raw_parts(frame, HEADER_LEN) };

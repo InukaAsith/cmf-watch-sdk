@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use wp2_core::chan::{listening, parse_store, store_header, Ring, MSG_MAX, STORE_HEADER, STORE_MAX};
 use wp2_core::events::{Event, Time, MESSAGE};
 use wp2_core::fs;
-use wp2_core::layout::{data_path, stub_ram, APP_PAUSED, APP_V11, E_IO};
+use wp2_core::layout::{data_path, stub_ram, APP_PAUSED, APP_V11, E_IO, KICK_MAGIC};
 use wp2_core::pkg::crc32;
 use wp2_core::stock::*;
 
@@ -100,7 +100,15 @@ pub extern "C" fn send(data: *const u8, len: usize) -> i32 {
         return E_NOTCONN;
     }
     let bytes = unsafe { core::slice::from_raw_parts(data, len) };
-    if ram.outbox.push(ram.running_slot, bytes) { 0 } else { E_AGAIN }
+    if !ram.outbox.push(ram.running_slot, bytes) {
+        return E_AGAIN;
+    }
+    // a stub with kick sends it to a K host now instead of on the host's next frame (docs/abi-1.4.md)
+    if ram.kick_magic == KICK_MAGIC && ram.kick != 0 {
+        let kick: extern "C" fn() = unsafe { core::mem::transmute(ram.kick as usize) };
+        kick();
+    }
+    0
 }
 
 pub extern "C" fn recv(buf: *mut u8, cap: usize) -> i32 {

@@ -116,3 +116,20 @@ class ChannelKeyTest(unittest.TestCase):
         self.assertEqual(header.name, package.parse(data).name)
         self.assertIsNone(gone)
         self.assertFalse(self.popup())
+
+    def test_4_unsolicited_event(self):
+        """App messages reach a K host with no host frame after them: the loader kicks the stub on send."""
+        async def run():
+            async with h4.gatt_over_h4(self.port) as gatt, k_session(gatt) as s:
+                await channel.send(s, b"!spam 40")  # the app answers later, from its own thread
+                got = []
+                async with asyncio.timeout(10):  # no PING: only unsolicited EVENTs can arrive
+                    while len(got) < 40:
+                        m = channel.message(s.key, await s.events.get())
+                        if m.data.startswith(b"spam"):
+                            got.append(m)
+                return got
+
+        got = asyncio.run(run())
+        self.assertEqual([m.data for m in got], [f"spam {i}".encode() for i in range(40)])
+        self.assertEqual([m.seq for m in got], [(got[0].seq + i) % 256 for i in range(40)])

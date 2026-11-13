@@ -77,8 +77,16 @@ pub struct StubRam {
     // 1 = chan_key holds K, read once from NVRAM APP_SECRET
     pub chan_ready: u8,
     pub chan_key: [u8; 16],
+    // KICK_MAGIC when `kick` is set: the stub's `extern "C" fn()` that sends queued app messages to a K host now;
+    // the loader calls it after the app's send (docs/abi-1.4.md). Not `api`: loader 1.3 needs api == 1, and an
+    // older stub leaves these bytes unset, so the magic guards against garbage.
+    pub kick_magic: u32,
+    pub kick: u32,
+    // 1 while a thread runs the stub's frame path (reply buffer, outbox consumer)
+    pub busy: core::sync::atomic::AtomicU8,
 }
 
+pub const KICK_MAGIC: u32 = 0x4B43_494B; // "KICK"
 pub const APP_V11: u8 = 1;
 pub const APP_PAUSED: u8 = 2;
 

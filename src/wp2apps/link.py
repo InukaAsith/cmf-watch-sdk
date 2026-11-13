@@ -191,7 +191,13 @@ class Session:
     async def open_channel(self, gatt) -> None:
         """K session: reads the pairing secret and keys app frames with K; the stock session is left alone."""
         await self.attach(gatt)
-        self.key = channel_key(await self._shell_value("GETSECRET"))
+        for attempt in range(3):  # the shell sometimes stays silent right after a reconnect (emulator)
+            try:
+                self.key = channel_key(await self._shell_value("GETSECRET"))
+                return
+            except TimeoutError:
+                if attempt == 2:
+                    raise
 
     async def handshake(self, gatt, attempts: int = 3, key: bytes | None = None) -> None:
         await self.attach(gatt)
