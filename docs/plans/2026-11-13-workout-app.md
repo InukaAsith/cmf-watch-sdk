@@ -224,7 +224,7 @@ impl Model {
   - `blob_garbage` (Review Focus 5): `b"H1…"`, `program_len` past the end, a valid header with a bad program, empty
     → `Model::new()` state, no panic.
   - `no_clock` (Review Focus 3): times from boot seconds (small values) work the same; `epoch_s` of
-    2026-11-13 10:00:00 = 847_965_600.
+    2026-11-13 10:00:00 = 847_879_200.
 - [ ] **Step 2:** `(cd sdk && cargo test -p workout --target aarch64-apple-darwin)` → FAIL.
 - [ ] **Step 3:** Implement `model.rs`. `Program` keeps its bytes (`[u8; PROGRAM_MAX]`) and parses on access; the
   `Model` lives in a `static mut` in the device build (≈ 3 KB, off the 8 KiB stack).
