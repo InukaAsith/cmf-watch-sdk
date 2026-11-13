@@ -9,3 +9,6 @@ __pycache__/
 /sdk/target/
 /fw/target/
 .superpowers/
+ios/WireKit/.build/
+ios/Workout.xcodeproj/
+ios/build/

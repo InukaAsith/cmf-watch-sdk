@@ -32,6 +32,7 @@ src/wp2apps/  Python CLI: package, inspect and install apps
 sdk/          Rust workspace: cmf-wp2-app crate and example apps
 fw/           Rust workspace: wp2-core (shared no_std logic, host-tested), stub and loader
 scripts/      emulator and build wrappers
+ios/          iPhone companion: WireKit (Swift package) and the SwiftUI app
 tests/        unittest suite
 ```
 
@@ -50,4 +51,5 @@ tests/        unittest suite
 uv run --locked python -m unittest discover -s tests -v
 (cd sdk && cargo test --target aarch64-apple-darwin)
 (cd fw && cargo test -p wp2-core --target aarch64-apple-darwin)
+(cd ios/WireKit && swift test)
 ```
