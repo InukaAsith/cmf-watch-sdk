@@ -300,10 +300,12 @@ have ~5 ms granularity (`next_event` in `fw/wp2-loader/src/app.rs`). Never spin 
 | `MESSAGE` (7) | ABI 1.1: a host message is in the inbox | `x` = its length. A hint: drain with `recv` until `None` |
 
 - The queue holds 15 events; more are dropped (`fw/wp2-core/src/events.rs`).
-- **An app can end without any event.** Closing the "Paired" popup jumps to the clock and deletes the view. When
-  auto-sleep blanks the panel the stock closes the view (`docs/herdr-agents.md`; in one emulator run the view instead came back paused
-  under the charger popup). All of these abort the thread: no `BUTTON`, no return. Save state when it changes, not
-  only at exit.
+- **An app can end without any event.** Closing the "Paired" popup jumps to the clock and deletes the view. All of
+  these abort the thread: no `BUTTON`, no return. Save state when it changes, not only at exit.
+- **Screen-off does not end the app** (`docs/recon.md`, "Screen-off and the app view"): the stock keeps the view
+  stack across auto-sleep, drops the key press that wakes the panel, and the app is shown again; an AOD overlay
+  pauses it (`PAUSE`/`RESUME`). Proven in the emulator for light sleep (S1, `tests/test_back_e2e.py`
+  `ScreenOffTest`); deep sleep (S2/S3BT) and AOD are not modelled there and are unverified on hardware.
 
 ### Time
 

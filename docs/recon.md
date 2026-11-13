@@ -431,3 +431,19 @@ ux2sys property table `0x101F4274` dumped (0x91 entries `{set, get, u16 size}`);
 | Wake locks | `0x101B59A8(id)` sets bit `id` in the words at `0x38007708 + 0x40 + 4 · (id / 32)` and takes the full wake lock on the first one; `0x100C1858(id)` clears it, the last one calls `sys_wake_unlock` (restarts the auto-sleep time). `0x100C1738` (AT `SETWAKELOCK 0`) then blanks at once when the timeout ran out. Ids are view ids (`0x1C`, `0x43`, `0x63`, `0x6B`, `0xF6` …) plus `0x113`, `0x11F` (AT), `0x123`; `0xF0` is unused | high |
 | ux2sys properties | get `0x100E082C(prop, out)` and set `0x100E08B8(prop, in, size)` assert (and reset) on an id > `0x9E` or a NULL handler. `0x06`/`0x07` screen-on and active time (`0x07` → `set_autosleep_time`), `0x08` temporary active time, `0x0C` BT connected, `0x2B` g-sensor sample, `0x62` GPS info, `0x63` GPS mode, `0x02` HR mode | medium |
 | Accelerometer | property `0x2B` copies 24 B from `0x3800C9C8`; with emulator input `a 100 -200 1000` it stayed zero without a stock consumer | high (emulator) |
+
+## Screen-off and the app view
+
+Ghidra and capstone on the launcher's message handler (`0x1005DE00…0x1005E290`, literals at `0x1005E4D8…`),
+`0x100677C0`, `0x10067828`, `0x100E082C`; emulator probes with a BLE session holding the guest in S1
+(`tests/test_back_e2e.py`, `ScreenOffTest`).
+
+| Item | Value | Confidence |
+|---|---|---|
+| Early-suspend | the launcher sends message `0x82` to the top view (`0x101D72CE(top, 0x82, 0)`, top from `0x101894A8`), then reads ux2sys property `0x6E`; non-zero → "AOD enter" `0x100677C0`: opens overlay `0x113` (`0x100D5E34`) over the current view. No view is deleted | high (static) |
+| Late-resume | "AOD exit" `0x10067828` closes overlay `0x113`; if the view stack is empty (`0x1018949C` = 0) it resets to the clock (`0x1005DAAC`), else it sends `0x83` to the top view. The stack `[16, 18, 240]` stays | high (static) |
+| Suspend / resume | only set the launcher's state bits (`+0x1E` bits 0–1) and log | high (static) |
+| Wake key | the press that wakes the panel is dropped by the stock (`drop key workup`), the app gets no `BUTTON` | high (emulator, S1) |
+| App across blank | with a BLE session (S1): `display blanking on` → `Exit S1` → `blanking off`; the app keeps running, view 240 focused, an LVGL app's screen is back (`runs/wake-probe/lv-demo-woken.png`); a motor buzz started while dark fires | high (emulator) |
+| Not modelled | deep sleep (S2/S3BT) stops the emulator ("Guest hit a fatal or unsupported path"); forcing the AOD branch (`r4 = 1` at `0x1005E120`) does too. Both need a hardware check | — |
+| Earlier note | "the stock closes the app view on auto-sleep" (`docs/herdr-agents.md`, `docs/app-guide.md`, 2026-11-11) came from emulator runs; no stock path that deletes view 240 on blank was found | medium |
