@@ -381,7 +381,7 @@ impl Screen {
                 s
             }
             View::Rest if self.time != ROOT => {
-                let left = w.rest_until.saturating_sub(now);
+                let left = m.rest_left(now);
                 if self.shown != Some(left) {
                     let total = m.program.as_ref().map_or(1, |p| {
                         let d = usize::from(w.day);
