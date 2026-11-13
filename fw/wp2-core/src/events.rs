@@ -133,6 +133,17 @@ pub struct Api {
     pub screen_on: extern "C" fn(bool) -> i32,
     // ABI 1.2 (docs/specs/2026-11-11-lvgl-apps-design.md)
     pub lv_submit: extern "C" fn(*const u8, usize) -> i32,
+    // ABI 1.3 (docs/abi-1.3.md)
+    pub own_back: extern "C" fn(bool),
+}
+
+/// A running app is force-stopped this long after a BUTTON (`button_at`, millis | 1; 0 = none).
+pub const ESCAPE_MS: u32 = 1000;
+
+/// Whether to force-stop the app now. An app that owns "back" (ABI 1.3) is stopped only if it did not read the
+/// BUTTON within ESCAPE_MS (hung); any other app always is.
+pub fn escape_due(owned: bool, button_at: u32, consumed: bool, now: u32) -> bool {
+    button_at != 0 && !(owned && consumed) && now.wrapping_sub(button_at) >= ESCAPE_MS
 }
 
 #[repr(C)]
@@ -217,8 +228,18 @@ mod tests {
         assert_eq!(offset_of!(Api, send_msg), offset_of!(cmf_wp2_app::Api, send_msg));
         assert_eq!(offset_of!(Api, screen_on), offset_of!(cmf_wp2_app::Api, screen_on));
         assert_eq!(offset_of!(Api, lv_submit), offset_of!(cmf_wp2_app::Api, lv_submit));
+        assert_eq!(offset_of!(Api, own_back), offset_of!(cmf_wp2_app::Api, own_back));
         assert_eq!(size_of::<Time>(), size_of::<cmf_wp2_app::Time>());
         assert_eq!(offset_of!(Time, utc_offset_min), offset_of!(cmf_wp2_app::Time, utc_offset_min));
         assert_eq!(size_of::<Event>(), size_of::<cmf_wp2_app::Event>());
+    }
+
+    #[test]
+    fn escape_rule() {
+        assert!(escape_due(false, 1, false, 1001)); // not owned: 1000 ms after the press
+        assert!(!escape_due(false, 1, false, 1000));
+        assert!(!escape_due(true, 1, true, 5000)); // owned and consumed: never
+        assert!(escape_due(true, 1, false, 1001)); // owned, hung: still killable
+        assert!(!escape_due(true, 0, false, 9999)); // no press
     }
 }

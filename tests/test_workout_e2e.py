@@ -1,0 +1,200 @@
+"""The workout app in the emulator (docs/workout.md): push a program, walk a set and its rest (buzz), leave and
+resume a workout, finish it (rotation, history). Needs target/{loader,workout}.wp2app. WP2_NETSIM_INSTANCE=95."""
+import asyncio
+from pathlib import Path
+import struct
+import tempfile
+import threading
+import unittest
+from unittest import skipUnless
+
+from tests.e2e import harness
+from tests.test_api_e2e import KEY, session
+from tests import test_back_e2e
+from tests.test_back_e2e import back, tap_row
+from tests.test_api_e2e import WAKE_BIT, WAKE_WORD
+from tests.test_demo_e2e import save_png
+from tests.test_e2e import START
+from wp2apps import channel, paths, workout
+
+OUT = paths.ROOT / "runs" / "workout-e2e"
+ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/workout"
+VIEW, SETS, BUZZES, ACKED, NEXT = range(5)  # STATS, main.rs
+START_V, DAY, SET, REST, ASK, DONE = range(6)
+ROW = (233, 281)  # the focus list's centred row (screen.rs: header 96, page 370)
+ROW2 = (233, 385)  # the row under it (stock::FOCUS_ROW_H 104)
+PILL = (233, 342)  # "Сделал" / "Пропустить" (pill at y 300, 84 high)
+ASK_END = (233, 294)
+ASK_LEAVE = (233, 198)
+NOTES = {"Day 01.md": "## День 1: А\n\n- [ ] Жим: 2×5 отдых 0:05\n- Тяга: 1×8 (40 кг) отдых 0:05\n",
+         "Day 02.md": "## День 2: Б\n\n- Присед: 1×5 отдых 0:05\n"}
+
+
+def program() -> bytes:
+    with tempfile.TemporaryDirectory() as tmp:
+        for name, text in NOTES.items():
+            (Path(tmp) / name).write_text(text)
+        return workout.encode(workout.parse_dir(Path(tmp)))
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd, gdb and llvm-nm)")
+class WorkoutTest(unittest.TestCase):
+    """One watch for the whole walk; the tests run in name order and build on each other."""
+
+    @classmethod
+    def setUpClass(cls):
+        OUT.mkdir(parents=True, exist_ok=True)
+        cls.ctx = harness.installed(["loader", "workout"], name="workout")
+        cls.emu, cls.port = cls.ctx.__enter__()
+        asyncio.run(session(cls.port).__aenter__())  # bind before the app opens; later sessions resume the key
+        harness.ready(cls.emu)
+        harness.open_apps(cls.emu)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ctx.__exit__(None, None, None)
+
+    def stats(self):
+        addr = harness.u32(self.emu, START + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
+        return struct.unpack("<5i", self.emu.peek(addr, 20))
+
+    def tap(self, xy, pause=1.5):
+        self.emu.send(f"t 1 {xy[0]} {xy[1]}", f"t 0 {xy[0]} {xy[1]}", pause=pause)
+
+    def button(self, pause=1.5):
+        self.emu.send("c 1", "c 0", pause=pause)
+
+    def shot(self, name):
+        w, h, rgb = self.emu.frame()
+        save_png(OUT / f"{name}.png", w, h, rgb)
+
+    def running(self):
+        return self.emu.peek(START + 6, 1) != b"\xff"
+
+    def with_app(self, action):
+        """Runs `action(ch)` against the app on its own thread while the test drives the emulator."""
+        out, done = [], threading.Event()
+
+        def run():
+            async def go():
+                ch = channel.Channel(hci_port=self.port)
+                ch.key = KEY[self.port]
+                try:
+                    out.append(await action(ch))
+                finally:
+                    await ch.drop()
+            try:
+                asyncio.run(go())
+            except Exception as e:  # noqa: BLE001 - reported below
+                out.append(e)
+            done.set()
+        threading.Thread(target=run, daemon=True).start()
+        return out, done
+
+    def wait(self, done, seconds=90):
+        for _ in range(int(seconds * 2)):
+            if done.is_set():
+                return
+            self.emu.sleep(0.5)
+        self.fail("host side did not finish")
+
+    def test_1_push_and_walk(self):
+        p = program()
+        out, done = self.with_app(lambda ch: workout.push(ch, p, log=lambda *_: None))
+        tap_row(self.emu, 0)
+        self.wait(done)
+        self.assertNotIsInstance(out[0], Exception, out)
+        self.emu.sleep(1)
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[ACKED] & 0xFFFFFFFF, st[NEXT]), (START_V, workout.version(p), 0))
+        self.shot("1-start")
+        self.tap(ROW)  # day 1
+        self.assertEqual(self.stats()[VIEW], DAY)
+        self.tap(ROW)  # its first exercise
+        self.assertEqual(self.stats()[VIEW], SET)
+        mark = len(self.emu.motor())
+        self.tap(PILL)  # "Сделал"
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[SETS]), (REST, 1))
+        self.shot("1-rest")
+        self.emu.sleep(7)  # rest 5 s
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[BUZZES]), (SET, 1))
+        self.assertTrue(any(duty > 0 for _, duty, _ in self.emu.motor()[mark:]), "no buzz at the end of the rest")
+        self.shot("1-next-set")
+
+    def wake_held(self):
+        return bool(harness.u32(self.emu, WAKE_WORD) & WAKE_BIT)
+
+    def test_1b_double_tap_and_lock(self):
+        """A double tap on "Сделал" does not also skip the rest; leaving the rest by the button drops the lock."""
+        self.assertEqual(self.stats()[VIEW], SET)
+        sets = self.stats()[SETS]
+        self.emu.send(f"t 1 {PILL[0]} {PILL[1]}", f"t 0 {PILL[0]} {PILL[1]}",
+                      f"t 1 {PILL[0]} {PILL[1]}", f"t 0 {PILL[0]} {PILL[1]}", pause=1.5)
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[SETS]), (REST, sets + 1), "the second tap skipped the rest")
+        self.assertTrue(self.wake_held())
+        self.button()  # rest -> day
+        self.assertEqual(self.stats()[VIEW], DAY)
+        self.emu.sleep(0.5)
+        self.assertFalse(self.wake_held(), "the day list keeps the screen on")
+        self.next_exercise()
+
+    def test_1c_tap_that_wakes(self):
+        """The tap that wakes a dark panel on the set screen lands on "Сделал": it must not count a set."""
+        sets = self.stats()[SETS]
+        test_back_e2e.ScreenOffTest.blank_and_wake(self.emu, self.port, wake=(f"t 1 {PILL[0]} {PILL[1]}", f"t 0 {PILL[0]} {PILL[1]}"))
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[SETS]), (SET, sets), "the waking tap counted a set")
+
+    def test_1d_swipe_back_on_ask(self):
+        """The back swipe crosses the dialog's pills: it goes back to the day, it does not leave the app."""
+        self.button()  # set -> day
+        self.button()  # day -> ask
+        self.assertEqual(self.stats()[VIEW], ASK)
+        back(self.emu)
+        self.assertTrue(self.running(), "the swipe left the app")
+        self.assertEqual(self.stats()[VIEW], DAY)
+        self.next_exercise()
+
+    def next_exercise(self):
+        """Day list: the first exercise is complete; a tap on the row under the centred one opens the second."""
+        self.tap(ROW2)
+        self.assertEqual(self.stats()[VIEW], SET)
+
+    def test_2_leave_and_resume(self):
+        sets = self.stats()[SETS]
+        self.button()  # set -> day
+        self.assertEqual(self.stats()[VIEW], DAY)
+        self.button()  # day -> "Завершить тренировку?"
+        self.assertEqual(self.stats()[VIEW], ASK)
+        self.shot("2-ask")
+        self.tap(ASK_LEAVE)  # "Выйти": the workout stays
+        self.assertFalse(self.running())
+        tap_row(self.emu, 0)  # the loader menu is up: open the app again
+        self.emu.sleep(1)
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[SETS]), (SET, sets), "the open workout did not come back")
+        self.shot("2-resumed")
+
+    def test_3_finish_rotates(self):
+        self.button()  # set -> day
+        self.button()  # day -> ask
+        self.tap(ASK_END)  # "Завершить": two sets done -> history, summary
+        self.assertEqual(self.stats()[VIEW], DONE)
+        self.shot("3-done")
+        self.button(pause=2)  # leaves the app
+        self.assertFalse(self.running())
+        tap_row(self.emu, 0)
+        self.emu.sleep(1)
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[NEXT]), (START_V, 1), "the start screen does not offer day 2")
+        out, done = self.with_app(workout.history)
+        self.wait(done, 60)
+        self.assertNotIsInstance(out[0], Exception, out)
+        self.assertEqual([(e.day, e.done, e.planned) for e in out[0]], [(0, 2, 3)])
+
+
+if __name__ == "__main__":
+    unittest.main()
