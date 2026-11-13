@@ -447,3 +447,19 @@ Ghidra and capstone on the launcher's message handler (`0x1005DE00…0x1005E290`
 | App across blank | with a BLE session (S1): `display blanking on` → `Exit S1` → `blanking off`; the app keeps running, view 240 focused, an LVGL app's screen is back (`runs/wake-probe/lv-demo-woken.png`); a motor buzz started while dark fires | high (emulator) |
 | Not modelled | deep sleep (S2/S3BT) stops the emulator ("Guest hit a fatal or unsupported path"); forcing the AOD branch (`r4 = 1` at `0x1005E120`) does too. Both need a hardware check | — |
 | Earlier note | "the stock closes the app view on auto-sleep" (`docs/herdr-agents.md`, `docs/app-guide.md`, 2026-11-11) came from emulator runs; no stock path that deletes view 240 on blank was found | medium |
+
+## Project 2: the stub's own channel key K
+
+- `AT GETSECRET` is handled by `0x100E9DD0`: `0x1010E215("APP_SECRET", buf, 32)` reads the pairing secret from NVRAM
+  (32 ASCII hex chars) and prints it with `GETSECRET:%s,OK`. `0x1010E215(name, buf, len)` is the NVRAM read; it
+  takes the NVRAM lock (`0x1010D81C(-1, -1)`, released by `0x1010D810`) and tries two stores (`0x38001B50`, then
+  `0x38001B18`). Returns the bytes read or < 0. Safe from any thread.
+- The stub's `K` is that secret as 16 bytes. Frames under `K` are tried only after the stock decrypt rejects them
+  (the stock logs `check_extra_data fault`, harmless). Proof: `tests/test_chan_key_e2e.py` (a `K` host with no
+  bind, a stock host and a `K` host on one link, install under `K`; no popup).
+- The loader 1.3 on the watch lets an app `send` only while `session_word() == host_key` (`fw/wp2-loader/src/svc.rs`).
+  So under `K` the stub also stores the stock session word in `host_key`: a `K` host counts as listening while
+  the stock session next to it stays the same. A watch that was never bound since its last factory reset has a
+  zero session word and app messages to a `K` host fail with `-107` (any watch paired with Nothing X is bound).
+- On a shared link every host sees every notification: a host must skip frames and `EVENT`s its key cannot open
+  (`link.Session.request`, `channel.recv`).

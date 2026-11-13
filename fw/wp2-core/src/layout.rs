@@ -72,6 +72,11 @@ pub struct StubRam {
     pub out_seq: u8,
     pub inbox: Ring,
     pub outbox: Ring,
+    // own channel (docs/abi-1.4.md): 1 = the host on this link uses K
+    pub chan_mode: u8,
+    // 1 = chan_key holds K, read once from NVRAM APP_SECRET
+    pub chan_ready: u8,
+    pub chan_key: [u8; 16],
 }
 
 pub const APP_V11: u8 = 1;

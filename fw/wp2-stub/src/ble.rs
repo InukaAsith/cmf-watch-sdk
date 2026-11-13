@@ -5,7 +5,8 @@ use wp2_core::chan::{listening, session_word, MSG_MAX};
 use wp2_core::layout::{data_path, slot_path, stub_ram, StubRam, APP_PAUSED, APP_SIZE, APP_V11, DIR, LOADER_SIZE, LOADER_SLOT};
 use wp2_core::pkg::{check_slot, crc32, parse_header, HEADER_SIZE};
 use wp2_core::proto::{parse, Request, Status, ANY_SLOT, DELETE, EVENT, INFO, MAX_DATA, PING};
-use wp2_core::stock::{AUTHKEY, SESSION_KEY, STREAM_SPACE, WEWEAR_CTX};
+use wp2_core::aes;
+use wp2_core::stock::{APP_SECRET, AUTHKEY, KV_GET, SESSION_KEY, STREAM_SPACE, WEWEAR_CTX};
 
 const READ_PAYLOAD: u32 = 0x100CC285;
 const DECRYPT: u32 = 0x101B608D;
@@ -33,26 +34,65 @@ extern "C" fn wp2_ble_c(buf: *mut u8, len: u16, frame: *const u8) -> i32 {
     let f = unsafe { core::slice::from_raw_parts(frame, HEADER_LEN) };
     let c1 = u16::from_le_bytes([f[3], f[4]]);
     let c2 = u16::from_le_bytes([f[9], f[10]]);
-    if rc != 0 || c1 != 0xFFFF || !(INFO..=PING).contains(&c2) || !keyed(AUTHKEY) || !keyed(SESSION_KEY) {
+    if rc != 0 || c1 != 0xFFFF || !(INFO..=PING).contains(&c2) {
         return rc;
     }
-    let decrypt: extern "C" fn(*mut u16, *const u8, u32, u32) -> *const u8 = unsafe { transmute(DECRYPT as usize) };
-    let mut n = 0u16;
-    let plain = decrypt(&mut n, buf, len as u32, c2 as u32);
-    if plain.is_null() {
+    let ram = stub_ram();
+    let frame = unsafe { core::slice::from_raw_parts(buf, len as usize) };
+    let mut k_plain = [0u8; 160];
+    // the stock session first (Mac tools); else the own channel key K (docs/abi-1.4.md): no bind, so a phone app
+    // works next to Nothing X, whose stock session stays untouched
+    let (payload, k): (&[u8], bool) = 'found: {
+        if keyed(AUTHKEY) && keyed(SESSION_KEY) {
+            let decrypt: extern "C" fn(*mut u16, *const u8, u32, u32) -> *const u8 =
+                unsafe { transmute(DECRYPT as usize) };
+            let mut n = 0u16;
+            let plain = decrypt(&mut n, buf, len as u32, c2 as u32);
+            if !plain.is_null() {
+                break 'found (unsafe { core::slice::from_raw_parts(plain, n as usize) }, false);
+            }
+        }
+        if let Some(key) = chan_key(ram) {
+            if let Some(n) = aes::open(&key, frame, &mut k_plain) {
+                break 'found (&k_plain[..n], true);
+            }
+        }
         return rc;
-    }
-    let payload = unsafe { core::slice::from_raw_parts(plain, n as usize) };
+    };
+    // also under K: the loader lets the app send only while session_word() == host_key (svc.rs, loader 1.3 on the
+    // watch), so a K host is "listening" while the stock session it rides next to stays the same. Needs a stock
+    // bind since the factory reset (NVRAM APP_SESSION_KEY), which a watch paired with Nothing X always has.
     let key = session_word();
-    if stub_ram().host_key != key {
-        stub_ram().outbox.clear();
-        stub_ram().host_key = key;
+    if ram.host_key != key || ram.chan_mode != k as u8 {
+        ram.outbox.clear();
+        ram.host_key = key;
+        ram.chan_mode = k as u8;
     }
     let mut out = [0u8; MAX_REPLY];
-    let size = handle(stub_ram(), c2, payload, &mut out);
-    let _ = reply(stub_ram(), c2, &out[..size]);
-    drain(stub_ram());
+    let size = handle(ram, c2, payload, &mut out);
+    let _ = reply(ram, c2, &out[..size]);
+    drain(ram);
     rc
+}
+
+// K, read once from NVRAM (the secret only changes with a factory reset, which also reboots)
+fn chan_key(ram: &mut StubRam) -> Option<[u8; 16]> {
+    if ram.chan_ready != 1 {
+        let get: extern "C" fn(*const u8, *mut u8, u32) -> i32 = unsafe { transmute(KV_GET as usize) };
+        let mut hex = [0u8; 32];
+        if get(APP_SECRET.as_ptr(), hex.as_mut_ptr(), 32) != 32 {
+            return None;
+        }
+        ram.chan_key = aes::channel_key(&hex)?;
+        ram.chan_ready = 1;
+    }
+    Some(ram.chan_key)
+}
+
+// a host listens: the stream is connected and the stock session word is still the one of the last wp2 frame; a
+// stock host also needs the authkey (a confirmed bind popup zeroes it)
+fn host_listens(ram: &StubRam) -> bool {
+    listening(ram.host_key) && (ram.chan_mode == 1 || keyed(AUTHKEY))
 }
 
 fn keyed(addr: u32) -> bool {
@@ -65,7 +105,13 @@ fn reply(ram: &mut StubRam, c2: u16, plain: &[u8]) -> bool {
     let send: extern "C" fn(*const u8, u32) -> i32 = unsafe { transmute(SEND as usize) };
     let reply_c2 = c2 | 0xA000;
     let mut n = 0u16;
-    let cipher = encrypt(&mut n, plain.as_ptr(), plain.len() as u32, reply_c2 as u32);
+    let mut sealed = [0u8; 160];
+    let cipher = if ram.chan_mode == 1 {
+        n = aes::seal(&ram.chan_key, plain, &mut sealed) as u16;
+        if n == 0 { core::ptr::null() } else { sealed.as_ptr() }
+    } else {
+        encrypt(&mut n, plain.as_ptr(), plain.len() as u32, reply_c2 as u32)
+    };
     if cipher.is_null() || HEADER_LEN + n as usize > ram.reply.len() {
         return false;
     }
@@ -152,7 +198,7 @@ fn drop_data(slot: u8) {
 // so the host polls (PING) to collect them. A new host key drops what an earlier host left queued.
 fn drain(ram: &mut StubRam) {
     while let Some(m) = ram.outbox.peek(0).copied() {
-        if listening(ram.host_key) && keyed(AUTHKEY) {
+        if host_listens(ram) {
             let mut plain = [0u8; 2 + MSG_MAX];
             plain[0] = ram.out_seq;
             plain[1] = m.slot;

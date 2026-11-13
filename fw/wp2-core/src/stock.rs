@@ -154,3 +154,7 @@ pub const POWER_DC5V: u32 = 0x101CE70F;
 // (sys_wake_unlock stores the time); AT SETWAKELOCK 0 also calls 0x100C1739, which blanks at once if it ran out.
 pub const WAKE_LOCK: u32 = 0x101B59A9;
 pub const WAKE_UNLOCK: u32 = 0x100C1859;
+// NVRAM read (name, buf, len) -> bytes read or < 0; takes the NVRAM lock, safe from any thread. The AT GETSECRET
+// handler 0x100E9DD0 reads the pairing secret with it (docs/recon.md, "Pairing secret").
+pub const KV_GET: u32 = 0x1010_E215;
+pub const APP_SECRET: &[u8] = b"APP_SECRET\0";

@@ -140,7 +140,7 @@ class HandshakeTest(unittest.IsolatedAsyncioTestCase):
 class ChannelKeyTest(unittest.IsolatedAsyncioTestCase):
     def test_channel_key(self):
         secret = "00112233445566778899aabbccddeeff"
-        self.assertEqual(link.channel_key(secret), hashlib.sha256(b"wp2-chan" + secret.encode()).digest()[:16])
+        self.assertEqual(link.channel_key(secret), bytes.fromhex(secret))
 
     async def test_open_channel_no_bind(self):
         sleep = link.asyncio.sleep

@@ -82,8 +82,9 @@ def authkey(rnd1: bytes, rnd2: bytes, secret: bytes) -> bytes:
 
 
 def channel_key(secret_hex: str) -> bytes:
-    """Key K of the stub's own channel (docs/abi-1.4.md): no bind, no popup, survives reboots."""
-    return hashlib.sha256(b"wp2-chan" + secret_hex.encode()).digest()[:16]
+    """Key K of the stub's own channel (docs/abi-1.4.md): the pairing secret itself (NVRAM `APP_SECRET`, 32 hex
+    chars), so the stub needs no SHA-256. No bind, no popup, survives reboots."""
+    return bytes.fromhex(secret_hex)
 
 
 def session_key(nonce: bytes, auth: bytes) -> bytes:
@@ -140,7 +141,16 @@ class Session:
         if c1 != SYSTEM:
             raise ValueError("only system commands are supported")
         key = key or self.key
-        return decrypt(key, await self._exchange(c2, payload, expect, key, timeout))
+        await self.gatt.write(CMD_W, frame(SYSTEM, c2, payload, key), response=False)
+        # on a shared link (iOS) the notifications carry other hosts' frames too: skip what this key cannot open
+        async with asyncio.timeout(timeout):
+            while True:
+                got_c1, got, body = await self.frames.get()
+                if got_c1 == SYSTEM and got == expect:
+                    try:
+                        return decrypt(key, body)
+                    except ValueError:
+                        continue
 
     async def _auth_request(self, c2: int, payload: bytes, expect: int, auth: bytes, timeout: float = 6.0) -> bytes:
         body = await self._exchange(c2, payload, expect, auth, timeout)

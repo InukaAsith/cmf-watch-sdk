@@ -75,10 +75,13 @@ async def recv(session, timeout: float | None = None, poll: float = 0.25) -> Mes
             try:
                 async with asyncio.timeout(poll):
                     body = await session.events.get()
-                break
             except TimeoutError:
                 await ping(session)
-    return message(session.key, body)
+                continue
+            try:
+                return message(session.key, body)
+            except ValueError:
+                continue  # another host's EVENT on a shared link (iOS): not sealed with this key
 
 
 class Channel:

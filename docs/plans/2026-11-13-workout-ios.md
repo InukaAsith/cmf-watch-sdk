@@ -21,7 +21,7 @@ iOS 17, XcodeGen (`nix-shell -p xcodegen`).
 - AGENTS.md rule 1: no writes to the physical watch (OTA, install, push) without the owner's explicit yes at that
   time. Rule 2: no MAC, pairing secret, session key, real program or history in commits, logs or test output.
 - The stock session key keeps working for every existing host (`wp2apps install`, `herdr`, `workout push`).
-- `K = sha256(b"wp2-chan" + secret_ascii_hex)[:16]`, `secret_ascii_hex` = the 32 hex chars `AT GETSECRET` returns.
+- `K = bytes.fromhex(secret)`, `secret` = the 32 hex chars `AT GETSECRET` returns (NVRAM `APP_SECRET`).
   Frame format under `K` = today's (`link.encrypt`: data ‖ crc32le, PKCS7, AES-128-CBC, IV
   `5051525354555657606162636465665A`).
 - `R` = `"w1" 'R' version:u32 flags:u8` (8 B), flags bit 0 = workout in progress. Hosts accept 7 B `R` as flags 0.
@@ -58,7 +58,7 @@ iOS 17, XcodeGen (`nix-shell -p xcodegen`).
   slot=ANY, poll=0.25, channel_key=False)`: with `True`, `connect()` uses `open_channel` instead of `handshake`.
 
 - [ ] **Step 1: Failing test** `test_channel_key`: `channel_key("00112233445566778899aabbccddeeff")` equals
-  `hashlib.sha256(b"wp2-chan" + b"00112233445566778899aabbccddeeff").digest()[:16]`, length 16; `test_open_channel_no_bind`
+  `bytes.fromhex("00112233445566778899aabbccddeeff")`, length 16; `test_open_channel_no_bind`
   with the fake GATT of `tests/test_link.py`: only shell writes, no `0x8047` frame written.
 - [ ] **Step 2:** `uv run --locked python -m unittest tests.test_link -v` → FAIL (`channel_key` missing).
 - [ ] **Step 3:** Implement the interfaces above.
@@ -78,10 +78,9 @@ iOS 17, XcodeGen (`nix-shell -p xcodegen`).
 - Consumes: Task 1 `link.channel_key`, `Channel(channel_key=True)`.
 - Produces: `wp2_core::aes::seal(key: &[u8;16], plain: &[u8], out: &mut [u8]) -> usize` and
   `open(key: &[u8;16], cipher: &[u8], out: &mut [u8]) -> Option<usize>` (both include the crc32 trailer, matching
-  `link.encrypt/decrypt`); `wp2_core::aes::channel_key(secret_hex: &[u8; 32]) -> [u8; 16]`.
+  `link.encrypt/decrypt`); `wp2_core::aes::channel_key(secret_hex: &[u8; 32]) -> Option<[u8; 16]>` (hex decode).
 - Stub behaviour: a frame in `0x90A0..=0x90A7` that the stock decrypt rejects (NULL) is tried with `K`
-  (`chan_key`, derived once from the stock pairing secret; recon finds where the stock keeps it — the `AT
-  GETSECRET` handler reads it). Accepted under `K`: handled as today, reply and `EVENT`s sealed with `K`, and
+  (`chan_key`, read once from NVRAM `APP_SECRET`). Accepted under `K`: handled as today, reply and `EVENT`s sealed with `K`, and
   `chan_state = 1` (a `K` host is listening) until the link drops (ctx bit 0 clear). `drain` sends to the `K`
   host when `chan_state == 1` even if the stock keys are zero.
 
