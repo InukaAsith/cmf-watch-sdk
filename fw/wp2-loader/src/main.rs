@@ -25,7 +25,7 @@ mod view {
     use core::ffi::c_void;
     use core::ptr::addr_of_mut;
     use core::sync::atomic::Ordering;
-    use wp2_core::events::{map_key, Event, BUTTON, CROWN, TOUCH_DOWN, TOUCH_UP};
+    use wp2_core::events::{escape_due, map_key, Event, BUTTON, CROWN, TOUCH_DOWN, TOUCH_UP};
 
     const PRELOAD: u32 = 2;
     const LAYOUT: u32 = 3;
@@ -34,8 +34,6 @@ mod view {
     const DEFOCUS: u32 = 8;
     const KEY: u32 = 0xD;
     const ERROR_MS: u32 = 2000;
-    // an app still running this long after a BUTTON is stopped
-    const ESCAPE_MS: u32 = 1000;
 
     struct Menu {
         entries: [Option<menu::Entry>; menu::ROWS],
@@ -112,7 +110,10 @@ mod view {
             return;
         }
         let m = st();
-        if e.kind == BUTTON && !app::paused() && m.button_at == 0 {
+        // an app that owns "back" and read the last BUTTON gets a fresh escape window per press (ABI 1.3)
+        let owned_read = app::OWN_BACK.load(Ordering::Acquire) && app::CONSUMED.load(Ordering::Acquire);
+        if e.kind == BUTTON && !app::paused() && (m.button_at == 0 || owned_read) {
+            app::CONSUMED.store(false, Ordering::Release);
             m.button_at = app::millis() | 1;
         }
         to_app(e);
@@ -168,7 +169,8 @@ mod view {
         svc::tick(app::running(), app::paused());
         if app::running() {
             let exited = app::exited();
-            let escape = m.button_at != 0 && app::millis().wrapping_sub(m.button_at) >= ESCAPE_MS;
+            let owned = app::OWN_BACK.load(Ordering::Acquire);
+            let escape = escape_due(owned, m.button_at, app::CONSUMED.load(Ordering::Acquire), app::millis());
             if exited.is_some() || escape {
                 app::stop_app();
                 show_app(false);

@@ -2,7 +2,7 @@ use crate::{lv, motor, svc, ui};
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use wp2_core::gfx;
-use wp2_core::events::{Api, Event, Queue, PAUSE, RESUME};
+use wp2_core::events::{Api, Event, Queue, BUTTON, PAUSE, RESUME};
 use wp2_core::heap::{self, RES};
 use wp2_core::layout::stub_ram;
 use wp2_core::load;
@@ -27,10 +27,13 @@ static EXITED: AtomicBool = AtomicBool::new(false);
 static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 // view msg 8 (defocus) until msg 7 (focus)
 pub static DEFOCUSED: AtomicBool = AtomicBool::new(false);
+// ABI 1.3: the app handles BUTTON itself (own_back); CONSUMED: it popped the last BUTTON
+pub static OWN_BACK: AtomicBool = AtomicBool::new(false);
+pub static CONSUMED: AtomicBool = AtomicBool::new(false);
 
 static API: Api = Api {
     abi: 1,
-    abi_minor: 2,
+    abi_minor: 3,
     width: 466,
     height: 466,
     fill_rect,
@@ -48,6 +51,7 @@ static API: Api = Api {
     get_battery: svc::battery,
     screen_on: svc::keep_screen_on,
     lv_submit: lv::submit,
+    own_back,
 };
 
 type Entry = extern "C" fn(*const Api) -> i32;
@@ -70,6 +74,8 @@ pub fn launch(slot: u8) -> Result<(), i32> {
     ram.app_block = block as u32;
     ram.app_size = h.image_size;
     EXITED.store(false, Ordering::Release);
+    OWN_BACK.store(false, Ordering::Relaxed);
+    CONSUMED.store(false, Ordering::Relaxed);
     motor::reset();
     QUEUE.clear();
     svc::start(h.abi_minor);
@@ -184,6 +190,9 @@ extern "C" fn next_event(ev: *mut Event, timeout_ms: u32) -> bool {
     let start = millis();
     loop {
         if let Some(e) = QUEUE.pop() {
+            if e.kind == BUTTON {
+                CONSUMED.store(true, Ordering::Release);
+            }
             if !ev.is_null() {
                 unsafe { ev.write(e) };
             }
@@ -200,6 +209,10 @@ extern "C" fn next_event(ev: *mut Event, timeout_ms: u32) -> bool {
         }
         sleep(5);
     }
+}
+
+extern "C" fn own_back(on: bool) {
+    OWN_BACK.store(on, Ordering::Release);
 }
 
 pub extern "C" fn millis() -> u32 {

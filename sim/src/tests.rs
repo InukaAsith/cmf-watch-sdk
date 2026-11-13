@@ -122,6 +122,29 @@ fn button_force_stops_after_a_second() {
 }
 
 #[test]
+fn owned_back_is_not_killed_once_read() {
+    let s = sim("wait 50\nb\nwait 2000\nb");
+    s.lock().own_back(true);
+    assert_eq!(s.next_event(u32::MAX).map(|e| e.kind), Some(BUTTON));
+    assert_eq!(s.next_event(u32::MAX).map(|e| e.kind), Some(BUTTON));
+    assert_eq!(s.next_event(3000), None);
+    assert_eq!(s.lock().end, None);
+}
+
+#[test]
+fn owned_back_unread_is_still_killed() {
+    let s = sim("wait 50\nb");
+    s.lock().own_back(true);
+    let mut st = s.lock();
+    st.us = 100_000; // the press at 100 ms, never popped
+    st.pump();
+    st.us = 1_100_000;
+    st.pump();
+    drop(st);
+    assert_eq!(s.lock().end, Some(End::Killed));
+}
+
+#[test]
 fn messages_inbox_of_4_and_outbox_poll() {
     let s = sim("m a\nm bb\nm ccc\nm dddd\nm eeeee");
     let mut buf = [0u8; MSG_MAX];

@@ -1,5 +1,6 @@
 """Back navigation (docs/recon.md "Back navigation"): app -> Custom Apps menu -> stock app list, like stock apps."""
 import shutil
+import struct
 import unittest
 from unittest import skipUnless
 
@@ -100,6 +101,43 @@ class BackTest(unittest.TestCase):
             self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
             save(emu, "button-menu-clock")
             self.assert_clean(emu)
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class OwnBackTest(unittest.TestCase):
+    """ABI 1.3 own_back (docs/abi-1.3.md): back-owner reads every BUTTON and is not stopped; hung, it still is."""
+    ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/back-owner"
+
+    def presses(self, emu):
+        addr = harness.u32(emu, START + harness.APP_BLOCK_OFF) + harness.symbol(self.ELF, "PRESSES")
+        return struct.unpack("<i", emu.peek(addr, 4))[0]
+
+    def running(self, emu):
+        return emu.peek(START + 6, 1) != b"\xff"
+
+    def test_owned_back(self):
+        with harness.installed(["loader", "back-owner"], name="own-back") as (emu, port):
+            dismiss_popup(emu)
+            harness.ready(emu)
+            harness.open_apps(emu)
+            tap_row(emu, 0)
+            for n in (1, 2):
+                emu.send("c 1", "c 0", pause=2)  # well past the 1 s escape
+                self.assertTrue(self.running(emu), f"stopped after press {n}")
+                self.assertEqual(self.presses(emu), n)
+            emu.send("c 1", "c 0", pause=2)  # third: the app returns 0
+            self.assertFalse(self.running(emu))
+            self.assertEqual(emu.peek(START + 4, 3), b"\x01\x01\xff")  # back in the loader menu
+
+            tap_row(emu, 0)
+            emu.send("r -80", pause=0.5)  # crown: the app stops reading events
+            start = emu.clock()
+            emu.send("c 1", "c 0", pause=0)
+            while self.running(emu) and emu.clock() - start < 4:
+                emu.sleep(0.125)
+            print(f"\nhung owner stopped after {emu.clock() - start:.3f} s")
+            self.assertFalse(self.running(emu))
+            self.assertLessEqual(emu.clock() - start, 3)
 
 
 def harness_frame(path):
