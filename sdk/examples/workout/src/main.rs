@@ -15,8 +15,8 @@ fn main() {}
 
 #[cfg(target_os = "none")]
 mod device {
-    use crate::model::{epoch_s, Model, Next, Program};
-    use crate::proto::{ack, history_msg, request, Got, Transfer};
+    use crate::model::{epoch_s, Model, Next, Program, HR_MAX, SETS_MAX};
+    use crate::proto::{ack, history_msg, pulse, request, trace_msg, Got, Transfer, X_CHUNK};
     use crate::screen::{Hit, Screen, View};
     use cmf_wp2_app::lv::{Batch, LvError};
     use cmf_wp2_app::{Api, BUTTON, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
@@ -35,11 +35,17 @@ mod device {
     // swipe across a pill is also a tap on it
     const DEFER_MS: u32 = 150;
     const GESTURE_MS: u32 = 400;
+    /// A P to the phone at least this often during a workout (sooner when the exercise or the sets change).
+    const PULSE_MS: u32 = 5000;
+    /// The trace is saved with every set; heart-rate samples alone at most this often (NAND wear).
+    const HR_SAVE_S: u32 = 60;
+    const TRACE_MAX: usize = 1 + SETS_MAX * 3 + 2 + HR_MAX;
 
     static mut STORE: [u8; STORE_MAX] = [0; STORE_MAX];
     static mut MODEL: Model = Model::new();
     static mut TRANSFER: Transfer = Transfer::new();
     static mut SCREEN: Screen = Screen::empty();
+    static mut TRACE: [u8; TRACE_MAX] = [0; TRACE_MAX];
 
     // read by tests/test_workout_e2e.py: view (0 start, 1 day, 2 set, 3 rest, 4 ask, 5 done), sets done in the
     // workout, buzzes, last acked version, the next day of the rotation; non-zero initialiser: .data, fresh at every
@@ -69,6 +75,21 @@ mod device {
         let buf = unsafe { &mut *&raw mut STORE };
         let n = m.save(buf);
         api.save(&buf[..n]);
+    }
+
+    /// The heart rate now, 0 when there is none.
+    // ponytail: no source yet; the loader's heart-rate events (hr-recon) replace this
+    fn heart_rate(_api: &Api) -> u8 {
+        0
+    }
+
+    /// The exercise on screen (set or rest), 0xFF otherwise.
+    fn open_ex(v: View, m: &Model) -> u8 {
+        match v {
+            View::Set { ex } => ex as u8,
+            View::Rest => m.workout.map_or(0xFF, |w| w.rest_ex),
+            _ => 0xFF,
+        }
     }
 
     fn version(m: &Model) -> u32 {
@@ -156,6 +177,10 @@ mod device {
         let mut awake: Option<u32> = None;
         // next history entry to send (Q): the outbox holds 4, the host collects them as it polls
         let mut hist: Option<u8> = None;
+        // X messages left: (next index, count, trace bytes)
+        let mut trace: Option<(u8, u8, usize)> = None;
+        let mut pulsed: Option<(u32, u8, u8)> = None; // (ms, ex, done) of the last P
+        let mut hr_saved = 0u32;
         // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
         let mut locked = false;
         let mut shown_at = api.now();
@@ -187,6 +212,18 @@ mod device {
                 let _ = go(s, &mut b, m, v, now);
                 shown_at = api.now();
             }
+            m.bpm = if m.workout.is_some() { heart_rate(api) } else { 0 };
+            if m.hr_sample(m.bpm, now) && now.wrapping_sub(hr_saved) >= HR_SAVE_S {
+                save(api, m);
+                hr_saved = now;
+            }
+            if let Some(w) = m.workout {
+                let (ex, done) = (open_ex(s.view, m), sets_done(m) as u8);
+                if pulsed.is_none_or(|(t, e, d)| ms.wrapping_sub(t) >= PULSE_MS || (e, d) != (ex, done)) {
+                    api.send(&pulse(w.started, w.day, m.bpm, ex, done));
+                    pulsed = Some((ms, ex, done));
+                }
+            }
             let _ = s.tick(&mut b, &mut |b| b.submit(&lv), m, now);
 
             while let Some(i) = hist {
@@ -198,7 +235,18 @@ mod device {
                 }
                 hist = (rc == 0 && i + 1 < n).then_some(i + 1);
             }
-            let busy = hist.is_some() || pending.is_some();
+            while let Some((i, n, len)) = trace {
+                let tb = unsafe { &*&raw const TRACE };
+                let chunk = &tb[(usize::from(i) * X_CHUNK).min(len)..((usize::from(i) + 1) * X_CHUNK).min(len)];
+                let mut out = [0u8; 9 + X_CHUNK];
+                let k = trace_msg(i, n, m.trace.start, chunk, &mut out);
+                let rc = api.send(&out[..k]);
+                if rc == -11 {
+                    break;
+                }
+                trace = (rc == 0 && i + 1 < n).then_some((i + 1, n, len));
+            }
+            let busy = hist.is_some() || trace.is_some() || pending.is_some();
             let wait = motor.wait().unwrap_or(TICK_MS).min(if busy { 50 } else { TICK_MS });
             let mut to: Option<View> = None;
             let mut hit = None;
@@ -279,6 +327,10 @@ mod device {
                         }
                     }
                     Got::History => hist = Some(0), // an empty history: one Y with count 0
+                    Got::Trace => {
+                        let len = m.trace.encode(unsafe { &mut *&raw mut TRACE });
+                        trace = Some((0, len.div_ceil(X_CHUNK) as u8, len));
+                    }
                     Got::Resync => {
                         api.send(&request(version(m), m.workout.is_some()));
                     }

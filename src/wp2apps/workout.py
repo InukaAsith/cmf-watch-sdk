@@ -195,6 +195,23 @@ async def history(ch, wait: float = WAIT) -> list[Entry]:
             return [got[i] for i in sorted(got)]
 
 
+async def trace(ch, wait: float = WAIT) -> tuple[int, list[tuple[int, int]], bytes]:
+    """The last workout's trace: (start, [(exercise, seconds to "Сделал")], bpm per 10 s; 0 = none)."""
+    await _request(ch, wait)
+    await ch.send(MAGIC + b"T" + bytes([0]))
+    parts: dict[int, bytes] = {}
+    while True:
+        x = await _expect(ch, b"X", 30)
+        parts[x[3]], start = x[9:], int.from_bytes(x[5:9], "little")
+        if len(parts) == x[4]:
+            break
+    b = b"".join(parts[i] for i in sorted(parts))
+    n = b[0]
+    sets = [(b[1 + 3 * i], int.from_bytes(b[2 + 3 * i:4 + 3 * i], "little")) for i in range(n)]
+    at = 1 + 3 * n
+    return start, sets, b[at + 2:at + 2 + int.from_bytes(b[at:at + 2], "little")]
+
+
 def main(args) -> int:
     from .cli import cache_key, cached_key
     log = lambda text: print(f"{time.strftime('%H:%M:%S')} {text}", file=sys.stderr, flush=True)  # noqa: E731
