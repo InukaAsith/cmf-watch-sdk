@@ -23,8 +23,9 @@ uv run --locked wp2apps herdr --chat --address <UUID>  # also a chat: typed line
   the daemon loses the link.
 - **macOS can keep a stale LE link** to the watch after a crash or sleep: the daemon then retries without
   connecting. Toggle the Mac's Bluetooth off and on.
-- The app lives only while the screen is on: when the stock auto-sleep blanks the panel, the stock closes the app
-  view. After a buzz the app holds the screen on for 20 s.
+- Screen-off: the stock keeps the app across auto-sleep in the emulator (light sleep, `docs/recon.md` "Screen-off
+  and the app view"); an older note here said the stock closes it, which came from emulator runs where deep sleep
+  stops the guest. After a buzz the app holds the screen on for 20 s.
 - Emulator: `--hci-port P` instead of `--address`.
 
 ## Watch app
