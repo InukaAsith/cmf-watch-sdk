@@ -19,7 +19,7 @@ mod device {
     use crate::proto::{ack, history_msg, pulse, request, trace_msg, Got, Transfer, X_CHUNK};
     use crate::screen::{Hit, Screen, View};
     use cmf_wp2_app::lv::{Batch, LvError};
-    use cmf_wp2_app::{Api, BUTTON, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
+    use cmf_wp2_app::{Api, BUTTON, HEART, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
     use cmf_wp2_ui::haptic::{Motor, ALERT};
 
     cmf_wp2_app::entry!(main);
@@ -37,8 +37,6 @@ mod device {
     const GESTURE_MS: u32 = 400;
     /// A P to the phone at least this often during a workout (sooner when the exercise or the sets change).
     const PULSE_MS: u32 = 5000;
-    /// The trace is saved with every set; heart-rate samples alone at most this often (NAND wear).
-    const HR_SAVE_S: u32 = 60;
     const TRACE_MAX: usize = 1 + SETS_MAX * 3 + 2 + HR_MAX;
 
     static mut STORE: [u8; STORE_MAX] = [0; STORE_MAX];
@@ -77,12 +75,6 @@ mod device {
         let buf = unsafe { &mut *&raw mut STORE };
         let n = m.save(buf);
         api.save(&buf[..n]);
-    }
-
-    /// The heart rate now, 0 when there is none.
-    // ponytail: no source yet; the loader's heart-rate events (hr-recon) replace this
-    fn heart_rate(_api: &Api) -> u8 {
-        0
     }
 
     /// The exercise on screen (set or rest), 0xFF otherwise.
@@ -203,7 +195,7 @@ mod device {
         // X messages left: (next index, count, trace bytes)
         let mut trace: Option<(u8, u8, usize)> = None;
         let mut pulsed: Option<(u32, u8, u8)> = None; // (ms, ex, done) of the last P
-        let mut hr_saved = 0u32;
+        let mut hr_on = false; // the measurement runs while a workout does (docs/abi-1.4.md, Heart rate)
         // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
         let mut locked = false;
         let mut shown_at = api.now();
@@ -235,11 +227,14 @@ mod device {
                 let _ = go(s, b, m, v, now);
                 shown_at = api.now();
             }
-            m.bpm = if m.workout.is_some() { heart_rate(api) } else { 0 };
-            if m.hr_sample(m.bpm, now) && now.wrapping_sub(hr_saved) >= HR_SAVE_S {
-                save(api, m);
-                hr_saved = now;
+            if m.workout.is_some() != hr_on {
+                hr_on = !hr_on;
+                api.heart_rate(hr_on); // -22 on an older loader: no heart rate, the rest works
+                m.bpm = 0;
             }
+            // saved with the next set or the finish, not on its own: a 4 KB save can hold the loop past the loader's
+            // 1 s BUTTON deadline; a crash loses the samples since the last set
+            m.hr_sample(m.bpm, now);
             if let Some(w) = m.workout {
                 let (ex, done) = (open_ex(s.view, m), sets_done(m) as u8);
                 if pulsed.is_none_or(|(t, e, d)| ms.wrapping_sub(t) >= PULSE_MS || (e, d) != (ex, done)) {
@@ -291,6 +286,8 @@ mod device {
                     to = Some(resume_view(m, now_s(api)));
                 }
                 Some(e) if e.kind == RESUME => to = Some(s.view),
+                // x: worn; delta: bpm, 0 = no reading yet
+                Some(e) if e.kind == HEART => m.bpm = if e.x == 1 { e.delta.clamp(0, 255) as u8 } else { 0 },
                 Some(e) if e.kind == LV && e.y == CLICKED => {
                     let t = api.now();
                     let settled = t.wrapping_sub(shown_at) >= SETTLE_MS && t.wrapping_sub(button_at) >= GESTURE_MS;

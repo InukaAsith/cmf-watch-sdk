@@ -86,8 +86,9 @@ The watch keeps the sets and heart rate of its last workout (from its start unti
 of its blob: `start: u32, n_sets: u8, (ex: u8, t: u16) × n_sets, n_hr: u16, bpm: u8 × n_hr`. `t` counts seconds
 from the start to the set's "Сделал"; `bpm` is one sample per 10 s from the start, 0 where there was no reading.
 At most 96 sets and 1000 samples (2 h 46 min), so the biggest program, the full history and a full trace fit in
-4096 B. A blob without the trace (an older app) still loads. Heart-rate samples alone are saved at most once a
-minute; a set saves at once. The phone fetches the trace once per workout (`T` after `Q`, when the newest entry
+4096 B. A blob without the trace (an older app) still loads. Samples are saved with the next set or the finish
+(a save on their own could hold the app past the loader's 1 s button deadline); a crash loses those since the last
+set. The phone fetches the trace once per workout (`T` after `Q`, when the newest entry
 has none) and keeps it forever; a workout started before a sync loses only its predecessor's trace, not its entry.
 Heart-rate values are personal data: tests check counts, never values, and nothing logs them.
 
