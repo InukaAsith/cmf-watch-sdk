@@ -42,6 +42,8 @@ final class AppStore {
         var watchVersion: UInt32?
         var heldBack = false
         var lastSync: Date?
+        /// starts of entries the owner deleted: the watch still has them, a sync must not bring them back
+        var deleted: Set<UInt32>?
     }
 
     private(set) var saved: Saved
@@ -74,10 +76,19 @@ final class AppStore {
     }
 
     func apply(_ r: SyncResult) {
-        saved.history = merge(saved.history, r, pushed: saved.pushed)
+        saved.history = merge(saved.history, r, pushed: saved.pushed).filter { !(saved.deleted ?? []).contains($0.start) }
         saved.watchVersion = r.pushed ?? r.watchVersion
         saved.heldBack = r.heldBack
         saved.lastSync = .now
+        save()
+    }
+
+    /// Entries a sync must not fetch again: kept ones and deleted ones.
+    var knownStarts: Set<UInt32> { Set(history.map(\.start)).union(saved.deleted ?? []) }
+
+    func deleteHistory(_ starts: [UInt32]) {
+        saved.deleted = (saved.deleted ?? []).union(starts)
+        saved.history.removeAll { starts.contains($0.start) }
         save()
     }
 

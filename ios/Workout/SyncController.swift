@@ -111,7 +111,7 @@ final class SyncController {
         let program = try? store.encoded.get()
         if let program { store.willPush(program) }
         do {
-            let result = try await sync(channel: ch, program: program, knownStarts: Set(store.history.map(\.start)),
+            let result = try await sync(channel: ch, program: program, knownStarts: store.knownStarts,
                                         firstRequest: r)
             store.apply(result)
             lastRequest = result.pushed.map { .request(version: $0, running: false) } ?? r
