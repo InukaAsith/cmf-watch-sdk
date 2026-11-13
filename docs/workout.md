@@ -76,3 +76,19 @@ Plain data: exercise and day names, weights, rest times and the history (dates, 
 over a channel whose pairing secret any BLE client can read (`docs/app-guide.md`, section 4). The spec accepts this
 for workout data (`docs/specs/2026-11-13-workout-app-design.md`); nothing else personal goes over it. The owner's real
 program stays out of commits and logs: the tests use `tests/fixtures/workout/`.
+
+## Hardware
+
+2026-11-13, owner's approval: only the loader was written. `loader.wp2app` v3 (ABI 1.3, `own_back`) replaced loader
+v1 (ABI 1.2) in slot `L` with `wp2apps install --address`; `wp2apps list` confirmed it. No OTA: the screen-off
+behaviour needs no `app.bin` change (commit 99f0e3a). The `workout` app was **not** installed and no program was
+pushed: the owner moves the workout side to an iOS app.
+
+Checked by the owner with the older apps in slots 0–6 (abi_minor 1 and 2) on the new loader:
+
+- The crown press and the right swipe leave an app to the "Custom Apps" menu, as before.
+- The screen going off (auto-sleep and AOD) keeps the app; a button press wakes the watch straight into the app
+  and does not end it. A longer wait (deep sleep) gave the same result.
+
+Not checked on hardware: the `workout` back dialog and the rest buzz while the screen is dark.
+Install notes: as in `docs/ota.md`, macOS held the LE link after `install`; toggling the Mac's Bluetooth freed it.
