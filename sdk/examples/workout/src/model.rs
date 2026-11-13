@@ -7,7 +7,7 @@ pub const PROGRAM_MAX: usize = 2048;
 pub const DAYS_MAX: usize = 7;
 pub const EX_MAX: usize = 12;
 pub const NAME_MAX: usize = 32;
-pub const WEIGHT_MAX: usize = 16;
+pub const WEIGHT_MAX: usize = 32;
 pub const HISTORY_MAX: usize = 64;
 pub const STALE_S: u32 = 3 * 3600;
 pub const REST_DEFAULT_S: u16 = 90;
@@ -436,6 +436,14 @@ pub mod tests {
     }
 
     #[test]
+    fn weight_up_to_32_bytes() {
+        let w = "гантели по 8–10 кг"; // 31 B
+        assert_eq!(Program::parse(&enc(&[("d", &[("e", 1, 1, 1, 60, w)])])).unwrap().exercise(0, 0).weight, w);
+        let long = "я".repeat(17); // 34 B
+        assert!(Program::parse(&enc(&[("d", &[("e", 1, 1, 1, 60, &long)])])).is_none());
+    }
+
+    #[test]
     fn parse_rejects() {
         let ok = two_days();
         assert!(Program::parse(&ok[..ok.len() - 1]).is_none());
@@ -557,7 +565,7 @@ pub mod tests {
         let mut big = enc(&days);
         big.truncate(PROGRAM_MAX); // over the limit as a whole: parse refuses it
         assert!(Program::parse(&big).is_none());
-        let fit = enc(&days[..2]); // 2 × 12 longest exercises: 1389 B
+        let fit = enc(&days[..2]); // 2 × 12 exercises with 32 B names and 16 B weights: 1389 B
         assert!(fit.len() <= PROGRAM_MAX);
         let mut m = model(Program::parse(&fit).unwrap());
         m.start(0, 1);
@@ -587,6 +595,19 @@ pub mod tests {
         flip[9] ^= 0x55; // program bytes no longer match the version
         m.load(&flip[..n]);
         assert!(m.program.is_none());
+    }
+
+    #[test]
+    fn fixture_decodes() {
+        // written by tests/test_workout.py (WP2_REGEN=1) from tests/fixtures/workout/*.md
+        let bytes = include_bytes!("../../../../tests/fixtures/workout-program.bin");
+        let p = Program::parse(bytes).unwrap();
+        assert_eq!((p.days(), p.day_name(0), p.day_name(1)), (2, "Верх", "Ноги"));
+        assert_eq!(p.exercise(0, 0), Exercise { name: "Жим лежа", sets: 4, reps: (5, 8), rest_s: 120, weight: "80 кг" });
+        assert_eq!(p.exercise(0, 1).weight, "свой вес");
+        assert!(p.exercise(0, 2).name.len() <= NAME_MAX && p.exercise(0, 2).name.starts_with("Очень длинное"));
+        assert_eq!(p.exercise(1, 1).reps, (20, 20));
+        assert_eq!(p.exercise(1, 1).rest_s, REST_DEFAULT_S);
     }
 
     #[test]

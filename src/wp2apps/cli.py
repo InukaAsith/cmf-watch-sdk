@@ -237,6 +237,11 @@ def cmd_herdr(args):
     return herdr.main(args)
 
 
+def cmd_workout(args):
+    from . import workout
+    return workout.main(args)
+
+
 def cmd_scan(args):
     found = asyncio.run(blegatt.scan(args.timeout))
     print(json.dumps({"devices": [
@@ -318,6 +323,20 @@ def parser():
     herdr.add_argument("--chat", action="store_true",
                        help="also a chat: typed lines go to the running app, its other messages are printed")
     herdr.set_defaults(handler=cmd_herdr)
+    wk = commands.add_parser("workout", help="The workout app: push the program from Markdown notes, read the history "
+                                             "(docs/workout.md)")
+    actions = wk.add_subparsers(dest="action", required=True)
+    for name, help_ in (("push", "Send the days in DIR (*.md) to the running workout app"),
+                        ("history", "Print the finished workouts the app keeps, newest first (JSON lines)")):
+        sub = actions.add_parser(name, help=help_)
+        if name == "push":
+            sub.add_argument("dir", help="folder of day notes, e.g. 'Day 01.md' ('## День 1: …', one '- …: 4×5–8 (90 кг)' "
+                                         "line per exercise)")
+            sub.add_argument("--dry-run", action="store_true", help="print the parsed program, no Bluetooth")
+        where = sub.add_mutually_exclusive_group(required=name == "history")
+        where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
+        where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
+        sub.set_defaults(handler=cmd_workout)
     scan = commands.add_parser("scan", help="List nearby CMF watches (read-only; address redacted by default)")
     scan.add_argument("--timeout", type=float, default=5.0)
     scan.add_argument("--show-address", action="store_true")
