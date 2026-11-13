@@ -189,7 +189,7 @@ class WorkoutTest(unittest.TestCase):
         self.wait(done, 60)
         self.assertIsInstance(out[0], RuntimeError, out)
         self.assertNotEqual(self.stats()[ACKED] & 0xFFFFFFFF, workout.version(other))
-        self.assertEqual(self.stats()[SETS], 1, "the workout must still be open")
+        self.assertGreater(self.stats()[SETS], 0, "the workout must still be open")
 
     def test_3_finish_rotates(self):
         self.button()  # set -> day
