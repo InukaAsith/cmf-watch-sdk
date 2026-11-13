@@ -135,3 +135,20 @@ class HandshakeTest(unittest.IsolatedAsyncioTestCase):
     async def test_confirmed_every_time_is_an_error(self):
         with self.assertRaisesRegex(ValueError, "bind popup"):
             await link.Session().handshake(FakeWatch(confirm=3))
+
+
+class ChannelKeyTest(unittest.IsolatedAsyncioTestCase):
+    def test_channel_key(self):
+        secret = "00112233445566778899aabbccddeeff"
+        self.assertEqual(link.channel_key(secret), hashlib.sha256(b"wp2-chan" + secret.encode()).digest()[:16])
+
+    async def test_open_channel_no_bind(self):
+        sleep = link.asyncio.sleep
+        link.asyncio.sleep = lambda _: sleep(0)
+        try:
+            watch, s = FakeWatch(), link.Session()
+            await s.open_channel(watch)
+        finally:
+            link.asyncio.sleep = sleep
+        self.assertEqual(s.key, link.channel_key(watch.secret.hex()))
+        self.assertIsNone(watch.auth)  # no 0x8047

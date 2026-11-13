@@ -87,10 +87,11 @@ class Channel:
     handshake. The watch sends app messages only after a host frame, so recv() polls with PING every `poll` s."""
 
     def __init__(self, address: str | None = None, hci_port: int | None = None, slot: int = ANY,
-                 poll: float = 0.25):
+                 poll: float = 0.25, channel_key: bool = False):
         if (address is None) == (hci_port is None):
             raise ValueError("give exactly one of address and hci_port")
         self.address, self.hci_port, self.slot, self.poll = address, hci_port, slot, poll
+        self.channel_key = channel_key  # K session (docs/abi-1.4.md) instead of a stock bind
         self.session = None
         self.key = None  # session key of the last link, tried first on reconnect (no bind popup)
         self._stack = None
@@ -106,7 +107,10 @@ class Channel:
             try:
                 gatt = await stack.enter_async_context(self._transport())
                 session = link.Session()
-                await session.handshake(gatt, key=self.key)
+                if self.channel_key:
+                    await session.open_channel(gatt)
+                else:
+                    await session.handshake(gatt, key=self.key)
             except (*LOST, ValueError):
                 await stack.aclose()
                 await asyncio.sleep(self._backoff)
