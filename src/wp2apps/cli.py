@@ -237,6 +237,14 @@ def cmd_herdr(args):
     return herdr.main(args)
 
 
+def cmd_bridge(args):
+    from . import bridge
+    if not (args.address or args.hci_port):
+        raise ValueError("give --address (watch) or --hci-port (emulator)")
+    print(json.dumps({"listening": args.port}), flush=True)
+    asyncio.run(bridge.serve(args.port, args.address, args.hci_port))
+
+
 def cmd_workout(args):
     from . import workout
     return workout.main(args)
@@ -339,6 +347,13 @@ def parser():
         where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
         where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
         sub.set_defaults(handler=cmd_workout)
+    br = commands.add_parser("bridge", help="TCP hex-line bridge to the running app over the K channel "
+                                           "(docs/abi-1.4.md; for the iPhone app in tests and the iOS Simulator)")
+    br.add_argument("--port", type=int, default=7700)
+    where = br.add_mutually_exclusive_group()
+    where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
+    where.add_argument("--address", help="BLE address of a real watch")
+    br.set_defaults(handler=cmd_bridge)
     scan = commands.add_parser("scan", help="List nearby CMF watches (read-only; address redacted by default)")
     scan.add_argument("--timeout", type=float, default=5.0)
     scan.add_argument("--show-address", action="store_true")
