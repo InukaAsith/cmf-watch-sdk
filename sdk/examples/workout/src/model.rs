@@ -10,6 +10,7 @@ pub const NAME_MAX: usize = 32;
 pub const WEIGHT_MAX: usize = 32;
 pub const HISTORY_MAX: usize = 64;
 pub const STALE_S: u32 = 3 * 3600;
+#[allow(dead_code)] // the default the Mac side writes; the tests check it
 pub const REST_DEFAULT_S: u16 = 90;
 const MAGIC: &[u8; 2] = b"W1";
 const NONE: u8 = 0xFF;
