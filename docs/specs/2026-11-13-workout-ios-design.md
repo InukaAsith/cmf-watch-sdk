@@ -75,7 +75,8 @@ Both changes keep today's behaviour for the Mac tools (`wp2apps install`, `herdr
 session key keeps working.
 
 **1. Own channel key.** The stub also accepts frames `0x90A0..0x90A7` encrypted with
-`K = sha256("wp2-chan" ‖ pairing secret)[:16]` (builder may pick the exact derivation), with the same frame format
+`K` = the pairing secret's 16 bytes (NVRAM `APP_SECRET`, 32 hex chars; read by the stub with the stock
+`0x1010E215(name, buf, 32)` the `AT GETSECRET` handler `0x100E9DD0` uses), with the same frame format
 and CRC as today. Replies and `EVENT`s go out under the key the request used. No bind is needed: the phone reads
 the secret once with `AT GETSECRET` on the shell characteristic and caches it in the Keychain (re-read when frames
 stop being answered). Security is unchanged: any BLE client can read the secret already (`docs/recon.md`, threat
