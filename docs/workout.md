@@ -76,3 +76,20 @@ Plain data: exercise and day names, weights, rest times and the history (dates, 
 over a channel whose pairing secret any BLE client can read (`docs/app-guide.md`, section 4). The spec accepts this
 for workout data (`docs/specs/2026-11-13-workout-app-design.md`); nothing else personal goes over it. The owner's real
 program stays out of commits and logs: the tests use `tests/fixtures/workout/`.
+
+## iPhone app
+
+`ios/`: the program lives in the app (Программа), the history is kept forever (История), the watch link,
+`workout` install/update and the signing expiry are under Часы. Design: `docs/specs/2026-11-13-workout-ios-design.md`.
+
+- Talks over the stub's own channel key K (`docs/abi-1.4.md`): no bind, no popup, next to Nothing X on the
+  connection iOS already holds. Needs the new stub (OTA) and loader; with the old ones it gets no answer.
+- Syncs on every `R` of the workout app: history first, then the program unless the watch has it or a workout runs
+  (then it waits for the `R` the app sends when the workout ends).
+- Storage: one JSON file in Application Support; the pairing secret in the Keychain.
+- `scripts/ios-install` builds `workout.wp2app` into the app and installs it on the connected iPhone (`WP2_TEAM`,
+  `WP2_BUNDLE_ID`); free Personal Team: re-run every 7 days. `scripts/ios-install --sim -demo` runs it in the iOS
+  Simulator with made-up data; `--sim -tcp 7700` talks to `wp2apps bridge --hci-port P` (emulator).
+- Import of the old Markdown program: `wp2apps workout push <dir> --dry-run > program.json`, then Программа → import.
+- Tests: `(cd ios/WireKit && swift test)` (vectors from `tests/ios_vectors.py`), `tests/test_ios_e2e.py` (WireKit
+  against the emulator over K).

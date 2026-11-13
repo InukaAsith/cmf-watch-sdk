@@ -39,7 +39,7 @@ let header = hex(pkg.info_reply_hex).dropFirst()
     f.used[0]![8] = UInt8(ascii: "x") // another app in slot 0
     f.used[1]![8] = UInt8(ascii: "y")
     f.used[2]![8] = UInt8(ascii: "z")
-    var seen: [Double] = []
+    nonisolated(unsafe) var seen: [Double] = []
     let slot = try await install(f, package: hex(pkg.hex)) { seen.append($0) }
     #expect(slot == 3)
     let writes = f.calls.filter { $0.0 != Cmd.info }

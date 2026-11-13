@@ -228,6 +228,12 @@ iOS 17, XcodeGen (`nix-shell -p xcodegen`).
 - [ ] **Step 2–4:** `swift test` FAIL → implement → PASS.
 - [ ] **Step 5:** Commit `feat(ios): install packages from the phone`.
 
+> **Done differently (2026-11-13):** storage is one JSON file (`ios/Workout/Store.swift`), not SwiftData; the
+> history merge and day naming live in WireKit (`History.swift`, `swift test`) instead of an Xcode test target; the
+> host simulator has no LVGL, so WireKit is tested against the emulator through `wp2apps bridge`
+> (`tests/test_ios_e2e.py`); the stub's `K` is the secret itself (no SHA-256 in the stub); unsolicited messages use
+> a loader→stub `kick` (`docs/abi-1.4.md`), which needs a new loader as well.
+
 ### Task 8: iOS app: project, store, Программа tab, import
 
 **Files:**
