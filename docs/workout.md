@@ -67,6 +67,9 @@ transfer from `B` (0) on.
 | `R` | app → host | `version: u32` stored (0 = none), `flags: u8` (bit 0: a workout is in progress; a host holds a new program back until it ends, `push` refuses without `--force`). Sent on start, on resume, every 3 s on the start screen and right after a workout ends. Hosts accept a 7-byte `R` (older app) as flags 0 |
 | `A` | app → host | `version: u32` just stored |
 | `Y` | app → host | `index: u8, count: u8, start: u32, dur_s: u16, day: u8, done: u8, planned: u8`; an empty history is one `Y` with count 0 |
+| `T` | host → app | – (send the trace of the last workout); not part of a transfer |
+| `X` | app → host | `index: u8, count: u8, start: u32`, then up to 100 bytes of the trace (below); `start` 0 = no trace |
+| `P` | app → host | `start: u32, day: u8, bpm: u8` (0 = no reading), `ex: u8` (the exercise on screen, 0xFF = none), `done: u8` (sets so far). During a workout every 5 s and on every change of `ex` or `done`; not answered |
 
 A gap in `seq`, a `C` at another offset than the bytes received so far, more bytes than `total`, or an `E` whose CRC
 or program does not check drops the transfer and the app sends `R` again. The program format is in
@@ -76,6 +79,17 @@ Plain data: exercise and day names, weights, rest times and the history (dates, 
 over a channel whose pairing secret any BLE client can read (`docs/app-guide.md`, section 4). The spec accepts this
 for workout data (`docs/specs/2026-11-13-workout-app-design.md`); nothing else personal goes over it. The owner's real
 program stays out of commits and logs: the tests use `tests/fixtures/workout/`.
+
+## Trace
+
+The watch keeps the sets and heart rate of its last workout (from its start until the next one starts) at the end
+of its blob: `start: u32, n_sets: u8, (ex: u8, t: u16) × n_sets, n_hr: u16, bpm: u8 × n_hr`. `t` counts seconds
+from the start to the set's "Сделал"; `bpm` is one sample per 10 s from the start, 0 where there was no reading.
+At most 96 sets and 1000 samples (2 h 46 min), so the biggest program, the full history and a full trace fit in
+4096 B. A blob without the trace (an older app) still loads. Heart-rate samples alone are saved at most once a
+minute; a set saves at once. The phone fetches the trace once per workout (`T` after `Q`, when the newest entry
+has none) and keeps it forever; a workout started before a sync loses only its predecessor's trace, not its entry.
+Heart-rate values are personal data: tests check counts, never values, and nothing logs them.
 
 ## iPhone app
 
