@@ -196,6 +196,9 @@ uv run --locked wp2apps install target/<name>.wp2app --address <UUID>
 - Open an app: stock app list (list style, not waterfall) → "Custom Apps", the first row → tap the app's row (the
   crown scrolls the list). The row shows the name and `vN`. If `main` returns a non-zero code, the row shows
   `Error <code>` for 2 s (`fw/wp2-loader/src/main.rs`, `fail`).
+- Remove on the watch: a long press on the app's row asks "Delete" / "Cancel" with its name; Delete removes the
+  package and its data (as `wp2apps remove`) and the list is built again (loader of 2026-11-14,
+  `tests/test_menu_delete_e2e.py`).
 - Leave, as in stock apps: in an app, the crown press or a right swipe sends `BUTTON` and returns to the "Custom
   Apps" menu (the app gets 1 s, then it is stopped). In the menu a right swipe goes back to the stock app list at
   the same scroll position and the crown press goes to the clock (`docs/recon.md`, "Back navigation").
