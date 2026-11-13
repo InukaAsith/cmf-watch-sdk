@@ -294,7 +294,7 @@ have ~5 ms granularity (`next_event` in `fw/wp2-loader/src/app.rs`). Never spin 
 | `TOUCH_DOWN` (1) | finger down | `x`, `y` in screen pixels. Act on this one |
 | `TOUCH_UP` (2) | finger up | `x`, `y` are not reliable: in the emulator a tap at y 199 reported a row-0 `y` (herdr-agents now uses DOWN). There are no move events, so no drags or swipes inside the app |
 | `CROWN` (3) | one crown detent | `delta` is `+1` or `-1`, never a magnitude; a fast turn is several events |
-| `BUTTON` (4) | crown press, or a right swipe (the stock "back") | The loader force-stops the app **1000 ms** later if it is still running (`ESCAPE_MS`, `fw/wp2-loader/src/main.rs`). Turn the motor off, save if needed, return |
+| `BUTTON` (4) | crown press, or a right swipe (the stock "back") | The loader force-stops the app **1000 ms** later if it is still running (`ESCAPE_MS`, `wp2_core::events::escape_due`). Turn the motor off, save if needed, return. ABI 1.3: after `own_back(true)` it is an ordinary event and the app exits by returning; a `BUTTON` left unread for 1000 ms still force-stops it (`docs/abi-1.3.md`) |
 | `PAUSE` (5) | a stock popup (charger, incoming call, "Paired"; notifications use the call's popup type, untested) or another view covers the app | The queue is cleared, input is dropped, `vibrate` returns `-3` and the motor is cut, `show` does not reach the panel, host messages are refused with `PAUSED`. Stop the motor and animations, then block in `event(u32::MAX)` until `RESUME` (handle `BUTTON` there too, as `paused()` in agent-glow and herdr-agents does) |
 | `RESUME` (6) | the popup closed | The loader repaints the whole framebuffer itself. Redraw time-dependent parts; ask the host for a fresh snapshot |
 | `MESSAGE` (7) | ABI 1.1: a host message is in the inbox | `x` = its length. A hint: drain with `recv` until `None` |
@@ -357,6 +357,7 @@ One blob of at most `STORE_MAX = 4096` bytes per slot, in `/NAND:/wp2apps/<slot>
 | Call | Returns | Notes |
 |---|---|---|
 | `battery() -> Option<Battery>` | `percent` (the stock estimate), `charging`, `full`, `charger` | `None` on a driver error |
+| `own_back(on: bool)` (1.3) | – | The app handles `BUTTON` itself ("back", an exit dialog); see `BUTTON` above and `docs/abi-1.3.md`. No-op on an older loader |
 | `keep_screen_on(on: bool)` | – | Records the wish; the next UI tick takes or drops the stock wake lock. Held only while the app runs and is not paused; dropped on pause, exit, crash, force stop and view delete; taken again on resume. Costs display power: hold it with a deadline (herdr-agents: 20 s after a buzz) |
 
 ### Host messages (1.1)

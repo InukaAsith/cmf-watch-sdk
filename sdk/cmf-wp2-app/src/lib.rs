@@ -6,7 +6,7 @@ pub mod lv;
 pub mod stock;
 
 pub const ABI: u16 = 1;
-pub const ABI_MINOR: u16 = 2;
+pub const ABI_MINOR: u16 = 3;
 /// The package header's `abi_minor`: `wp2apps pack` reads this symbol from the ELF.
 #[unsafe(no_mangle)]
 pub static WP2_ABI_MINOR: u16 = ABI_MINOR;
@@ -63,6 +63,8 @@ pub struct Api {
     pub screen_on: extern "C" fn(on: bool) -> i32,
     // ABI 1.2 (docs/specs/2026-11-11-lvgl-apps-design.md): never read when `abi_minor < 2`
     pub lv_submit: extern "C" fn(buf: *const u8, len: usize) -> i32,
+    // ABI 1.3 (docs/abi-1.3.md): never read when `abi_minor < 3`
+    pub own_back: extern "C" fn(on: bool),
 }
 
 /// Local wall-clock time as the watch shows it. `weekday` 0 = Sunday; `utc_offset_min` as set by the phone app.
@@ -166,6 +168,14 @@ impl Api {
     /// Keeps the display on while this app runs in the foreground; the loader drops it on pause and exit.
     pub fn keep_screen_on(&self, on: bool) {
         (self.screen_on)(on);
+    }
+
+    /// ABI 1.3: `true` = this app handles BUTTON ("back") itself and exits by returning; the loader then stops it
+    /// only if it leaves a BUTTON unread for 1 s (hung). A no-op on an older loader.
+    pub fn own_back(&self, on: bool) {
+        if self.abi_minor >= 3 {
+            (self.own_back)(on);
+        }
     }
 }
 
@@ -299,12 +309,13 @@ mod tests {
     extern "C" fn screen(_: bool) -> i32 {
         0
     }
+    extern "C" fn flag(_: bool) {}
 
     pub(crate) fn table(abi: u16, abi_minor: u16) -> &'static Api {
         Box::leak(Box::new(Api {
             abi, abi_minor, width: 466, height: 466, fill_rect: rect, draw_text: text, present,
             next_event: next, motor, millis, exit, send_msg: bytes, recv_msg: bytes_mut, load_data: bytes_mut,
-            save_data: bytes, get_time: time, get_battery: battery, screen_on: screen, lv_submit: bytes,
+            save_data: bytes, get_time: time, get_battery: battery, screen_on: screen, lv_submit: bytes, own_back: flag,
         }))
     }
 

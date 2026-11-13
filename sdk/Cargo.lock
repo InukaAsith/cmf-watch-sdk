@@ -15,7 +15,13 @@ name = "api-demo"
 version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
- "wp2-core",
+]
+
+[[package]]
+name = "back-owner"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
 ]
 
 [[package]]
