@@ -88,8 +88,30 @@ program stays out of commits and logs: the tests use `tests/fixtures/workout/`.
   (then it waits for the `R` the app sends when the workout ends).
 - Storage: one JSON file in Application Support; the pairing secret in the Keychain.
 - `scripts/ios-install` builds `workout.wp2app` into the app and installs it on the connected iPhone (`WP2_TEAM`,
-  `WP2_BUNDLE_ID`); free Personal Team: re-run every 7 days. `scripts/ios-install --sim -demo` runs it in the iOS
+  `WP2_BUNDLE_ID`, `WP2_DEVICE` when several iPhones are paired); free Personal Team: re-run every 7 days. `scripts/ios-install --sim -demo` runs it in the iOS
   Simulator with made-up data; `--sim -tcp 7700` talks to `wp2apps bridge --hci-port P` (emulator).
 - Import of the old Markdown program: `wp2apps workout push <dir> --dry-run > program.json`, then Программа → import.
 - Tests: `(cd ios/WireKit && swift test)` (vectors from `tests/ios_vectors.py`), `tests/test_ios_e2e.py` (WireKit
   against the emulator over K).
+
+## Hardware
+
+2026-11-13, owner's approval: only the loader was written. `loader.wp2app` v3 (ABI 1.3, `own_back`) replaced loader
+v1 (ABI 1.2) in slot `L` with `wp2apps install --address`; `wp2apps list` confirmed it. No OTA: the screen-off
+behaviour needs no `app.bin` change (commit 99f0e3a). The `workout` app was **not** installed and no program was
+pushed: the owner moves the workout side to an iOS app.
+
+Checked by the owner with the older apps in slots 0–6 (abi_minor 1 and 2) on the new loader:
+
+- The crown press and the right swipe leave an app to the "Custom Apps" menu, as before.
+- The screen going off (auto-sleep and AOD) keeps the app; a button press wakes the watch straight into the app
+  and does not end it. A longer wait (deep sleep) gave the same result.
+
+Not checked on hardware: the `workout` back dialog and the rest buzz while the screen is dark.
+Install notes: as in `docs/ota.md`, macOS held the LE link after `install`; toggling the Mac's Bluetooth freed it.
+
+2026-11-13 evening, owner's approval: OTA of `fw-wp2.bin` (`VERSION_CODE=0x10006`: stub with the channel key K and
+the kick, `docs/abi-1.4.md`) through `ota_client.py` after a fresh `pair`, 1.6 MB in 1.5 min, `A041 01`, END; then
+the new loader in slot `L`. The iPhone app connected over K and installed `workout` (slot 7) from Часы. Later the
+same evening the loader with `FOCUS_CARDS` (the workout lists as cards) replaced it; `workout` 2 is updated from the
+phone. As before, the Mac needed a Bluetooth toggle before each `install` found the watch.
