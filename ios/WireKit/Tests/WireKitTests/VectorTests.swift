@@ -25,6 +25,11 @@ struct Vectors: Decodable {
     let requests: [Req]
     let ack_hex: String
     let dry_run_json: String
+    struct Pkg: Decodable {
+        let hex: String; let name: String; let version: UInt32; let kind: Int; let info_reply_hex: String
+        let begin_hex: String; let data_hex: [String]; let end_hex: String
+    }
+    let package: Pkg
 
     static let shared: Vectors = {
         let url = Bundle.module.url(forResource: "vectors", withExtension: "json")!

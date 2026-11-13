@@ -4,8 +4,9 @@ tests/test_ios_vectors.py fails when the committed file is stale."""
 import json
 from pathlib import Path
 import struct
+import zlib
 
-from wp2apps import link, workout
+from wp2apps import install, link, package, workout
 
 FIXTURE = Path(__file__).parent / "fixtures" / "workout"
 VECTORS = Path(__file__).parents[1] / "ios" / "WireKit" / "Tests" / "WireKitTests" / "vectors.json"
@@ -44,7 +45,18 @@ def vectors() -> dict:
                       "running": tail == b"\x01"} for tail in (b"", b"\x00", b"\x01")],
         "ack_hex": (workout.MAGIC + b"A" + struct.pack("<I", 0x0A0B0C0D)).hex(),
         "dry_run_json": json.dumps(dry, ensure_ascii=False),
+        "package": package_vectors(),
     }
+
+
+def package_vectors() -> dict:
+    """A tiny app package and the install requests for it in slot 3 (install.upload)."""
+    data = package.pack(bytes(range(256)) * 2, name="workout", version=3)
+    return {"hex": data.hex(), "name": "workout", "version": 3, "kind": package.KIND_APP,
+            "info_reply_hex": (bytes([0]) + data[:package.HEADER_SIZE]).hex(),
+            "begin_hex": struct.pack("<BII", 3, len(data), zlib.crc32(data)).hex(),
+            "data_hex": [(struct.pack("<I", off) + part).hex() for off, part in install.chunks(data)],
+            "end_hex": "00"}
 
 
 def text() -> str:
