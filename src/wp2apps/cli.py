@@ -333,6 +333,8 @@ def parser():
             sub.add_argument("dir", help="folder of day notes, e.g. 'Day 01.md' ('## День 1: …', one '- …: 4×5–8 (90 кг)' "
                                          "line per exercise)")
             sub.add_argument("--dry-run", action="store_true", help="print the parsed program, no Bluetooth")
+            sub.add_argument("--force", action="store_true",
+                             help="send even while a workout runs (it is finished and goes to the history)")
         where = sub.add_mutually_exclusive_group(required=name == "history")
         where.add_argument("--hci-port", type=int, help="netsimd H4 TCP port (emulator)")
         where.add_argument("--address", help="BLE address (CoreBluetooth UUID on macOS) of a real watch")
@@ -351,7 +353,7 @@ def main(argv=None):
     except channel.NoApp as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
-    except (OSError, ValueError, ConnectionError, BleakError, struct.error) as error:
+    except (OSError, ValueError, RuntimeError, ConnectionError, BleakError, struct.error) as error:
         print(f"Error: {error or type(error).__name__}", file=sys.stderr)
         return 1
     except KeyError as error:

@@ -77,9 +77,11 @@ fn with_u32(kind: u8, v: u32) -> [u8; 7] {
     [MAGIC[0], MAGIC[1], kind, b[0], b[1], b[2], b[3]]
 }
 
-/// "Send me the program unless I have `version`" (0 = none).
-pub fn request(version: u32) -> [u8; 7] {
-    with_u32(b'R', version)
+/// "Send me the program unless I have `version`" (0 = none); `running`: a workout is in progress, so a host holds a
+/// new program back until it ends (flags bit 0).
+pub fn request(version: u32, running: bool) -> [u8; 8] {
+    let r = with_u32(b'R', version);
+    [r[0], r[1], r[2], r[3], r[4], r[5], r[6], running as u8]
 }
 
 /// "Stored `version`."
@@ -194,7 +196,8 @@ mod tests {
 
     #[test]
     fn encodings() {
-        assert_eq!(&request(0x0102_0304), b"w1R\x04\x03\x02\x01");
+        assert_eq!(&request(0x0102_0304, true), b"w1R\x04\x03\x02\x01\x01");
+        assert_eq!(&request(0x0102_0304, false), b"w1R\x04\x03\x02\x01\x00");
         assert_eq!(&ack(0x0102_0304), b"w1A\x04\x03\x02\x01");
         let e = Entry { start: 0x0A0B_0C0D, dur_s: 0x0102, day: 2, done: 7, planned: 9 };
         assert_eq!(&history_msg(1, 3, &e), b"w1Y\x01\x03\x0D\x0C\x0B\x0A\x02\x01\x02\x07\x09");

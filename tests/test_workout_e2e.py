@@ -134,6 +134,19 @@ class WorkoutTest(unittest.TestCase):
         self.assertEqual((st[VIEW], st[SETS]), (SET, 1), "the open workout did not come back")
         self.shot("2-resumed")
 
+    def test_2b_push_held_while_running(self):
+        """R says a workout runs: push refuses (a new program would finish it)."""
+        other = workout.encode([workout.Day("В", (workout.Exercise("Жим", 1, (5, 5), "", 5),))])
+        out, done = self.with_app(lambda ch: workout.push(ch, other, log=lambda *_: None, wait=60))
+        self.button()  # set -> day
+        self.button()  # day -> ask
+        self.tap(ASK_LEAVE)
+        tap_row(self.emu, 0)  # reopen: the app asks with R, flag set
+        self.wait(done, 60)
+        self.assertIsInstance(out[0], RuntimeError, out)
+        self.assertNotEqual(self.stats()[ACKED] & 0xFFFFFFFF, workout.version(other))
+        self.assertEqual(self.stats()[SETS], 1, "the workout must still be open")
+
     def test_3_finish_rotates(self):
         self.button()  # set -> day
         self.button()  # day -> ask

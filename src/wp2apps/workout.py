@@ -17,6 +17,7 @@ NAME_MAX, WEIGHT_MAX, PROGRAM_MAX, DAYS_MAX, EX_MAX, REST_DEFAULT = 32, 32, 2048
 CHUNK = 120
 MAGIC = b"w1"
 WAIT = 120.0  # seconds push and history wait for the app to ask
+RUNNING = 1  # R flags: a workout is in progress
 
 ITEM = re.compile(r"^\s*[-*+]\s+(?:\[[ xX]\]\s*)?(?P<body>.*?)\s*$")
 BODY = re.compile(r"^(?P<name>.+?):?\s+(?P<sets>\d+)\s*[×xXхХ]\s*(?P<lo>\d+)(?:\s*[–-]\s*(?P<hi>\d+))?"
@@ -133,17 +134,18 @@ def decode_entry(msg: bytes) -> Entry | None:
     return Entry(*struct.unpack_from("<IHBBB", msg, 5))
 
 
-async def _request(ch, wait: float) -> int:
-    """The version in the app's next R; sets ch.slot to the app's slot."""
+async def _request(ch, wait: float) -> tuple[int, int]:
+    """(version, flags) of the app's next R (flags bit 0: a workout is in progress; 7-byte R from older apps = 0);
+    sets ch.slot to the app's slot."""
     deadline = time.monotonic() + wait
     while (left := deadline - time.monotonic()) > 0:
         try:
             m = await ch.recv(timeout=left)
         except TimeoutError:
             break
-        if m.data[:3] == MAGIC + b"R" and len(m.data) == 7:
+        if m.data[:3] == MAGIC + b"R" and len(m.data) in (7, 8):
             ch.slot = m.slot
-            return struct.unpack_from("<I", m.data, 3)[0]
+            return struct.unpack_from("<I", m.data, 3)[0], m.data[7] if len(m.data) == 8 else 0
     raise TimeoutError(f"the workout app did not ask within {wait:.0f} s: open it on the watch")
 
 
@@ -159,13 +161,16 @@ async def _expect(ch, kind: bytes, wait: float) -> bytes:
     raise TimeoutError(f"no {kind.decode()} from the app within {wait:.0f} s")
 
 
-async def push(ch, program: bytes, log, wait: float = WAIT) -> None:
-    """Waits for the app's R, sends the program unless it is already there, waits for its A."""
+async def push(ch, program: bytes, log, wait: float = WAIT, force: bool = False) -> None:
+    """Waits for the app's R, sends the program unless it is already there, waits for its A. A new program finishes
+    a workout in progress, so that is refused unless `force`."""
     v = version(program)
-    have = await _request(ch, wait)
+    have, flags = await _request(ch, wait)
     if have == v:
         log(f"already on the watch (version {v:08x})")
         return
+    if flags & RUNNING and not force:
+        raise RuntimeError("a workout is running on the watch: finish it first, or --force")
     for m in messages(program):
         await ch.send(m)
     while True:
@@ -210,7 +215,7 @@ def main(args) -> int:
         log("waiting for the workout app: open it on the watch")
         try:
             if args.action == "push":
-                await push(ch, program, log)
+                await push(ch, program, log, force=args.force)
             else:
                 for e in await history(ch):
                     print(json.dumps(e.__dict__))

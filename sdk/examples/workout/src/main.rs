@@ -104,6 +104,7 @@ mod device {
         let had = sets_done(m) > 0;
         m.finish(now);
         save(api, m);
+        api.send(&request(version(m), false)); // a host holding a program back sends it now
         if had { View::Done } else { View::Start }
     }
 
@@ -162,7 +163,7 @@ mod device {
             }
             // R on start, then every 3 s on the start screen (push and history wait for it)
             if asked.is_none_or(|a| s.view == View::Start && ms.wrapping_sub(a) >= ASK_MS) {
-                api.send(&request(version(m)));
+                api.send(&request(version(m), m.workout.is_some()));
                 asked = Some(ms);
             }
             // rest over: buzz, then the next set
@@ -251,7 +252,7 @@ mod device {
                     }
                     Got::History => hist = Some(0), // an empty history: one Y with count 0
                     Got::Resync => {
-                        api.send(&request(version(m)));
+                        api.send(&request(version(m), m.workout.is_some()));
                     }
                     Got::Nothing => {}
                 }

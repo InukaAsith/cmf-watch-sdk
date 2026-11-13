@@ -149,6 +149,31 @@ class FlowTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(workout.push(ch, program, log=lambda *_: None), 2)
         self.assertEqual(ch.sent, [])
 
+    async def test_push_refuses_running(self):
+        ch = FakeChannel()
+        ch.app(b"w1R" + bytes(4) + b"\x01")  # a workout runs on the watch
+        with self.assertRaisesRegex(RuntimeError, "finish it first"):
+            await asyncio.wait_for(workout.push(ch, PROGRAM_BIN.read_bytes(), log=lambda *_: None), 2)
+        self.assertEqual(ch.sent, [])
+
+    async def test_push_force(self):
+        program = PROGRAM_BIN.read_bytes()
+        ch = FakeChannel()
+        ch.app(b"w1R" + bytes(4) + b"\x01")
+        task = asyncio.create_task(workout.push(ch, program, log=lambda *_: None, force=True))
+        while len(ch.sent) < len(workout.messages(program)):
+            await asyncio.sleep(0.01)
+        ch.app(b"w1A" + struct.pack("<I", zlib.crc32(program)))
+        await asyncio.wait_for(task, 2)
+
+    async def test_request_accepts_7_and_8_bytes(self):
+        program = PROGRAM_BIN.read_bytes()
+        for tail in (b"", b"\x00"):
+            ch = FakeChannel()
+            ch.app(b"w1R" + struct.pack("<I", zlib.crc32(program)) + tail)
+            await asyncio.wait_for(workout.push(ch, program, log=lambda *_: None), 2)
+            self.assertEqual(ch.sent, [])
+
     async def test_push_gives_up(self):
         ch = FakeChannel()
         with self.assertRaises(TimeoutError):
