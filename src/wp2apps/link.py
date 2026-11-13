@@ -81,6 +81,11 @@ def authkey(rnd1: bytes, rnd2: bytes, secret: bytes) -> bytes:
     return hashlib.sha256(rnd1 + rnd2 + secret).digest()[:16]
 
 
+def channel_key(secret_hex: str) -> bytes:
+    """Key K of the stub's own channel (docs/abi-1.4.md): no bind, no popup, survives reboots."""
+    return hashlib.sha256(b"wp2-chan" + secret_hex.encode()).digest()[:16]
+
+
 def session_key(nonce: bytes, auth: bytes) -> bytes:
     return hashlib.sha256(nonce[:16] + auth).digest()[:16]
 
@@ -172,6 +177,11 @@ class Session:
         except (TimeoutError, ValueError):
             self.key = None
             return False
+
+    async def open_channel(self, gatt) -> None:
+        """K session: reads the pairing secret and keys app frames with K; the stock session is left alone."""
+        await self.attach(gatt)
+        self.key = channel_key(await self._shell_value("GETSECRET"))
 
     async def handshake(self, gatt, attempts: int = 3, key: bytes | None = None) -> None:
         await self.attach(gatt)
