@@ -68,7 +68,9 @@ pub const LVGL_BITMAP_FONT_OPEN: u32 = 0x10185C31;
 pub const LVGL_BITMAP_FONT_CLOSE: u32 = 0x10185D3D;
 pub const LV_FONT_DEFAULT: u32 = 0x101FB6BC;
 // style property ids of this build (8.3.10 numbering, read from the lv_obj_set_style_* setters)
+pub const LV_STYLE_WIDTH: u32 = 0x01;
 pub const LV_STYLE_RADIUS: u32 = 0x0B;
+pub const LV_STYLE_TRANSLATE_X: u32 = 0x6B;
 pub const LV_STYLE_PAD_BOTTOM: u32 = 0x11;
 pub const LV_STYLE_PAD_LEFT: u32 = 0x12;
 pub const LV_STYLE_BG_COLOR: u32 = 0x20;

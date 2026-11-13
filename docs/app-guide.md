@@ -716,6 +716,8 @@ LVGL's small built-in one, a widget without styles is bare. `stock` gives:
 
 - the stock app list: `focus_page(b, icon)` and `focus_row` (FOCUS: the fisheye, the centred row CHECKED, `FOCUSED`
   events with its index), as herdr-agents uses them.
+- the stock Exercise list: `focus_page(b, FOCUS_CARDS)` and `focus_card` (cards that narrow away from the centre;
+  a loader from 2026-11-13 on, `docs/abi-1.4.md`), as workout uses them.
 
 Labels with a fixed size: `b.long_mode(label, LongMode::Dot)` keeps them on one line ending in "...".
 

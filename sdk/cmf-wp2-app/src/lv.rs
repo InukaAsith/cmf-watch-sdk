@@ -13,6 +13,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub const BUF: usize = 2048;
 /// `Event.y` of the FOCUS event (see [`Batch::focus`]).
 pub const FOCUSED: i16 = 100;
+/// [`Batch::focus`] `icon` for the stock Exercise list: the children are cards that narrow away from the centre line
+/// (their `Width`), content unshifted (loader ABI 1.5; an older loader answers -22).
+pub const FOCUS_CARDS: u16 = 0xFFFF;
 /// `LV_STATE_CHECKED` in a style selector: the FOCUS child nearest the centre.
 pub const CHECKED: u32 = 0x01;
 const MAX_OBJS: usize = 192;
@@ -423,7 +426,7 @@ impl Batch {
 
     /// The stock app list's fisheye on `obj`'s children (loader with FOCUS; an older 1.2 loader answers -22): each
     /// child's content shifts right (its `PadLeft`), its text fades and its child 0 shrinks from `icon` px with its distance from `obj`'s centre
-    /// line; the nearest child gets `LV_STATE_CHECKED` (style it with the `CHECKED` selector) and the app gets
+    /// line ([`FOCUS_CARDS`]: the child narrows instead); the nearest child gets `LV_STATE_CHECKED` (style it with the `CHECKED` selector) and the app gets
     /// `Event { kind: LV, x: obj, y: FOCUSED, delta: index }` when it changes. `icon` 0 leaves child 0 alone. The
     /// loader owns the children's `PadLeft` and `TextOpa`. One FOCUS container per app: a new one replaces it.
     pub fn focus(&mut self, obj: Obj, icon: u16) -> Result<(), LvError> {

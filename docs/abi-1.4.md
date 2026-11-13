@@ -40,3 +40,15 @@ queued for the other one (as a new host key always did).
 
 New stub (OTA, `docs/ota.md`) and new loader (`wp2apps install target/loader.wp2app`). Each works with the other's
 old version: an old loader never calls `kick` (messages wait for the host's next frame), an old stub has no magic.
+
+## Cards (loader of 2026-11-13, no ABI bump)
+
+`FOCUS` with `icon = 0xFFFF` (`lv::FOCUS_CARDS`) gives the stock Exercise list instead of the app list: every
+child is a card (`stock::focus_card`) that narrows with its distance from the centre line, 434 px in the centre and
+`434 − 2·shift` further out (`lvcmd::card_width`, 370 px one row away, as in the stock list); text fades as before.
+The container lays the cards out at a fixed x (`stock::focus_page` sets `PadLeft` 16 and a start-aligned flex) and
+the loader centres each one with `TRANSLATE_X = shift`: a width set from `LAYOUT_CHANGED` is not laid out again, so
+a flex centre lags one scroll behind. The loader owns the cards' `Width`, `TranslateX` and `TextOpa`. `ABI_MINOR`
+stays 3: the stub on the watch refuses packages above its `LOADER_ABI_MINOR` (3), and raising it takes an OTA. An
+older loader answers `-22` to this FOCUS, so install the loader before an app that uses it.
+`workout` uses it for its day and exercise lists (emulator frames: `runs/workout-e2e/1-start.png`, `1-day.png`).

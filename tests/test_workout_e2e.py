@@ -110,6 +110,7 @@ class WorkoutTest(unittest.TestCase):
         self.shot("1-start")
         self.tap(ROW)  # day 1
         self.assertEqual(self.stats()[VIEW], DAY)
+        self.shot("1-day")
         self.tap(ROW)  # its first exercise
         self.assertEqual(self.stats()[VIEW], SET)
         mark = len(self.emu.motor())
