@@ -10,6 +10,8 @@ macro_rules! stock {
 #[cfg(target_os = "none")]
 mod app;
 #[cfg(target_os = "none")]
+mod hr;
+#[cfg(target_os = "none")]
 mod lv;
 mod menu;
 #[cfg(target_os = "none")]
@@ -222,6 +224,7 @@ mod view {
         app::pause_tick();
         motor::watchdog();
         svc::tick(app::running(), app::paused());
+        crate::hr::tick(app::running(), app::paused());
         if app::running() {
             let exited = app::exited();
             let owned = app::OWN_BACK.load(Ordering::Acquire);

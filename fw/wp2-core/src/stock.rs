@@ -160,3 +160,13 @@ pub const WAKE_UNLOCK: u32 = 0x100C1859;
 // handler 0x100E9DD0 reads the pairing secret with it (docs/recon.md, "Pairing secret").
 pub const KV_GET: u32 = 0x1010_E215;
 pub const APP_SECRET: &[u8] = b"APP_SECRET\0";
+// Heart rate (docs/recon.md, "Heart rate"). (prop, *in): the ux2sys setter, synchronous; property 2 =
+// change_hr_mode (u32 1 on, 0 off), as the stock heart view (0x1006F20C) sets it.
+pub const UX2SYS_SET: u32 = 0x100E_07B9;
+pub const PROP_HR_MODE: u32 = 0x02;
+// u8: non-zero = on the wrist (ux2sys 0x13; its getter logs every call, so the loader reads the byte)
+pub const HR_WEAR: u32 = 0x3804_B30C;
+// u8 owner of the HR mode: 0 none, 1 property 2 (heart view, an app), 2 a stock workout (0x100C9434)
+pub const HR_OWNER: u32 = 0x3804_B30F;
+// u8 latest bpm, 0 = none; hr_callback type 5 (0x100E337A) writes it, the heart view clears it at start
+pub const HR_BPM: u32 = 0x3804_B310;
