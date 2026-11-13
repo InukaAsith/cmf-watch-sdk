@@ -23,6 +23,7 @@ struct HistoryView: View {
                             }
                             .accessibilityElement(children: .combine)
                         }
+                        .onDelete { store.deleteHistory($0.map { entries[$0].start }) }
                     }
                 }
             }
