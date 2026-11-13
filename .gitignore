@@ -12,3 +12,5 @@ __pycache__/
 ios/WireKit/.build/
 ios/Workout.xcodeproj/
 ios/build/
+ios/Workout/Info.plist
+ios/Workout/Resources/workout.wp2app

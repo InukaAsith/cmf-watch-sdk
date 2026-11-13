@@ -50,7 +50,7 @@ public func installed(_ s: Requester) async throws -> [Int: PackageHeader] {
 
 /// Installs an app package into the slot of the same name, else the first free one; returns the slot. `busy`
 /// while that app runs on the watch.
-public func install(_ s: Requester, package: Data, progress: (Double) -> Void) async throws -> Int {
+public func install(_ s: Requester, package: Data, progress: @Sendable (Double) -> Void) async throws -> Int {
     guard let pkg = parseHeader(package), pkg.kind == 0 else { throw InstallError.notAPackage }
     let used = try await installed(s)
     guard let slot = used.first(where: { $0.key < slots && $0.value.name == pkg.name })?.key
