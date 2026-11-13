@@ -1,5 +1,6 @@
 """Back navigation (docs/recon.md "Back navigation"): app -> Custom Apps menu -> stock app list, like stock apps."""
 import shutil
+import struct
 import unittest
 from unittest import skipUnless
 
@@ -100,6 +101,116 @@ class BackTest(unittest.TestCase):
             self.assertEqual(emu.peek(START + 4, 2), b"\x00\x00")
             save(emu, "button-menu-clock")
             self.assert_clean(emu)
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class OwnBackTest(unittest.TestCase):
+    """ABI 1.3 own_back (docs/abi-1.3.md): back-owner reads every BUTTON and is not stopped; hung, it still is."""
+    ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/back-owner"
+
+    def presses(self, emu):
+        addr = harness.u32(emu, START + harness.APP_BLOCK_OFF) + harness.symbol(self.ELF, "PRESSES")
+        return struct.unpack("<i", emu.peek(addr, 4))[0]
+
+    def running(self, emu):
+        return emu.peek(START + 6, 1) != b"\xff"
+
+    def test_owned_back(self):
+        with harness.installed(["loader", "back-owner"], name="own-back") as (emu, port):
+            dismiss_popup(emu)
+            harness.ready(emu)
+            harness.open_apps(emu)
+            tap_row(emu, 0)
+            for n in (1, 2):
+                emu.send("c 1", "c 0", pause=2)  # well past the 1 s escape
+                self.assertTrue(self.running(emu), f"stopped after press {n}")
+                self.assertEqual(self.presses(emu), n)
+            emu.send("c 1", "c 0", pause=2)  # third: the app returns 0
+            self.assertFalse(self.running(emu))
+            self.assertEqual(emu.peek(START + 4, 3), b"\x01\x01\xff")  # back in the loader menu
+
+            tap_row(emu, 0)
+            emu.send("r -80", pause=0.5)  # crown: the app stops reading events
+            start = emu.clock()
+            emu.send("c 1", "c 0", pause=0)
+            while self.running(emu) and emu.clock() - start < 4:
+                emu.sleep(0.125)
+            print(f"\nhung owner stopped after {emu.clock() - start:.3f} s")
+            self.assertFalse(self.running(emu))
+            self.assertLessEqual(emu.clock() - start, 3)
+
+
+@skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd and gdb)")
+class ScreenOffTest(unittest.TestCase):
+    """Auto-sleep blanks the panel while an app runs (docs/recon.md "Screen-off and the app view"). A BLE session
+    holds the guest in S1: deep sleep (S2/S3BT) is not modelled and stops the emulator."""
+    ELF = OwnBackTest.ELF
+
+    @staticmethod
+    def blank_and_wake(emu, port, during=None, wake=("c 1", "c 0")):
+        """Blanks the panel by auto-sleep (1.5 s) while a BLE session holds S1, then wakes it with `wake`."""
+        import asyncio, threading
+        from tests.test_api_e2e import session
+        stop = threading.Event()
+
+        async def hold():
+            async with session(port):
+                while not stop.is_set():
+                    await asyncio.sleep(0.2)
+
+        t = threading.Thread(target=lambda: asyncio.run(hold()), daemon=True)
+        t.start()
+        try:
+            emu.sleep(2)
+            mark = len(emu.uart())
+            emu.gdb(f"set *(unsigned *)*(unsigned *){harness.AWAKE_PTR:#x} = 1500")
+            for _ in range(40):
+                emu.sleep(0.5)
+                if "display blanking on" in emu.uart()[mark:]:
+                    break
+            else:
+                raise AssertionError("panel never blanked")
+            if during:
+                during()
+            emu.gdb(f"set *(unsigned *)*(unsigned *){harness.AWAKE_PTR:#x} = 0xFFFFFFFF")
+            emu.send(*wake, pause=3)
+            if "display blanking off" not in emu.uart()[mark:]:
+                raise AssertionError("panel did not wake")
+        finally:
+            stop.set()
+            t.join(10)
+
+    def open(self, emu, port):
+        import asyncio
+        from tests.test_api_e2e import session
+
+        async def bind():  # before the app opens: harness.ready closes the "Paired" popup of this bind
+            async with session(port):
+                pass
+        asyncio.run(bind())
+        harness.ready(emu)
+        harness.open_apps(emu)
+        tap_row(emu, 0)
+
+    def test_app_survives_blank(self):
+        with harness.installed(["loader", "back-owner"], name="screen-off") as (emu, port):
+            self.open(emu, port)
+            self.blank_and_wake(emu, port)
+            self.assertEqual(emu.peek(START + 6, 1), b"\x00", "app stopped by the blank or the wake")
+            self.assertEqual(harness.focused(emu), 240)
+            self.assertEqual(OwnBackTest.presses(self, emu), 0, "the waking press reached the app")
+
+    def test_buzz_while_dark(self):
+        with harness.installed(["loader", "back-owner"], name="screen-off-buzz") as (emu, port):
+            self.open(emu, port)
+            emu.send("t 1 233 233", "t 0 233 233", pause=0)  # buzz in 4 s; the panel blanks before that
+            seen = []
+            self.blank_and_wake(emu, port, during=lambda: (emu.sleep(5), seen.extend(emu.motor())))
+            uart = emu.uart()
+            blank_ms = int(uart[:uart.index("display blanking on")].rsplit("[", 4)[-4].split("]")[0])
+            buzz = [ms for ms, duty, _ in seen if duty > 0 and ms > blank_ms]
+            print(f"\nblank at {blank_ms} ms, buzz at {buzz[:1]}")
+            self.assertTrue(buzz, f"no buzz while dark: blank {blank_ms}, motor {seen[-5:]}")
 
 
 def harness_frame(path):

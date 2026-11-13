@@ -1,5 +1,6 @@
 //! Host simulator for wp2-apps apps (docs/app-guide.md). The app, built for the host with `--cfg wp2_sim`, calls
 //! `wp2_sim_run` from its `main`; this crate fills in the ABI 1.1 `Api` table with the loader's semantics.
+use wp2_core::events::{escape_due, ESCAPE_MS};
 use cmf_wp2_app::{Api, Event, Time, ABI, ABI_MINOR, BUTTON, CROWN, MESSAGE, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use std::collections::VecDeque;
 use std::io::{BufRead, Read, Write};
@@ -24,7 +25,6 @@ use out::V;
 const QUEUE_MAX: usize = 15;
 // wp2-loader app.rs
 const TEXT_MAX: usize = 64;
-const ESCAPE_MS: u32 = 1000;
 // the host's PING poll (wp2apps.channel), which collects the outbox
 const POLL_MS: u32 = 250;
 const TRIP_MS: u32 = pwm::CAP_MS - 20;
@@ -230,6 +230,9 @@ pub struct State {
     pub last_vibrate: Option<(u16, u16, i32)>,
     pub keep_on: bool,
     button_at: Option<u32>,
+    // ABI 1.3: the app owns BUTTON; consumed = it popped the pending one
+    owned: bool,
+    consumed: bool,
     timeline: VecDeque<(u32, Action)>,
     pub end: Option<End>,
     pub sent: VecDeque<String>,
@@ -265,6 +268,8 @@ impl State {
             last_vibrate: None,
             keep_on: false,
             button_at: None,
+            owned: false,
+            consumed: false,
             end: None,
             sent: VecDeque::new(),
             log,
@@ -310,7 +315,7 @@ impl State {
             self.locked = true;
             self.log("motor_cut", &[("reason", V::S("cap"))]);
         }
-        if self.button_at.is_some_and(|b| now.wrapping_sub(b) >= ESCAPE_MS) {
+        if self.button_at.is_some_and(|b| escape_due(self.owned, b.max(1), self.consumed, now)) {
             self.finish(End::Killed);
         }
         if self.cfg.until.is_some_and(|u| now >= u) {
@@ -323,7 +328,7 @@ impl State {
         [
             self.timeline.front().map(|(t, _)| *t),
             (self.since != 0).then(|| self.since + TRIP_MS),
-            self.button_at.map(|b| b + ESCAPE_MS),
+            self.button_at.filter(|_| !(self.owned && self.consumed)).map(|b| b + ESCAPE_MS),
             (!self.outbox.is_empty()).then(|| self.polled + POLL_MS),
             self.cfg.until,
         ]
@@ -343,8 +348,9 @@ impl State {
                 }
             }
             Action::Button => {
-                if !self.paused && self.button_at.is_none() {
+                if !self.paused && (self.button_at.is_none() || self.owned && self.consumed) {
                     self.button_at = Some(self.now());
+                    self.consumed = false;
                 }
                 self.input(ev(BUTTON, 0, 0, 0));
             }
@@ -402,6 +408,7 @@ impl State {
 
     fn pop(&mut self) -> Option<Event> {
         if let Some(e) = self.queue.pop_front() {
+            self.consumed |= e.kind == BUTTON;
             return Some(e);
         }
         let m = self.inbox.get(self.announced)?;
@@ -593,6 +600,10 @@ impl State {
     pub fn time(&self) -> Option<Time> {
         let ms = self.base_ms + i64::from(self.now());
         out::local(ms)
+    }
+
+    pub fn own_back(&mut self, on: bool) {
+        self.owned = on;
     }
 
     pub fn screen_on(&mut self, on: bool) -> i32 {
@@ -792,6 +803,10 @@ extern "C" fn screen_on(on: bool) -> i32 {
     call(|s| s.screen_on(on))
 }
 
+extern "C" fn own_back(on: bool) {
+    call(|s| s.own_back(on))
+}
+
 /// ABI 1.2: LVGL apps are not simulated (a later plan).
 extern "C" fn lv_submit(_: *const u8, _: usize) -> i32 {
     -95
@@ -817,6 +832,7 @@ static API: Api = Api {
     get_battery,
     screen_on,
     lv_submit,
+    own_back,
 };
 
 fn app_name() -> String {
