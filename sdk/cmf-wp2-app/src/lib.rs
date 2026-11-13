@@ -22,6 +22,15 @@ pub const MESSAGE: u8 = 7;
 /// ABI 1.2: an LVGL object event. `x` = the object's handle, `y` = the LVGL event code, `delta` = the value
 /// (slider, arc, bar, roller); see [`lv`].
 pub const LV: u8 = 8;
+/// Heart rate, about once a second after [`Api::heart_rate`]`(true)`: `delta` = beats per minute, 0 = no reading
+/// yet or off the wrist; `x` = 1 on the wrist, 0 off. Personal data: do not log it or send it unasked.
+pub const HEART: u8 = 9;
+
+/// SENSOR records for `lv_submit` (docs/abi-1.4.md, "Heart rate"); statics, so they lie in the app block.
+#[doc(hidden)]
+pub static HEART_ON: &[u8] = &[0x13, 2, 0, 0, 1, 1];
+#[doc(hidden)]
+pub static HEART_OFF: &[u8] = &[0x13, 2, 0, 0, 1, 0];
 
 /// Longest message in either direction.
 pub const MSG_MAX: usize = 128;
@@ -170,6 +179,19 @@ impl Api {
         (self.screen_on)(on);
     }
 
+    /// Starts (`true`) or stops the watch's continuous heart-rate measurement for this app; while it runs in the
+    /// foreground a [`HEART`] event comes about once a second. The loader stops the measurement on exit, crash,
+    /// force stop and `PAUSE`, and starts it again on `RESUME`; a new launch starts with it off. Costs battery:
+    /// ask only while the value is on screen or recorded. `0`, or `-22` on a loader older than 2026-11-14 (no
+    /// heart rate there; ABI 1.3, no `abi_minor` change).
+    pub fn heart_rate(&self, on: bool) -> i32 {
+        if self.abi_minor < 2 {
+            return -22;
+        }
+        let r = if on { HEART_ON } else { HEART_OFF };
+        (self.lv_submit)(r.as_ptr(), r.len())
+    }
+
     /// ABI 1.3: `true` = this app handles BUTTON ("back") itself and exits by returning; the loader then stops it
     /// only if it leaves a BUTTON unread for 1 s (hung). A no-op on an older loader.
     pub fn own_back(&self, on: bool) {
@@ -311,7 +333,7 @@ mod tests {
     }
     extern "C" fn flag(_: bool) {}
 
-    pub(crate) fn table(abi: u16, abi_minor: u16) -> &'static Api {
+    pub(crate) fn table(abi: u16, abi_minor: u16) -> &'static mut Api {
         Box::leak(Box::new(Api {
             abi, abi_minor, width: 466, height: 466, fill_rect: rect, draw_text: text, present,
             next_event: next, motor, millis, exit, send_msg: bytes, recv_msg: bytes_mut, load_data: bytes_mut,
@@ -336,6 +358,20 @@ mod tests {
     #[test]
     fn rejects_older_minor() {
         assert_eq!(__start(table(ABI, ABI_MINOR - 1), app), -2);
+    }
+
+    extern "C" fn sensor(buf: *const u8, len: usize) -> i32 {
+        let r = unsafe { core::slice::from_raw_parts(buf, len) };
+        r[5] as i32 + 10
+    }
+
+    #[test]
+    fn heart_rate_records() {
+        let api = table(ABI, ABI_MINOR);
+        api.lv_submit = sensor;
+        assert_eq!((api.heart_rate(true), api.heart_rate(false)), (11, 10));
+        api.abi_minor = 1;
+        assert_eq!(api.heart_rate(true), -22);
     }
 
     #[test]

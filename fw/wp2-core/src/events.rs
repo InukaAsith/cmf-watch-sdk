@@ -15,6 +15,8 @@ pub const RESUME: u8 = 6;
 pub const MESSAGE: u8 = 7;
 // ABI 1.2: an LVGL object event, x = handle, y = lv event code, delta = value (VALUE_CHANGED)
 pub const LV: u8 = 8;
+// loader of 2026-11-14, no ABI bump (docs/abi-1.4.md): x = 1 on the wrist, delta = bpm (0 = no reading)
+pub const HEART: u8 = 9;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -232,6 +234,7 @@ mod tests {
         assert_eq!(size_of::<Time>(), size_of::<cmf_wp2_app::Time>());
         assert_eq!(offset_of!(Time, utc_offset_min), offset_of!(cmf_wp2_app::Time, utc_offset_min));
         assert_eq!(size_of::<Event>(), size_of::<cmf_wp2_app::Event>());
+        assert_eq!(HEART, cmf_wp2_app::HEART);
     }
 
     #[test]

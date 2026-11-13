@@ -52,3 +52,51 @@ a flex centre lags one scroll behind. The loader owns the cards' `Width`, `Trans
 stays 3: the stub on the watch refuses packages above its `LOADER_ABI_MINOR` (3), and raising it takes an OTA. An
 older loader answers `-22` to this FOCUS, so install the loader before an app that uses it.
 `workout` uses it for its day and exercise lists (emulator frames: `runs/workout-e2e/1-start.png`, `1-day.png`).
+
+## Heart rate (loader of 2026-11-14, no ABI bump)
+
+Live heart rate for an app, as the stock Strength training shows it under the clock. Stock side:
+`docs/recon.md`, "Heart rate". Emulator proof: `tests/test_hr_e2e.py` (app `sdk/examples/hr-probe`, a canvas app).
+Not yet on hardware, and the emulator has no PPG model: the test writes a synthetic reading into the stock cell.
+
+### Why not a new `Api` field
+
+The stub on the watch refuses packages above its `LOADER_ABI_MINOR` (3), and raising it takes an OTA. Options that
+keep `abi_minor` 3:
+
+1. A record on `lv_submit` (taken). The table has the field since 1.2, an older loader answers `-22` to an unknown
+   op, as with `FOCUS_CARDS`.
+2. Extra values on `screen_on(bool)` or `own_back(bool)`: a `bool` above 1 is undefined in Rust and mixes meanings.
+3. A package flag ("uses heart rate") that the loader reads at launch: no off switch while the app runs, and an
+   older loader ignores it silently.
+4. The host channel (`send`): goes to the phone, not to the loader.
+
+### The call
+
+SDK: `Api::heart_rate(&self, on: bool) -> i32`, event kind `HEART` = 9.
+
+- `on = true`: the loader starts the stock measurement (ux2sys property 2 = 1, as the stock heart view does; the
+  stock reading is cleared first) and queues `Event { kind: HEART, x: worn, delta: bpm }` once per 1000 ms
+  (`wp2_core::heart::EMIT_MS`) while the app runs in the foreground. `delta` 0 = no reading yet, or off the wrist
+  (`x` 0). Queued HEART events coalesce: the app sees the latest.
+- `on = false` stops it. Returns 0, or `-22` on an older loader (or `abi_minor < 2`): no heart rate there.
+- The loader stops the measurement on exit, crash (`exit(-1)` from the panic handler), force stop, view delete and
+  `PAUSE`; it starts it again on `RESUME`. A new launch starts with it off. The app's request is a wish
+  (`fw/wp2-loader/src/hr.rs`); the UI tick does the stock calls, the rule is `wp2_core::heart::Heart::tick`.
+- Exactly one start per hold, one stop at its end: the stock counts requests (`docs/recon.md`), so a repeated
+  start would keep the sensor on after the app left. The background measurement uses the same count.
+- A stock owner already measuring (owner byte `0x3804B30F` non-zero, e.g. a stock workout left running): the loader
+  only reads and never starts or stops it.
+
+### Wire format
+
+A batch holding one SENSOR record, `[0x13, 2, 0, 0, sensor, on]` (sensor 1 = heart rate, on 0 or 1;
+`wp2_core::lvcmd::sensor`). The loader takes it in `lv::submit` on the app thread, before LVGL: no root is made,
+so a canvas app may send it. In a longer batch, and on an older loader, op `0x13` is `Malformed` (`-22`). The SDK
+keeps the two records as statics (`cmf_wp2_app::HEART_ON`, `HEART_OFF`): `lv_submit` takes buffers in the app
+block only.
+
+### Privacy and battery
+
+Heart-rate values are personal data: apps and tests never log them; the e2e test uses synthetic values. The PPG
+LED runs while an app holds the measurement: ask for it only while the value is shown or recorded.
