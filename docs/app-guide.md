@@ -395,6 +395,9 @@ channel. Protocol: `docs/abi-1.1.md`.
 | Latency (emulator, Netsim, MTU 23) | host → app 14–16 ms per acked 128 B message; echo round trip median 270 ms (one poll); app → host 72 ms per message in a burst of 41, none lost (`docs/abi-1.1.md`, from `tests/test_api_e2e.py`). Not measured on hardware |
 | Security | the pairing secret is readable by any BLE client, so anyone in range can read and send app messages. Treat input as untrusted; never send personal data (names, titles, notification text, locations, keys) |
 
+Hosts that cannot bind or poll (an iPhone app next to Nothing X) use the stub's own channel key and get app messages
+unsolicited: `docs/abi-1.4.md`.
+
 ### Python host
 
 `wp2apps.channel.Channel` (`src/wp2apps/channel.py`), asyncio:
