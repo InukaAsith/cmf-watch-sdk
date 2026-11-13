@@ -29,6 +29,12 @@ mod device {
     const ASK_MS: u32 = 3000;
     const AWAKE_MS: u32 = 20_000;
     const TICK_MS: u32 = 200;
+    // taps this soon after a view change are dropped (a double tap on "Сделал" must not also hit "Пропустить")
+    const SETTLE_MS: u32 = 600;
+    // a tap is acted on this late, and dropped if a BUTTON (the back swipe) comes within GESTURE_MS of it: a
+    // swipe across a pill is also a tap on it
+    const DEFER_MS: u32 = 150;
+    const GESTURE_MS: u32 = 400;
 
     static mut STORE: [u8; STORE_MAX] = [0; STORE_MAX];
     static mut MODEL: Model = Model::new();
@@ -89,7 +95,7 @@ mod device {
         let Some(w) = m.workout else { return View::Start };
         if w.rest_ex == 0xFF {
             View::Day
-        } else if now < w.rest_until {
+        } else if m.rest_left(now) > 0 {
             View::Rest
         } else {
             match m.after_rest() {
@@ -149,16 +155,22 @@ mod device {
         let mut awake: Option<u32> = None;
         // next history entry to send (Q): the outbox holds 4, the host collects them as it polls
         let mut hist: Option<u8> = None;
-        if s.view == View::Rest {
-            api.keep_screen_on(true);
-        }
+        // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
+        let mut locked = false;
+        let mut shown_at = api.now();
+        let mut button_at = api.now().wrapping_sub(GESTURE_MS);
+        let mut pending: Option<(Hit, u32)> = None;
         loop {
             let ms = api.now();
             let now = now_s(api);
             motor.update();
             if awake.is_some_and(|a| ms.wrapping_sub(a) as i32 >= 0) {
-                api.keep_screen_on(false);
                 awake = None;
+            }
+            let want = s.view == View::Rest || awake.is_some();
+            if want != locked {
+                api.keep_screen_on(want);
+                locked = want;
             }
             // R on start, then every 3 s on the start screen (push and history wait for it)
             if asked.is_none_or(|a| s.view == View::Start && ms.wrapping_sub(a) >= ASK_MS) {
@@ -166,12 +178,13 @@ mod device {
                 asked = Some(ms);
             }
             // rest over: buzz, then the next set
-            if s.view == View::Rest && m.workout.is_some_and(|w| now >= w.rest_until) {
+            if s.view == View::Rest && m.rest_left(now) == 0 {
                 motor.play(ALERT);
                 set(BUZZES, get(BUZZES) + 1);
                 awake = Some(ms.wrapping_add(AWAKE_MS));
                 let v = after_rest(api, m, now);
                 let _ = go(s, &mut b, m, v, now);
+                shown_at = api.now();
             }
             let _ = s.tick(&mut b, &mut |b| b.submit(&lv), m, now);
 
@@ -184,14 +197,20 @@ mod device {
                 }
                 hist = (rc == 0 && i + 1 < n).then_some(i + 1);
             }
-            let wait = motor.wait().unwrap_or(TICK_MS).min(if hist.is_some() { 50 } else { TICK_MS });
+            let busy = hist.is_some() || pending.is_some();
+            let wait = motor.wait().unwrap_or(TICK_MS).min(if busy { 50 } else { TICK_MS });
             let mut to: Option<View> = None;
+            let mut hit = None;
             match api.event(wait) {
-                Some(e) if e.kind == BUTTON => match s.view {
-                    View::Set { .. } | View::Rest | View::Ask => to = Some(View::Day),
-                    View::Day => to = Some(View::Ask),
-                    View::Start | View::Done => break,
-                },
+                Some(e) if e.kind == BUTTON => {
+                    button_at = api.now();
+                    pending = None;
+                    match s.view {
+                        View::Set { .. } | View::Rest | View::Ask => to = Some(View::Day),
+                        View::Day => to = Some(View::Ask),
+                        View::Start | View::Done => break,
+                    }
+                }
                 Some(e) if e.kind == PAUSE => {
                     motor.off();
                     while !api.event(u32::MAX).is_some_and(|e| e.kind == RESUME) {}
@@ -200,7 +219,19 @@ mod device {
                     to = Some(resume_view(m, now_s(api)));
                 }
                 Some(e) if e.kind == RESUME => to = Some(s.view),
-                Some(e) if e.kind == LV && e.y == CLICKED => match s.hit_of(e.x as u16) {
+                Some(e) if e.kind == LV && e.y == CLICKED => {
+                    let t = api.now();
+                    let settled = t.wrapping_sub(shown_at) >= SETTLE_MS && t.wrapping_sub(button_at) >= GESTURE_MS;
+                    if let Some(h) = s.hit_of(e.x as u16).filter(|_| settled) {
+                        pending = Some((h, t));
+                    }
+                }
+                _ => {}
+            }
+            if pending.is_some_and(|(_, t)| api.now().wrapping_sub(t) >= DEFER_MS) {
+                hit = pending.take().map(|(h, _)| h);
+            }
+            match hit {
                     Some(Hit::Day(d)) => {
                         m.start(d, now);
                         save(api, m);
@@ -218,7 +249,6 @@ mod device {
                             m.done_set(ex, now);
                             save(api, m);
                             set(SETS, sets_done(m));
-                            api.keep_screen_on(true);
                             awake = None;
                             to = Some(View::Rest);
                         }
@@ -231,8 +261,6 @@ mod device {
                     Some(Hit::Leave) => break,
                     Some(Hit::Cancel) => to = Some(View::Day),
                     None => {}
-                },
-                _ => {}
             }
 
             let mut msg = [0u8; MSG_MAX];
@@ -258,6 +286,8 @@ mod device {
             }
             if let Some(v) = to {
                 let _ = go(s, &mut b, m, v, now_s(api));
+                shown_at = api.now();
+                pending = None;
             }
         }
         motor.off();
