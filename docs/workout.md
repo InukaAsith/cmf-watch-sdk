@@ -10,7 +10,7 @@ Probed 2026-11-13 in the emulator (a throwaway app, one stock font per screen wi
 
 | Font | Cyrillic | Digits and signs |
 |---|---|---|
-| `F32M` (system) | complete except `Ё`, `ё` | `0–9`, `–`, `-`, `:`; no `×`, `●`, `○` |
+| `F32M` (system) | complete except `Ё`, `ё` | `0–9`, `–`, `-`, `:`; no `×`, `·`, `●`, `○` |
 | `F48M` | only `БИРСавгдзийклнрстуъыь` | `0–9`, `-`, `:`; no `–` |
 | `F44L` | a few letters | `1–9`, `:`; no `0`, no `–` |
 | `F36M` | partial (no `Д`, `Е`, `Ж`, `Ц`, `Ч`, `Щ` …) | `0–9`, `-`, `:`; no `–` |
