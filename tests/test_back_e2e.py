@@ -146,7 +146,9 @@ class ScreenOffTest(unittest.TestCase):
     holds the guest in S1: deep sleep (S2/S3BT) is not modelled and stops the emulator."""
     ELF = OwnBackTest.ELF
 
-    def blank_and_wake(self, emu, port, during=None):
+    @staticmethod
+    def blank_and_wake(emu, port, during=None, wake=("c 1", "c 0")):
+        """Blanks the panel by auto-sleep (1.5 s) while a BLE session holds S1, then wakes it with `wake`."""
         import asyncio, threading
         from tests.test_api_e2e import session
         stop = threading.Event()
@@ -167,12 +169,13 @@ class ScreenOffTest(unittest.TestCase):
                 if "display blanking on" in emu.uart()[mark:]:
                     break
             else:
-                self.fail("panel never blanked")
+                raise AssertionError("panel never blanked")
             if during:
                 during()
             emu.gdb(f"set *(unsigned *)*(unsigned *){harness.AWAKE_PTR:#x} = 0xFFFFFFFF")
-            emu.send("c 1", "c 0", pause=3)
-            self.assertIn("display blanking off", emu.uart()[mark:])
+            emu.send(*wake, pause=3)
+            if "display blanking off" not in emu.uart()[mark:]:
+                raise AssertionError("panel did not wake")
         finally:
             stop.set()
             t.join(10)

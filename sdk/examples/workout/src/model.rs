@@ -332,6 +332,19 @@ impl Model {
         ex.map_or(Next::Finished, |ex| Next::Set { ex, set: w.done[ex] })
     }
 
+    /// Seconds of rest still to go: 0 without a running rest, and 0 when the clock says more than the exercise's rest
+    /// is left (it went back: a reboot without a wall clock, a time sync), so a rest never outlasts its length.
+    pub fn rest_left(&self, now: u32) -> u32 {
+        let (Some(p), Some(w)) = (&self.program, &self.workout) else { return 0 };
+        let d = usize::from(w.day);
+        if usize::from(w.rest_ex) >= p.exercises(d) {
+            return 0;
+        }
+        let rest = u32::from(p.exercise(d, usize::from(w.rest_ex)).rest_s);
+        let left = w.rest_until.wrapping_sub(now) as i32;
+        if left <= 0 || left as u32 > rest { 0 } else { left as u32 }
+    }
+
     /// Ends the workout: with at least one set done it goes to the history and the rotation; else it is dropped.
     pub fn finish(&mut self, now: u32) {
         let (Some(p), Some(w)) = (&self.program, self.workout.take()) else { return };
@@ -609,6 +622,19 @@ pub mod tests {
         assert!(p.exercise(0, 2).name.len() <= NAME_MAX && p.exercise(0, 2).name.starts_with("Очень длинное"));
         assert_eq!(p.exercise(1, 1).reps, (20, 20));
         assert_eq!(p.exercise(1, 1).rest_s, REST_DEFAULT_S);
+    }
+
+    #[test]
+    fn rest_left_is_bounded() {
+        let mut m = model(three_days());
+        assert_eq!(m.rest_left(0), 0); // no workout
+        m.start(0, 50_000);
+        assert_eq!(m.rest_left(50_000), 0); // no set yet
+        m.done_set(0, 50_000); // rest 60 s
+        assert_eq!((m.rest_left(50_000), m.rest_left(50_030), m.rest_left(50_060)), (60, 30, 0));
+        // the clock went back (a reboot without a wall clock, a time sync): the rest is over, not 14 hours long
+        assert_eq!(m.rest_left(30), 0);
+        assert_eq!(m.rest_left(49_999), 0);
     }
 
     #[test]
