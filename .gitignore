@@ -8,3 +8,4 @@ __pycache__/
 .DS_Store
 /sdk/target/
 /fw/target/
+.superpowers/
