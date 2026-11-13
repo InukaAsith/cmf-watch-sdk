@@ -36,13 +36,15 @@ mod device {
     static mut SCREEN: Screen = Screen::empty();
 
     // read by tests/test_workout_e2e.py: view (0 start, 1 day, 2 set, 3 rest, 4 ask, 5 done), sets done in the
-    // workout, buzzes, last acked version; non-zero initialiser: .data, fresh at every launch
+    // workout, buzzes, last acked version, the next day of the rotation; non-zero initialiser: .data, fresh at every
+    // launch
     const VIEW: usize = 0;
     const SETS: usize = 1;
     const BUZZES: usize = 2;
     const ACKED: usize = 3;
+    const NEXT: usize = 4;
     #[unsafe(no_mangle)]
-    static mut STATS: [i32; 4] = [-1, 0, 0, 0];
+    static mut STATS: [i32; 5] = [-1, 0, 0, 0, 0];
 
     fn set(i: usize, v: i32) {
         unsafe { (&raw mut STATS[i]).write_volatile(v) }
@@ -134,6 +136,7 @@ mod device {
         }
         let go = |s: &mut Screen, b: &mut Batch, m: &Model, v: View, now: u32| -> Result<(), LvError> {
             set(VIEW, view_code(v));
+            set(NEXT, m.next_day() as i32);
             s.show(b, &mut |b| b.submit(&lv), m, v, now)
         };
         if Screen::theme(&mut b).and_then(|_| go(s, &mut b, m, resume_view(m, now), now)).is_err() {
