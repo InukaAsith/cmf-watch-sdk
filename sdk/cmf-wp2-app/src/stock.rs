@@ -129,6 +129,11 @@ pub fn focus_page(b: &mut Batch, icon: u16) -> Result<(Obj, Obj), LvError> {
     b.style(page, Prop::PadTop, 0, pad)?;
     b.style(page, Prop::PadBottom, 0, pad)?;
     b.style(page, Prop::PadRow, 0, 0)?;
+    if icon == FOCUS_CARDS {
+        // cards start at a fixed x; the loader centres each narrowed one with TRANSLATE_X (no relayout)
+        b.style(page, Prop::PadLeft, 0, (SCREEN - ROW_W) / 2)?;
+        b.flex(page, Flow::Column, FlexAlign::Start, FlexAlign::Start, FlexAlign::Start)?;
+    }
     b.focus(page, icon)?;
     Ok((page, bar))
 }
@@ -149,6 +154,18 @@ pub fn focus_row(b: &mut Batch, parent: Obj) -> Result<Obj, LvError> {
     b.flags(row, &[], &[Flag::Scrollable])?;
     b.events(row, &[Ev::Clicked])?;
     Ok(row)
+}
+
+/// A card of a [`FOCUS_CARDS`](crate::lv::FOCUS_CARDS) focus page, like the stock Exercise list: row-coloured,
+/// lighter while pressed, no padding, `h` high; the loader narrows it away from the centre line. It sends CLICKED.
+pub fn focus_card(b: &mut Batch, parent: Obj, h: i32) -> Result<Obj, LvError> {
+    let c = card(b, parent, h)?;
+    for p in [Prop::PadTop, Prop::PadBottom, Prop::PadLeft, Prop::PadRight] {
+        b.style(c, p, 0, 0)?;
+    }
+    b.style(c, Prop::BgColor, PRESSED, ROW_PRESSED)?;
+    b.events(c, &[Ev::Clicked])?;
+    Ok(c)
 }
 
 /// A row-coloured, rounded panel of height `h` for controls; not scrollable, so a drag on it scrolls the page.

@@ -224,11 +224,12 @@ impl Screen {
                 if view == View::Day {
                     self.clock = label(b, self.header, "", GREY, Align::TopMid, 0, 58, 0)?;
                 }
-                let (page, _bar) = stock::focus_page(b, 0)?;
+                let (page, _bar) = stock::focus_page(b, FOCUS_CARDS)?;
                 b.size(page, SCREEN, PAGE_H)?;
                 b.align(page, Align::BottomMid, 0, 0)?;
                 b.style(page, Prop::PadTop, 0, (PAGE_H - stock::FOCUS_ROW_H) / 2)?;
                 b.style(page, Prop::PadBottom, 0, (PAGE_H - stock::FOCUS_ROW_H) / 2)?;
+                b.style(page, Prop::PadRow, 0, stock::ROW_GAP)?;
                 self.page = page;
                 if view == View::Start {
                     // the next day first: the focus list opens on its first row
@@ -416,7 +417,7 @@ impl Screen {
     }
 
     fn row(&mut self, b: &mut Batch, name: &str, colour: i32) -> Result<Obj, LvError> {
-        let row = stock::focus_row(b, self.page)?;
+        let row = stock::focus_card(b, self.page, stock::FOCUS_ROW_H)?;
         line(b, row, name, colour, TEXT_X, -18, TEXT_W)?;
         Ok(row)
     }

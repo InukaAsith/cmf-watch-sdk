@@ -349,8 +349,16 @@ fn shape_focus() {
             continue;
         }
         s.focus_last[i] = packed;
-        style(c, LV_STYLE_PAD_LEFT, shift as u32, 0);
         style(c, LV_STYLE_TEXT_OPA, opa, 0);
+        if s.focus_icon == lvcmd::FOCUS_CARDS {
+            // the card itself narrows, its content moves with its left edge. The container lays the cards out at a
+            // fixed x (a width set from LAYOUT_CHANGED is not laid out again, so a flex centre lags a scroll
+            // behind); TRANSLATE_X centres it without a relayout.
+            style(c, LV_STYLE_WIDTH, lvcmd::card_width(d) as u32, 0);
+            style(c, LV_STYLE_TRANSLATE_X, shift as u32, 0);
+            continue;
+        }
+        style(c, LV_STYLE_PAD_LEFT, shift as u32, 0);
         let icon = if s.focus_icon != 0 { child(c, 0) } else { null_mut() };
         if !icon.is_null() {
             let side = (u32::from(s.focus_icon) * zoom / 256) as i32;

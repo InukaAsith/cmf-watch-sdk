@@ -393,7 +393,7 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
             if child(t, h)? != Class::Obj {
                 return Err(Error::BadClass);
             }
-            bad(icon > 466)?;
+            bad(icon > 466 && icon != FOCUS_CARDS)?;
         }
         Rec::LongMode { h, mode } => {
             want(t, h, &[Class::Label])?;
@@ -478,6 +478,14 @@ pub fn freed_by_del(t: &Table, h: u16) -> impl Iterator<Item = u16> {
 pub const FOCUS_MAX: usize = 32;
 /// FOCUS: the LV event code the app gets when the child nearest the centre changes (`delta` = its index).
 pub const FOCUSED: i16 = 100;
+/// FOCUS `icon` for the stock Exercise list: each child is a card that narrows with its distance from the centre
+/// line (`card_width`) instead of shifting its content; text fades as in the app list.
+pub const FOCUS_CARDS: u16 = 0xFFFF;
+/// Width of a FOCUS_CARDS card: the stock Exercise list's 434 px in the centre, 2 × the app list's shift less
+/// further out (370 px one 104 px row away, as in the stock list).
+pub fn card_width(d: i32) -> i32 {
+    434 - 2 * focus_shape(d).0
+}
 
 /// The stock app list's fisheye (`0x1005ED98`, docs/recon.md) for a child `d` px from the centre line: (x shift,
 /// zoom of child 0 in 1/256, text opacity). The stock x is `16 + shift`; past 280 px it stays as at 280.
@@ -780,6 +788,8 @@ mod tests {
         assert_eq!(validate(&f(2, 96), &t, 0), Err(Error::BadClass), "a label");
         assert_eq!(validate(&f(3, 96), &t, 0), Err(Error::BadHandle), "a free handle");
         assert_eq!(validate(&f(1, 467), &t, 0), Err(Error::BadValue));
+        assert_eq!(validate(&f(1, FOCUS_CARDS), &t, 0), Ok(()), "cards");
+        assert_eq!((card_width(0), card_width(104), card_width(9999)), (434, 370, 188));
         assert_eq!(validate(&[0x11, 1, 1, 0, 9], &t, 0), Err(Error::Malformed));
         assert_eq!(validate(&[0x12, 1, 2, 0, 1], &t, 0), Ok(()), "LONG_MODE DOT on a label");
         assert_eq!(validate(&[0x12, 1, 2, 0, 5], &t, 0), Err(Error::BadValue));
