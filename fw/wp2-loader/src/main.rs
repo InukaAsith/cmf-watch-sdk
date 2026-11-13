@@ -43,10 +43,25 @@ mod view {
         failed_at: u32,
         // millis() | 1 of a BUTTON for the running app, 0 if none
         button_at: u32,
+        // the confirm screen's answer, done by the timer: ASK_CLOSE, or ASK_DELETE for row `asked`
+        answer: u8,
+        asked: usize,
+        scr: *mut c_void,
     }
+    const ASK_CLOSE: u8 = 1;
+    const ASK_DELETE: u8 = 2;
 
     // Lives in the loader block: zero again on every open of the view.
-    static mut MENU: Menu = Menu { entries: [None; menu::ROWS], launched: 0, failed: None, failed_at: 0, button_at: 0 };
+    static mut MENU: Menu = Menu {
+        entries: [None; menu::ROWS],
+        launched: 0,
+        failed: None,
+        failed_at: 0,
+        button_at: 0,
+        answer: 0,
+        asked: 0,
+        scr: core::ptr::null_mut(),
+    };
 
     fn st() -> &'static mut Menu {
         unsafe { &mut *addr_of_mut!(MENU) }
@@ -60,8 +75,9 @@ mod view {
             LAYOUT => {
                 let scr = ui::layout(data, input_cb, tick);
                 let m = st();
+                m.scr = scr;
                 m.entries = menu::scan();
-                menu::lv::build(scr, &m.entries, row_cb);
+                menu::lv::build(scr, &m.entries, row_cb, long_cb);
                 0
             }
             FOCUS | DEFOCUS => {
@@ -150,7 +166,7 @@ mod view {
     extern "C" fn row_cb(e: *mut c_void) {
         let row = menu::lv::row_of(e);
         let m = st();
-        if app::running() {
+        if app::running() || menu::lv::confirm_open() {
             return;
         }
         let Some(entry) = m.entries.get(row).copied().flatten() else { return };
@@ -159,6 +175,45 @@ mod view {
             Ok(()) => show_app(true),
             Err(code) => fail(row, code),
         }
+    }
+
+    // LONG_PRESSED on a menu row: ask before deleting the app
+    extern "C" fn long_cb(e: *mut c_void) {
+        let row = menu::lv::row_of(e);
+        if app::running() {
+            return;
+        }
+        let m = st();
+        if let Some(entry) = m.entries.get(row).copied().flatten() {
+            menu::lv::confirm(m.scr, row, &menu::name_text(&entry), yes_cb, no_cb);
+        }
+    }
+
+    extern "C" fn yes_cb(e: *mut c_void) {
+        let m = st();
+        (m.answer, m.asked) = (ASK_DELETE, menu::lv::row_of(e));
+    }
+
+    extern "C" fn no_cb(_: *mut c_void) {
+        st().answer = ASK_CLOSE;
+    }
+
+    // timer: the confirm screen's answer. Delete = the stub's DELETE (package and data files), then the list again.
+    fn answer(m: &mut Menu) {
+        let answer = core::mem::take(&mut m.answer);
+        if answer == 0 {
+            return;
+        }
+        menu::lv::close_confirm();
+        let Some(entry) = m.entries.get(m.asked).copied().flatten().filter(|_| answer == ASK_DELETE) else { return };
+        use wp2_core::{fs, layout};
+        fs::unlink(&layout::slot_path(entry.slot, false));
+        fs::unlink(&layout::data_path(entry.slot, false));
+        fs::unlink(&layout::data_path(entry.slot, true));
+        m.failed = None;
+        menu::lv::delete();
+        m.entries = menu::scan();
+        menu::lv::build(m.scr, &m.entries, row_cb, long_cb);
     }
 
     extern "C" fn tick(_timer: *mut c_void) {
@@ -181,6 +236,7 @@ mod view {
         }
         if !app::running() {
             m.button_at = 0;
+            answer(m);
         }
         if let Some(row) = m.failed.filter(|_| app::millis().wrapping_sub(m.failed_at) >= ERROR_MS) {
             m.failed = None;

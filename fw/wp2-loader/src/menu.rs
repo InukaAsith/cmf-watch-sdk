@@ -134,6 +134,7 @@ pub mod lv {
     // LV_OBJ_FLAG_USER_4: registers the object as the knob object; the crown scrolls it (docs/recon-lvgl.md)
     pub const FLAG_KNOB: u32 = 1 << 30;
     pub const CLICKED: u32 = 7;
+    pub const LONG_PRESSED: u32 = 5;
     const STATE_PRESSED: u32 = 0x20;
     const LONG_DOT: u32 = 1;
     const ALIGN_CENTER: u32 = 2;
@@ -166,6 +167,8 @@ pub mod lv {
         bar: Obj,
         icons: [*mut u8; ROWS],
         dsc: [ImgDsc; ROWS],
+        // "Delete?" over the list after a long press, on the screen; NULL when closed
+        confirm: Obj,
     }
 
     #[repr(C)]
@@ -186,6 +189,7 @@ pub mod lv {
         bar: null_mut(),
         icons: [null_mut(); ROWS],
         dsc: [NO_DSC; ROWS],
+        confirm: null_mut(),
     };
 
     fn ui() -> &'static mut Ui {
@@ -254,7 +258,8 @@ pub mod lv {
     }
 
     // UI thread (view msg 3). `click` gets CLICKED with the row index as user data.
-    pub fn build(scr: Obj, entries: &[Option<Entry>; ROWS], click: Cb) {
+    // `long` gets LONG_PRESSED likewise (a CLICKED still follows on release).
+    pub fn build(scr: Obj, entries: &[Option<Entry>; ROWS], click: Cb, long: Cb) {
         let u = ui();
         u.font_open = stock!(LVGL_BITMAP_FONT_OPEN, fn(*mut u32, *const u8) -> i32)(u.font.as_mut_ptr(), FONT_PATH.as_ptr()) == 0;
         let font = if u.font_open { u.font.as_ptr() as u32 } else { LV_FONT_DEFAULT };
@@ -273,6 +278,7 @@ pub mod lv {
             style(row, LV_STYLE_RADIUS, RADIUS as u32, 0);
             style(row, LV_STYLE_BG_COLOR, ROW_PRESSED, STATE_PRESSED);
             stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, usize) -> *mut c_void)(row, click, CLICKED, i);
+            stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, usize) -> *mut c_void)(row, long, LONG_PRESSED, i);
             let block = u.icons[i];
             let icon = if block.is_null() {
                 let c = panel(row, ICON_X, ICON_X, ICON, ICON, LETTER_BG);
@@ -308,6 +314,43 @@ pub mod lv {
         u.bar = bar;
     }
 
+    // The confirm screen over the list: the app's name, a red "Delete" (`yes`) and "Cancel" (`no`), both CLICKED with
+    // `row` as user data. Close it from the timer, not from these callbacks (they run on its own children).
+    pub fn confirm(scr: Obj, row: usize, name: &Text, yes: Cb, no: Cb) {
+        let u = ui();
+        if u.cont.is_null() || !u.confirm.is_null() {
+            return;
+        }
+        let font = if u.font_open { u.font.as_ptr() as u32 } else { LV_FONT_DEFAULT };
+        let lh = unsafe { *(font as *const i32).add(2) }.clamp(1, ROW_H);
+        let c = panel(scr, 0, 0, 466, 466, BLACK);
+        style(c, LV_STYLE_TEXT_FONT, font, 0);
+        style(c, LV_STYLE_TEXT_COLOR, WHITE, 0);
+        let t = label(c, COL_X, 120, COL_W, lh, name);
+        style(t, LV_STYLE_TEXT_ALIGN, ALIGN_CENTER, 0);
+        for (y, color, text, cb) in [(200, RED, b"Delete" as &[u8], yes), (300, ROW_BG, b"Cancel", no)] {
+            let b = panel(c, 83, y, 300, 84, color);
+            style(b, LV_STYLE_RADIUS, 42, 0);
+            style(b, LV_STYLE_BG_COLOR, ROW_PRESSED, STATE_PRESSED);
+            stock!(LV_OBJ_ADD_EVENT_CB, fn(Obj, Cb, u32, usize) -> *mut c_void)(b, cb, CLICKED, row);
+            let l = label(b, 0, (84 - lh) / 2, 300, lh, &self::text(text));
+            style(l, LV_STYLE_TEXT_ALIGN, ALIGN_CENTER, 0);
+            stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(l, FLAG_CLICKABLE);
+        }
+        u.confirm = c;
+    }
+
+    pub fn confirm_open() -> bool {
+        !ui().confirm.is_null()
+    }
+
+    pub fn close_confirm() {
+        let u = ui();
+        if !u.confirm.is_null() {
+            stock!(LV_OBJ_DEL, fn(Obj))(core::mem::replace(&mut u.confirm, null_mut()));
+        }
+    }
+
     pub fn row_of(e: *mut c_void) -> usize {
         stock!(LV_EVENT_GET_USER_DATA, fn(*mut c_void) -> usize)(e)
     }
@@ -337,6 +380,7 @@ pub mod lv {
 
     // UI thread, view msg 4: the loader block is freed afterwards, so no object, callback or font is left.
     pub fn delete() {
+        close_confirm();
         let u = ui();
         if !u.cont.is_null() {
             stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(u.cont, FLAG_KNOB);
