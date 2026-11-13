@@ -208,6 +208,15 @@ class WorkoutTest(unittest.TestCase):
         self.wait(done, 60)
         self.assertNotIsInstance(out[0], Exception, out)
         self.assertEqual([(e.day, e.done, e.planned) for e in out[0]], [(0, 2, 3)])
+        start = out[0][0].start
+        out, done = self.with_app(workout.trace)  # the finished workout's sets and heart-rate samples
+        self.wait(done, 60)
+        self.assertNotIsInstance(out[0], Exception, out)
+        t_start, sets, hr = out[0]
+        self.assertEqual(t_start, start)
+        self.assertEqual([ex for ex, _ in sets], [0, 0])
+        self.assertTrue(0 < sets[0][1] <= sets[1][1], sets)
+        self.assertGreater(len(hr), 0)  # samples were taken (their values stay out of the logs)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ use core::fmt::Write;
 pub const BIG: u8 = 1;
 pub const HEADER_H: i32 = 96;
 const PAGE_H: i32 = SCREEN - HEADER_H;
+/// The stock heart's red (RGB565).
+const HEART: i32 = 0xF8A2;
 const TEXT_X: i16 = 40;
 const TEXT_W: i32 = ROW_W - TEXT_X as i32 - 40;
 const DOT: i32 = 14;
@@ -57,6 +59,9 @@ pub struct Screen {
     arc: Obj,
     time: Obj,
     shown: Option<u32>,
+    // heart rate: the label and the bpm it shows (None: not drawn yet)
+    hr: Obj,
+    hr_shown: Option<u8>,
 }
 
 /// A short text in a fixed buffer.
@@ -139,6 +144,22 @@ fn label(b: &mut Batch, parent: Obj, text: &str, colour: i32, align: Align, x: i
     Ok(l)
 }
 
+/// The heart rate as the stock workout shows it under the clock: a red mark (the font has no heart) and the bpm,
+/// centred on `x`; returns the bpm label.
+fn heart(b: &mut Batch, parent: Obj, x: i16, y: i16) -> Result<Obj, LvError> {
+    let dot = b.create(Class::Obj, parent)?;
+    b.size(dot, 16, 16)?;
+    b.align(dot, Align::TopMid, x - 30, y + 12)?;
+    b.style(dot, Prop::Radius, 0, CIRCLE)?;
+    b.style(dot, Prop::BorderWidth, 0, 0)?;
+    b.style(dot, Prop::BgColor, 0, HEART)?;
+    b.style(dot, Prop::BgOpa, 0, 255)?;
+    b.flags(dot, &[], &[Flag::Clickable])?;
+    let l = label(b, parent, "--", WHITE, Align::TopLeft, 0, y, 0)?;
+    b.align(l, Align::TopMid, x + 12, y)?;
+    Ok(l)
+}
+
 /// One left-aligned line in a row, "..." when it does not fit.
 fn line(b: &mut Batch, row: Obj, text: &str, colour: i32, x: i16, y: i16, w: i32) -> Result<Obj, LvError> {
     let l = b.create(Class::Label, row)?;
@@ -181,7 +202,7 @@ impl Screen {
     }
 
     pub const fn empty() -> Screen {
-        Screen { view: View::Start, page: ROOT, header: ROOT, hits: [(ROOT, Hit::Cancel); HITS], n_hits: 0, clock: ROOT, arc: ROOT, time: ROOT, shown: None }
+        Screen { view: View::Start, page: ROOT, header: ROOT, hits: [(ROOT, Hit::Cancel); HITS], n_hits: 0, clock: ROOT, arc: ROOT, time: ROOT, shown: None, hr: ROOT, hr_shown: None }
     }
 
     /// Deletes the current view and builds `view`; batches go out through `flush` (`Batch::submit` on the watch)
@@ -222,7 +243,8 @@ impl Screen {
                 b.flags(self.header, &[], &[Flag::Clickable])?;
                 label(b, self.header, title.as_str(), ACCENT, Align::TopMid, 0, 22, 0)?;
                 if view == View::Day {
-                    self.clock = label(b, self.header, "", GREY, Align::TopMid, 0, 58, 0)?;
+                    self.clock = label(b, self.header, "", GREY, Align::TopMid, -60, 58, 0)?;
+                    self.hr = heart(b, self.header, 60, 58)?;
                 }
                 let (page, _bar) = stock::focus_page(b, FOCUS_CARDS)?;
                 b.size(page, SCREEN, PAGE_H)?;
@@ -287,6 +309,7 @@ impl Screen {
                 let Some(w) = w else { return flush(b) };
                 let e = p.exercise(usize::from(w.day), ex);
                 self.plain(b)?;
+                self.hr = heart(b, self.page, 0, 16)?;
                 label(b, self.page, e.name, GREY, Align::TopMid, 0, 62, 340)?;
                 let mut t = Txt::<64>::new();
                 let _ = write!(t, "Подход {} из {}", (w.done[ex] + 1).min(e.sets), e.sets);
@@ -311,6 +334,7 @@ impl Screen {
                 b.angles(self.arc, 0, 360, 270)?;
                 stock::arc(b, self.arc, 14)?;
                 b.flags(self.arc, &[], &[Flag::Clickable])?;
+                self.hr = heart(b, self.page, 0, 44)?;
                 label(b, self.page, "Отдых", GREY, Align::TopMid, 0, 96, 0)?;
                 self.time = label(b, self.page, "", WHITE, Align::TopMid, 0, 150, 0)?;
                 b.style(self.time, Prop::TextFont, 0, i32::from(BIG))?;
@@ -372,6 +396,17 @@ impl Screen {
                 now: u32) -> Result<(), LvError> {
         let Some(w) = m.workout else { return Ok(()) };
         let mut t = Txt::<16>::new();
+        if self.hr != ROOT && self.hr_shown != Some(m.bpm) {
+            if m.bpm == 0 {
+                let _ = t.write_str("--");
+            } else {
+                let _ = write!(t, "{}", m.bpm);
+            }
+            b.text(self.hr, t.as_str())?;
+            self.hr_shown = Some(m.bpm);
+            t = Txt::new();
+            flush(b)?;
+        }
         let shown = match self.view {
             View::Day if self.clock != ROOT => {
                 let s = now.wrapping_sub(w.started).min(99 * 3600);
