@@ -2,6 +2,8 @@
 
 #[cfg_attr(not(target_os = "none"), allow(dead_code))]
 mod model;
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
+mod proto;
 
 #[cfg(not(target_os = "none"))]
 fn main() {}
