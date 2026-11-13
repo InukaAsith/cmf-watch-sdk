@@ -64,7 +64,7 @@ transfer from `B` (0) on.
 | `C` | host → app | `offset: u16`, up to 120 data bytes |
 | `E` | host → app | `crc32: u32` of the program (zlib), its version |
 | `Q` | host → app | – (send the history); not part of a transfer |
-| `R` | app → host | `version: u32` stored (0 = none) |
+| `R` | app → host | `version: u32` stored (0 = none), `flags: u8` (bit 0: a workout is in progress; a host holds a new program back until it ends, `push` refuses without `--force`). Sent on start, on resume, every 3 s on the start screen and right after a workout ends. Hosts accept a 7-byte `R` (older app) as flags 0 |
 | `A` | app → host | `version: u32` just stored |
 | `Y` | app → host | `index: u8, count: u8, start: u32, dur_s: u16, day: u8, done: u8, planned: u8`; an empty history is one `Y` with count 0 |
 
