@@ -57,7 +57,7 @@ impl Transfer {
                     (b'E', [a, b, c, d]) => {
                         let bytes = &self.buf[..total];
                         let ok = self.got == total && crate::model::crc32(bytes) == u32::from_le_bytes([*a, *b, *c, *d])
-                            && crate::model::Program::parse(bytes).is_some();
+                            && crate::model::Program::check(bytes).is_some();
                         self.total = None;
                         if ok { Got::Program(&self.buf[..total]) } else { Got::Resync }
                     }

@@ -71,6 +71,8 @@ mod device {
         api.time().map_or(api.now() / 1000, |t| epoch_s(&t))
     }
 
+    // not inlined: each copy would add Model::save's 768 B history buffer to main's frame (8 KiB stack)
+    #[inline(never)]
     fn save(api: &Api, m: &Model) {
         let buf = unsafe { &mut *&raw mut STORE };
         let n = m.save(buf);
@@ -90,6 +92,27 @@ mod device {
             View::Rest => m.workout.map_or(0xFF, |w| w.rest_ex),
             _ => 0xFF,
         }
+    }
+
+    // not inlined: its 2 KB Program temporaries stay out of main's frame (8 KiB stack, no guard)
+    #[inline(never)]
+    fn take_program(api: &Api, m: &mut Model, bytes: &[u8]) -> bool {
+        let Some(v) = m.take_program(bytes, now_s(api)) else { return false };
+        save(api, m);
+        api.send(&ack(v));
+        set(ACKED, v as i32);
+        set(SETS, 0);
+        true
+    }
+
+    static mut BATCH: Option<Batch> = None;
+
+    // the 2 KB Batch lives in a static and is built here, so neither it nor its temporary sits in main's frame
+    #[inline(never)]
+    fn batch() -> Option<&'static mut Batch> {
+        let slot = unsafe { &mut *&raw mut BATCH };
+        *slot = Some(Batch::new()?);
+        slot.as_mut()
     }
 
     fn version(m: &Model) -> u32 {
@@ -145,7 +168,7 @@ mod device {
 
     fn main(api: &'static Api) -> i32 {
         let Some(lv) = api.lv() else { return -95 }; // loader older than ABI 1.2
-        let Some(mut b) = Batch::new() else { return -1 };
+        let Some(b) = batch() else { return -1 };
         api.own_back(true);
         let m = unsafe { &mut *&raw mut MODEL };
         let t = unsafe { &mut *&raw mut TRANSFER };
@@ -159,7 +182,7 @@ mod device {
         if had && m.workout.is_none() {
             save(api, m);
         }
-        if Screen::fonts(&mut b).and_then(|_| b.submit(&lv)).is_err() {
+        if Screen::fonts(b).and_then(|_| b.submit(&lv)).is_err() {
             return 1;
         }
         let go = |s: &mut Screen, b: &mut Batch, m: &Model, v: View, now: u32| -> Result<(), LvError> {
@@ -167,7 +190,7 @@ mod device {
             set(NEXT, m.next_day() as i32);
             s.show(b, &mut |b| b.submit(&lv), m, v, now)
         };
-        if Screen::theme(&mut b).and_then(|_| go(s, &mut b, m, resume_view(m, now), now)).is_err() {
+        if Screen::theme(b).and_then(|_| go(s, b, m, resume_view(m, now), now)).is_err() {
             return 2;
         }
         set(SETS, sets_done(m));
@@ -209,7 +232,7 @@ mod device {
                 set(BUZZES, get(BUZZES) + 1);
                 awake = Some(ms.wrapping_add(AWAKE_MS));
                 let v = after_rest(api, m, now);
-                let _ = go(s, &mut b, m, v, now);
+                let _ = go(s, b, m, v, now);
                 shown_at = api.now();
             }
             m.bpm = if m.workout.is_some() { heart_rate(api) } else { 0 };
@@ -224,7 +247,7 @@ mod device {
                     pulsed = Some((ms, ex, done));
                 }
             }
-            let _ = s.tick(&mut b, &mut |b| b.submit(&lv), m, now);
+            let _ = s.tick(b, &mut |b| b.submit(&lv), m, now);
 
             while let Some(i) = hist {
                 let n = m.history().count() as u8;
@@ -316,13 +339,7 @@ mod device {
             while let Some(data) = api.recv(&mut msg) {
                 match t.apply(data) {
                     Got::Program(bytes) => {
-                        if let Some(p) = Program::parse(bytes) {
-                            let v = p.version();
-                            m.replace_program(p, now_s(api));
-                            save(api, m);
-                            api.send(&ack(v));
-                            set(ACKED, v as i32);
-                            set(SETS, 0);
+                        if take_program(api, m, bytes) {
                             to = Some(View::Start);
                         }
                     }
@@ -338,7 +355,7 @@ mod device {
                 }
             }
             if let Some(v) = to {
-                let _ = go(s, &mut b, m, v, now_s(api));
+                let _ = go(s, b, m, v, now_s(api));
                 shown_at = api.now();
                 pending = None;
             }

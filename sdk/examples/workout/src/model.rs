@@ -103,8 +103,20 @@ pub struct Program {
 }
 
 impl Program {
+    const EMPTY: Program = Program { bytes: [0; PROGRAM_MAX], len: 0 };
+
     /// Checks every length and limit; anything else is `None`.
+    #[cfg(test)]
     pub fn parse(bytes: &[u8]) -> Option<Program> {
+        Program::check(bytes)?;
+        let mut p = Program::EMPTY;
+        p.bytes[..bytes.len()].copy_from_slice(bytes);
+        p.len = bytes.len();
+        Some(p)
+    }
+
+    /// What `parse` checks, without building a Program (2 KB: the app stack is 8 KiB).
+    pub fn check(bytes: &[u8]) -> Option<()> {
         if bytes.len() > PROGRAM_MAX {
             return None;
         }
@@ -119,12 +131,7 @@ impl Program {
                 c.exercise()?;
             }
         }
-        if c.i != bytes.len() {
-            return None;
-        }
-        let mut p = Program { bytes: [0; PROGRAM_MAX], len: bytes.len() };
-        p.bytes[..bytes.len()].copy_from_slice(bytes);
-        Some(p)
+        (c.i == bytes.len()).then_some(())
     }
 
     pub fn version(&self) -> u32 {
@@ -200,7 +207,6 @@ pub enum Next {
 
 /// The sets (exercise, seconds from the start to "Сделал") and heart rate (bpm, 0 = no reading) of the workout that
 /// started at `start`, kept until the next one starts. 0 = none.
-#[derive(Clone, Copy)]
 pub struct Trace {
     pub start: u32,
     pub sets: [(u8, u16); SETS_MAX],
@@ -235,8 +241,15 @@ impl Trace {
         o.i
     }
 
-    fn parse(c: &mut Cur, start: u32) -> Option<Trace> {
-        let mut t = Trace::new(start);
+    /// Empty, for the workout that started at `start`; in place (the app stack is 8 KiB, no copies of this).
+    fn reset(&mut self, start: u32) {
+        (self.start, self.n_sets, self.n_hr) = (start, 0, 0);
+    }
+
+    /// In place; any failure leaves it empty.
+    fn parse(&mut self, c: &mut Cur, start: u32) -> Option<()> {
+        self.reset(0);
+        let t = self;
         t.n_sets = c.u8()?;
         if usize::from(t.n_sets) > SETS_MAX {
             return None;
@@ -250,7 +263,8 @@ impl Trace {
             return None;
         }
         t.hr[..n].copy_from_slice(c.bytes(n)?);
-        Some(t)
+        t.start = start;
+        Some(())
     }
 }
 
@@ -286,14 +300,22 @@ impl Model {
     }
 
     /// Anything that does not parse leaves an empty model.
+    // not inlined: Program::parse's 2 KB temporary stays out of the app's main frame (8 KiB stack)
+    #[inline(never)]
     pub fn load(&mut self, blob: &[u8]) {
         if self.parse(blob).is_none() {
-            *self = Model::new();
+            self.clear();
         }
     }
 
+    // field by field: `*self = Model::new()` would build a 4 KB Model on the 8 KiB stack
+    fn clear(&mut self) {
+        (self.program, self.last_day, self.workout, self.hist_n, self.hist_head, self.bpm) = (None, None, None, 0, 0, 0);
+        self.trace.reset(0);
+    }
+
     fn parse(&mut self, blob: &[u8]) -> Option<()> {
-        *self = Model::new();
+        self.clear();
         let mut c = Cur { b: blob, i: 0 };
         if c.bytes(2)? != MAGIC {
             return None;
@@ -301,11 +323,12 @@ impl Model {
         let version = c.u32()?;
         let len = usize::from(c.u16()?);
         if len > 0 {
-            let p = Program::parse(c.bytes(len)?)?;
-            if p.version() != version {
+            let bytes = c.bytes(len)?;
+            Program::check(bytes)?;
+            if crc32(bytes) != version {
                 return None;
             }
-            self.program = Some(p);
+            self.put_program(bytes);
         }
         let days = self.program.as_ref().map_or(0, Program::days);
         self.last_day = Some(c.u8()?).filter(|&d| usize::from(d) < days);
@@ -326,12 +349,13 @@ impl Model {
         // the trace came later: a blob without it is still whole
         if c.i < blob.len() {
             let start = c.u32()?;
-            self.trace = Trace::parse(&mut c, start)?;
+            self.trace.parse(&mut c, start)?;
         }
         (c.i == blob.len()).then_some(())
     }
 
     /// The blob for `api.save`; `buf` holds at least STORE_MAX (4096) bytes.
+    #[inline(never)]
     pub fn save(&self, buf: &mut [u8]) -> usize {
         let mut o = Out { b: buf, i: 0 };
         let (version, bytes) = self.program.as_ref().map_or((0, &[][..]), |p| (p.version(), p.bytes()));
@@ -389,7 +413,7 @@ impl Model {
     pub fn start(&mut self, day: usize, now: u32) {
         if self.program.as_ref().is_some_and(|p| day < p.days()) {
             self.workout = Some(Workout { day: day as u8, started: now, touched: now, rest_until: now, rest_ex: NONE, done: [0; EX_MAX] });
-            self.trace = Trace::new(now);
+            self.trace.reset(now);
         }
     }
 
@@ -458,10 +482,30 @@ impl Model {
         }
     }
 
+    #[cfg(test)]
     pub fn replace_program(&mut self, p: Program, now: u32) {
+        self.take_program(p.bytes(), now);
+    }
+
+    /// A new program from the phone, if it checks: finishes a running workout first. Its version, or None.
+    #[inline(never)]
+    pub fn take_program(&mut self, bytes: &[u8], now: u32) -> Option<u32> {
+        Program::check(bytes)?;
         self.finish(now);
-        self.last_day = self.last_day.filter(|&d| usize::from(d) < p.days());
-        self.program = Some(p);
+        self.last_day = self.last_day.filter(|&d| d < bytes[0]);
+        self.put_program(bytes);
+        Some(crc32(bytes))
+    }
+
+    // in place: no 2 KB Program temporary on the 8 KiB app stack; `bytes` passed Program::check
+    fn put_program(&mut self, bytes: &[u8]) {
+        if self.program.is_none() {
+            self.program = Some(Program::EMPTY);
+        }
+        if let Some(p) = &mut self.program {
+            p.bytes[..bytes.len()].copy_from_slice(bytes);
+            p.len = bytes.len();
+        }
     }
 
     /// Newest first.
@@ -710,7 +754,7 @@ pub mod tests {
         // an older blob without a trace still loads
         let mut old = model(three_days());
         old.start(0, 1);
-        old.trace = Trace::new(0);
+        old.trace.reset(0);
         let n = old.save(&mut buf);
         back.load(&buf[..n]);
         assert!(back.program.is_some() && back.trace.start == 0);
