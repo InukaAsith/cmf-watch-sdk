@@ -169,6 +169,7 @@ class WorkoutTest(unittest.TestCase):
         self.button()  # day -> ask
         self.assertEqual(self.stats()[VIEW], ASK)
         back(self.emu)
+        self.shot("1d-after-swipe")
         self.assertTrue(self.running(), "the swipe left the app")
         self.assertEqual(self.stats()[VIEW], DAY)
         self.next_exercise()

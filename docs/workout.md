@@ -15,10 +15,16 @@ Probed 2026-11-13 in the emulator (a throwaway app, one stock font per screen wi
 | `F44L` | a few letters | `1–9`, `:`; no `0`, no `–` |
 | `F36M` | partial (no `Д`, `Е`, `Ж`, `Ц`, `Ч`, `Щ` …) | `0–9`, `-`, `:`; no `–` |
 | `F36N` | none | dot-matrix `0–9`, `:` (the AOD style) |
+| `F24M`, `F28M` | all lowercase but `ё`; capitals in part (no `Е`, `Ц`, `Щ` …) | `0–9`, `-`, `:` |
+| `F32R`, `F34R` | all lowercase but `ё`; capitals in part | `0–9`, `-`, `:` |
+| `F18M`, `F24R`, `F28R`, `F30R`, `F36L`, `F36R` | a few letters or none | `0–9`, `-`, `:` |
+
+The second block was probed 2026-11-14 the same way (a throwaway app, one font per screen).
 
 Choices:
 
-- Every text in `F32M`. The Mac side replaces `Ё`/`ё` with `Е`/`е` when it encodes a program, so the watch never
+- Names and anything with capitals in `F32M`; lowercase captions in `F24M` ("подход 2 из 4", "отдых"), weights
+  and secondary numbers in `F28M`. The Mac side replaces `Ё`/`ё` with `Е`/`е` when it encodes a program, so the watch never
   gets a letter the font lacks.
 - Big numbers (rest time, reps on the set screen) in `F48M`, with an ASCII `-` between reps (`5-8`); `F32M` text
   may use `–`.
