@@ -126,7 +126,13 @@ class WorkoutTest(unittest.TestCase):
         st = self.stats()
         self.assertEqual((st[VIEW], st[SETS]), (REST, 1))
         self.shot("1-rest")
-        self.emu.sleep(7)  # rest 5 s
+        # rest 5 s by the RTC: the emulator's RTC runs at ~0.43 of guest time (docs/recon.md, "Heart rate"), so the
+        # rest takes 9-12 guest s; wait for it, else the rest outlives the test and its 20 s wake window covers 1b, 1c
+        for _ in range(100):
+            if self.stats()[VIEW] != REST:
+                break
+            self.emu.sleep(0.25)
+        self.emu.sleep(1)  # past the app's 600 ms settle time on the new screen, as the fixed wait gave
         st = self.stats()
         self.assertEqual((st[VIEW], st[BUZZES]), (SET, 1))
         self.assertTrue(any(duty > 0 for _, duty, _ in self.emu.motor()[mark:]), "no buzz at the end of the rest")
@@ -201,6 +207,11 @@ class WorkoutTest(unittest.TestCase):
         self.assertGreater(self.stats()[SETS], 0, "the workout must still be open")
 
     def test_3_finish_rotates(self):
+        # the reopen in test_2 started a new measurement, which clears the stock reading (as the stock heart view
+        # does), and leaving dropped the samples since the last set: give the trace one HR_STEP_S (10 RTC s, ~23
+        # guest s at the emulator's slow RTC, docs/recon.md "Heart rate") of the synthetic reading before finishing
+        self.emu.poke(HR_BPM, bytes([SYNTH_BPM]))
+        self.emu.sleep(25)
         self.button()  # set -> day
         self.button()  # day -> ask
         self.tap(ASK_END)  # "Завершить": two sets done -> history, summary
