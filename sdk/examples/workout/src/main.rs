@@ -19,6 +19,7 @@ mod device {
     use crate::proto::{ack, history_msg, pulse, request, trace_msg, Got, Transfer, X_CHUNK};
     use crate::screen::{Hit, Screen, View};
     use cmf_wp2_app::lv::{Batch, LvError};
+    use cmf_wp2_app::stock::PAGE_CHANGED;
     use cmf_wp2_app::{Api, BUTTON, HEART, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
     use cmf_wp2_ui::haptic::{Motor, ALERT};
 
@@ -47,15 +48,16 @@ mod device {
     static mut TRACE: [u8; TRACE_MAX] = [0; TRACE_MAX];
 
     // read by tests/test_workout_e2e.py: view (0 start, 1 day, 2 set, 3 rest, 4 ask, 5 done), sets done in the
-    // workout, buzzes, last acked version, the next day of the rotation; non-zero initialiser: .data, fresh at every
-    // launch
+    // workout, buzzes, last acked version, the next day of the rotation, the exercise on screen (0xFF none);
+    // non-zero initialiser: .data, fresh at every launch
     const VIEW: usize = 0;
     const SETS: usize = 1;
     const BUZZES: usize = 2;
     const ACKED: usize = 3;
     const NEXT: usize = 4;
+    const EX: usize = 5;
     #[unsafe(no_mangle)]
-    static mut STATS: [i32; 5] = [-1, 0, 0, 0, 0];
+    static mut STATS: [i32; 6] = [-1, 0, 0, 0, 0, 0];
 
     fn set(i: usize, v: i32) {
         unsafe { (&raw mut STATS[i]).write_volatile(v) }
@@ -215,6 +217,7 @@ mod device {
             let ms = api.now();
             let now = now_s(api);
             motor.update();
+            set(EX, i32::from(open_ex(s.view, m)));
             if awake.is_some_and(|a| ms.wrapping_sub(a) as i32 >= 0) {
                 awake = None;
             }
@@ -307,6 +310,13 @@ mod device {
                 }
                 // x: worn; delta: bpm, 0 = no reading yet
                 Some(e) if e.kind == HEART => m.bpm = if e.x == 1 { e.delta.clamp(0, 255) as u8 } else { 0 },
+                // the set view's pager settled on another exercise: it is the open one now (P follows)
+                Some(e) if e.kind == LV && e.y == PAGE_CHANGED => {
+                    if s.paged(b, &e).unwrap_or(false) {
+                        let _ = b.submit(&lv);
+                        pending = None;
+                    }
+                }
                 Some(e) if e.kind == LV && e.y == CLICKED => {
                     let t = api.now();
                     let settled = t.wrapping_sub(shown_at) >= SETTLE_MS && t.wrapping_sub(button_at) >= GESTURE_MS;

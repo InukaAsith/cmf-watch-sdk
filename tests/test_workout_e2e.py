@@ -19,7 +19,7 @@ from wp2apps import channel, paths, workout
 
 OUT = paths.ROOT / "runs" / "workout-e2e"
 ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/workout"
-VIEW, SETS, BUZZES, ACKED, NEXT = range(5)  # STATS, main.rs
+VIEW, SETS, BUZZES, ACKED, NEXT, EX = range(6)  # STATS, main.rs
 START_V, DAY, SET, REST, ASK, DONE, PREVIEW = range(7)
 ROW = (233, 164)  # the list's first row (screen.rs: header 96, gap 8, stock::ROW_H 120)
 ROW2 = (233, 292)  # the row under it
@@ -62,7 +62,7 @@ class WorkoutTest(unittest.TestCase):
 
     def stats(self):
         addr = harness.u32(self.emu, START + harness.APP_BLOCK_OFF) + harness.symbol(ELF, "STATS")
-        return struct.unpack("<5i", self.emu.peek(addr, 20))
+        return struct.unpack("<6i", self.emu.peek(addr, 24))
 
     def tap(self, xy, pause=1.5):
         self.emu.send(f"t 1 {xy[0]} {xy[1]}", f"t 0 {xy[0]} {xy[1]}", pause=pause)
@@ -136,6 +136,19 @@ class WorkoutTest(unittest.TestCase):
         self.assertEqual((len(p), p[7], p[9]), (14, 0, 0xFF), p.hex())  # bpm: maybe sent before the first reading
         self.tap(ROW)  # its first exercise
         self.assertEqual(self.stats()[VIEW], SET)
+        self.assertEqual(self.stats()[EX], 0)
+        self.shot("1-set")
+        # the set view is a pager of the day's open exercises: the crown and a vertical swipe go to the next one
+        self.emu.send("r -80", pause=1.5)
+        self.assertEqual(self.stats()[:1] + self.stats()[5:], (SET, 1), "the crown did not page to Тяга")
+        self.shot("1-set-paged")
+        self.emu.send("r 80", pause=1.5)
+        self.assertEqual(self.stats()[EX], 0)
+        # past half a page: the emulator's swipe has no throw, so the tileview snaps to the nearer page
+        harness.swipe(self.emu, 233, 420, 233, 110, steps=8, pause=2)
+        self.assertEqual(self.stats()[EX], 1, "swipe up did not page")
+        harness.swipe(self.emu, 233, 110, 233, 420, steps=8, pause=2)
+        self.assertEqual(self.stats()[EX], 0, "swipe down did not page")
         mark = len(self.emu.motor())
         self.tap(PILL)  # "Сделал"
         st = self.stats()

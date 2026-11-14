@@ -726,24 +726,25 @@ LVGL's small built-in one, a widget without styles is bare. `stock` gives:
   events with its index), as herdr-agents uses them.
 - the stock Exercise list: `focus_page(b, FOCUS_CARDS)` and `focus_card` (cards that narrow away from the centre;
   a loader from 2026-11-13 on, `docs/abi-1.4.md`), as workout uses them.
-- a vertical pager: `pager::<N>(b)` (full-screen pages that snap, page dots at the right edge; a loader from
+- a vertical pager: `pager::<N>(b, n)` (full-screen pages that snap, page dots at the right edge; a loader from
   2026-11-14 on), below.
 
 ### Pages (vertical pager)
 
-`stock::pager::<N>(&mut b)` builds the stock `lv_tileview` as a column of `N` full-screen pages with page dots on the
+`stock::pager::<N>(&mut b, n)` builds the stock `lv_tileview` as a column of `n` (≤ `N`) full-screen pages with page dots on the
 right edge (a white pill for the current page, grey dots for the others). Swipe up/down or turn the crown: one page
 per step, and it snaps to a page. Example: ui-gallery's "Pages" section (`sdk/examples/ui-gallery/src/screens.rs`,
 `pages`); e2e `tests/test_pager_e2e.py`, frames `runs/pager/`.
 
 ```rust
-let mut p = stock::pager::<3>(&mut b)?;          // p.root (del it to remove all), p.obj, p.pages, p.dots
+let mut p = stock::pager::<3>(&mut b, 3)?;       // n pages of at most N; p.root (del it to remove all), p.obj, p.pages, p.dots
 b.flex(p.pages[0], Flow::Column, FlexAlign::Start, FlexAlign::Center, FlexAlign::Start)?;
 stock::title(&mut b, p.pages[0], "Today")?;     // build each page's content into p.pages[i]
 b.submit(&lv)?;
 // event loop: every event through the pager; it moves the dots and returns the page
 if let Some(i) = p.event(&mut b, &e)? { b.submit(&lv)?; /* page i is shown */ }
 p.go(&mut b, 2)?;                                // glide to a page; the page event follows
+p.jump(&mut b, 1)?;                              // show a page at once (open on it), dots too
 ```
 
 - **A page taller than the screen scrolls first.** A drag scrolls the page's own content and the pager takes over at

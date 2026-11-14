@@ -1,9 +1,10 @@
 //! The workout screens on the watch's own widgets in the stock look (`cmf_wp2_app::stock`). Each view is one page
-//! under ROOT; a view change deletes the page (and every object with it) and builds the next. `tick` updates only the
+//! under ROOT; a view change deletes the page (and every object with it) and builds the next. The set view is a
+//! vertical pager (`stock::pager`) of the day's open exercises. `tick` updates only the
 //! clock, the rest ring and its time. Texts in the system font (F32M), which lacks `·`, `×`, `●`; big numbers in
 //! F48M, which has digits, `:` and `-` but no `–` (docs/workout.md, Fonts).
 
-use crate::model::{Model, Next};
+use crate::model::{Model, Next, EX_MAX};
 use cmf_wp2_app::lv::*;
 use cmf_wp2_app::stock::{self, ACCENT, BLACK, CIRCLE, GREY, LETTER_BG, ROW_BG, ROW_H, ROW_PRESSED, ROW_W, SCREEN, WHITE};
 use core::fmt::Write;
@@ -27,6 +28,11 @@ const DOTS_MAX: u8 = 8;
 const HITS: usize = 16;
 // bytes one row or widget group can take: flush first when fewer are left
 const GROUP: usize = 1100;
+// objects of one exercise page besides its set dots: the page, its page dot, the column, name, reps, weight, the
+// dots' box, the rest line, the pill and its label
+const PAGE_COST: usize = 10;
+// the set view's objects: 192 less the pager's root, pager and dot column, the heart's box, dot, label and zone bar
+const SET_BUDGET: usize = 192 - 3 - 8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum View {
@@ -73,6 +79,9 @@ pub struct Screen {
     /// The zone bar's five segments (ROOT: none on this view).
     zbar: [Obj; 5],
     hr_shown: Option<u8>,
+    /// The set view's pager and the exercise of each page.
+    pager: Option<stock::Pager<EX_MAX>>,
+    page_ex: [u8; EX_MAX],
 }
 
 /// A short text in a fixed buffer.
@@ -250,7 +259,7 @@ impl Screen {
     }
 
     pub const fn empty() -> Screen {
-        Screen { view: View::Start, page: ROOT, header: ROOT, hits: [(ROOT, Hit::Cancel); HITS], n_hits: 0, clock: ROOT, arc: ROOT, time: ROOT, shown: None, hr: ROOT, hr_dot: ROOT, zbar: [ROOT; 5], hr_shown: None }
+        Screen { view: View::Start, page: ROOT, header: ROOT, hits: [(ROOT, Hit::Cancel); HITS], n_hits: 0, clock: ROOT, arc: ROOT, time: ROOT, shown: None, hr: ROOT, hr_dot: ROOT, zbar: [ROOT; 5], hr_shown: None, pager: None, page_ex: [0; EX_MAX] }
     }
 
     /// Deletes the current view and builds `view`; batches go out through `flush` (`Batch::submit` on the watch)
@@ -377,62 +386,52 @@ impl Screen {
             }
             View::Set { ex } => {
                 let Some(w) = w else { return flush(b) };
-                let e = p.exercise(usize::from(w.day), ex);
-                // a crown-scrolled column like Custom Apps, not everything pinned into one screen; the dots say
-                // which set this is
-                // "Сделал" stays put at the bottom (its own page); the column above scrolls (deleted as the header)
-                let (page, _bar) = stock::page(b)?;
-                b.size(page, SCREEN, 300)?;
-                b.align(page, Align::TopMid, 0, 0)?;
-                b.style(page, Prop::PadTop, 0, 20)?;
-                b.style(page, Prop::PadBottom, 0, 20)?;
-                b.style(page, Prop::PadRow, 0, 10)?;
-                b.flex(page, Flow::Column, FlexAlign::Center, FlexAlign::Center, FlexAlign::Center)?; // short: centred
-                self.header = page;
-                let top = slot(b, page, 60)?;
-                (self.hr, self.hr_dot) = heart(b, top, 0, 0)?;
+                let d = usize::from(w.day);
+                // the day's open exercises as pages (the shown one even when complete), swiped or crowned through;
+                // a window around `ex` when they all would pass the object budget
+                let mut list = [0usize; EX_MAX];
+                let mut n = 0;
+                for i in (0..p.exercises(d)).filter(|&i| i == ex || w.done[i] < p.exercise(d, i).sets) {
+                    list[n] = i;
+                    n += 1;
+                }
+                let cost = |i: usize| PAGE_COST + usize::from(p.exercise(d, i).sets.min(DOTS_MAX));
+                let pos = list[..n].iter().position(|&i| i == ex).unwrap_or(0);
+                let (mut lo, mut hi, mut used) = (pos, pos + 1, cost(list[pos]));
+                loop {
+                    let before = (lo, hi);
+                    if hi < n && used + cost(list[hi]) <= SET_BUDGET {
+                        used += cost(list[hi]);
+                        hi += 1;
+                    }
+                    if lo > 0 && used + cost(list[lo - 1]) <= SET_BUDGET {
+                        lo -= 1;
+                        used += cost(list[lo]);
+                    }
+                    if (lo, hi) == before {
+                        break;
+                    }
+                }
+                let mut pg = stock::pager::<EX_MAX>(b, hi - lo)?;
+                self.page = pg.root;
+                for (k, &i) in list[lo..hi].iter().enumerate() {
+                    room(b)?;
+                    self.page_ex[k] = i as u8;
+                    self.set_page(b, pg.pages[k], p.exercise(d, i), w.done[i])?;
+                }
+                pg.jump(b, pos - lo)?;
+                self.pager = Some(pg);
+                room(b)?;
+                // the heart rate stays put over the pages; not clickable, touches reach the page under it
+                self.header = b.create(Class::Obj, ROOT)?;
+                b.size(self.header, SCREEN, 80)?;
+                b.align(self.header, Align::TopMid, 0, 0)?;
+                bare(b, self.header)?;
+                b.flags(self.header, &[], &[Flag::Clickable])?;
+                (self.hr, self.hr_dot) = heart(b, self.header, 0, 20)?;
                 if m.zones != [0; 5] {
-                    self.zbar = zone_bar(b, top, 42)?;
+                    self.zbar = zone_bar(b, self.header, 62)?;
                 }
-                label(b, page, e.name, WHITE, Align::TopMid, 0, 0, 340)?;
-                // the reps are a detail: one small line, not the big number
-                let mut r = Txt::<16>::new();
-                reps(e.reps.0, e.reps.1, "-", &mut r);
-                let mut t = Txt::<32>::new();
-                let _ = write!(t, "{} повторений", r.as_str());
-                labelf(b, SMALL, page, t.as_str(), GREY, Align::TopMid, 0, 0, 0)?;
-                if !e.weight.is_empty() {
-                    // the weight as the program has it (F28M lacks some capitals: a rare one shows as a gap)
-                    labelf(b, MID, page, e.weight, ACCENT, Align::TopMid, 0, 0, 340)?;
-                }
-                room(b)?;
-                // the sets: done in the accent, this one white, the rest dim
-                let dots = slot(b, page, 20)?;
-                let n = e.sets.min(DOTS_MAX);
-                for k in 0..n {
-                    let dot = b.create(Class::Obj, dots)?;
-                    b.size(dot, DOT, DOT)?;
-                    b.align(dot, Align::Center, (24 * i32::from(k) - 12 * (i32::from(n) - 1)) as i16, 0)?;
-                    b.style(dot, Prop::Radius, 0, CIRCLE)?;
-                    b.style(dot, Prop::BorderWidth, 0, 0)?;
-                    let c = if k < w.done[ex] { ACCENT } else if k == w.done[ex] { WHITE } else { LETTER_BG };
-                    b.style(dot, Prop::BgColor, 0, c)?;
-                    b.style(dot, Prop::BgOpa, 0, 255)?;
-                    b.flags(dot, &[], &[Flag::Clickable, Flag::Scrollable])?;
-                }
-                let mut t = Txt::<32>::new(); // shadows the reps line
-                let _ = t.write_str("потом отдых ");
-                let mut c = Txt::<16>::new();
-                clock(u32::from(e.rest_s), &mut c);
-                let _ = t.write_str(c.as_str());
-                labelf(b, SMALL, page, t.as_str(), GREY, Align::TopMid, 0, 0, 0)?;
-                room(b)?;
-                self.page = b.create(Class::Obj, ROOT)?;
-                b.size(self.page, SCREEN, SCREEN - 300)?;
-                b.align(self.page, Align::BottomMid, 0, 0)?;
-                bare(b, self.page)?;
-                let done = pill(b, self.page, "Сделал", true, 12, 240)?;
-                self.hit(done, Hit::Done);
             }
             View::Rest => {
                 let Some(w) = w else { return flush(b) };
@@ -574,6 +573,60 @@ impl Screen {
         Ok(row)
     }
 
+    /// One exercise of the set view: name, reps, weight, its set dots (done in the accent, the next white, the
+    /// rest dim) and the rest after it in a column under the heart, "Сделал" pinned at the bottom.
+    fn set_page(&mut self, b: &mut Batch, page: Obj, e: crate::model::Exercise, done: u8) -> Result<(), LvError> {
+        let col = b.create(Class::Obj, page)?;
+        b.size(col, SCREEN, 300)?;
+        b.align(col, Align::TopMid, 0, 0)?;
+        bare(b, col)?;
+        b.flags(col, &[], &[Flag::Clickable])?;
+        b.style(col, Prop::PadTop, 0, 90)?;
+        b.style(col, Prop::PadRow, 0, 10)?;
+        b.flex(col, Flow::Column, FlexAlign::Start, FlexAlign::Center, FlexAlign::Center)?;
+        label(b, col, e.name, WHITE, Align::TopMid, 0, 0, 340)?;
+        // the reps are a detail: one small line, not the big number
+        let mut r = Txt::<16>::new();
+        reps(e.reps.0, e.reps.1, "-", &mut r);
+        let mut t = Txt::<32>::new();
+        let _ = write!(t, "{} повторений", r.as_str());
+        labelf(b, SMALL, col, t.as_str(), GREY, Align::TopMid, 0, 0, 0)?;
+        if !e.weight.is_empty() {
+            // the weight as the program has it (F28M lacks some capitals: a rare one shows as a gap)
+            labelf(b, MID, col, e.weight, ACCENT, Align::TopMid, 0, 0, 340)?;
+        }
+        let dots = slot(b, col, 20)?;
+        let n = e.sets.min(DOTS_MAX);
+        for k in 0..n {
+            let dot = b.create(Class::Obj, dots)?;
+            b.size(dot, DOT, DOT)?;
+            b.align(dot, Align::Center, (24 * i32::from(k) - 12 * (i32::from(n) - 1)) as i16, 0)?;
+            b.style(dot, Prop::Radius, 0, CIRCLE)?;
+            b.style(dot, Prop::BorderWidth, 0, 0)?;
+            let c = if k < done { ACCENT } else if k == done { WHITE } else { LETTER_BG };
+            b.style(dot, Prop::BgColor, 0, c)?;
+            b.style(dot, Prop::BgOpa, 0, 255)?;
+            b.flags(dot, &[], &[Flag::Clickable, Flag::Scrollable])?;
+        }
+        let mut t = Txt::<32>::new();
+        let _ = t.write_str("потом отдых ");
+        let mut c = Txt::<16>::new();
+        clock(u32::from(e.rest_s), &mut c);
+        let _ = t.write_str(c.as_str());
+        labelf(b, SMALL, col, t.as_str(), GREY, Align::TopMid, 0, 0, 0)?;
+        let done = pill(b, page, "Сделал", true, 312, 240)?;
+        self.hit(done, Hit::Done);
+        Ok(())
+    }
+
+    /// A page event of the set view: the exercise on the new page becomes the open one (no rebuild; submit `b`).
+    pub fn paged(&mut self, b: &mut Batch, e: &cmf_wp2_app::Event) -> Result<bool, LvError> {
+        let Some(pg) = self.pager.as_mut() else { return Ok(false) };
+        let Some(k) = pg.event(b, e)? else { return Ok(false) };
+        self.view = View::Set { ex: usize::from(self.page_ex[k]) };
+        Ok(true)
+    }
+
     fn plain(&mut self, b: &mut Batch) -> Result<(), LvError> {
         self.page = b.create(Class::Obj, ROOT)?;
         b.size(self.page, SCREEN, SCREEN)?;
@@ -647,6 +700,32 @@ mod tests {
         // no program
         s.show(&mut b, &mut |b| l.flush(b), &Model::new(), View::Start, 0).unwrap();
         std::println!("{} batches", l.batches);
+    }
+
+    #[test]
+    fn set_view_pages_the_open_exercises() {
+        let mut b = Batch::with_buf(Box::leak(Box::new([0; BUF])));
+        let mut l = Loader { t: Table::new(), batches: 0 };
+        let mut m = big_model(); // 12 exercises of 9 sets: 18 objects a page, 10 pages fit
+        m.start(0, 100);
+        for t in 0..9 {
+            m.done_set(0, 110 + t); // exercise 0 complete: not a page
+        }
+        let mut s = Screen::empty();
+        s.show(&mut b, &mut |b| l.flush(b), &m, View::Set { ex: 5 }, 120).unwrap();
+        let pg = s.pager.unwrap();
+        let pages = &s.page_ex[..pg.n];
+        assert_eq!(pages, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        assert_eq!(s.page_ex[pg.at], 5, "opens on the tapped exercise");
+        assert_eq!(s.n_hits, pg.n, "a Сделал per page");
+        let e = cmf_wp2_app::Event { kind: cmf_wp2_app::LV, _pad: 0, x: pg.obj.0 as i16, y: stock::PAGE_CHANGED, delta: 7 };
+        assert!(s.paged(&mut b, &e).unwrap());
+        assert_eq!(s.view, View::Set { ex: 8 });
+        l.flush(&mut b).unwrap();
+        // the last exercise opens a window that ends with it
+        s.show(&mut b, &mut |b| l.flush(b), &m, View::Set { ex: 11 }, 120).unwrap();
+        let pg = s.pager.unwrap();
+        assert_eq!((&s.page_ex[..pg.n], pg.at), (&[2u8, 3, 4, 5, 6, 7, 8, 9, 10, 11][..], 9));
     }
 
     #[test]
