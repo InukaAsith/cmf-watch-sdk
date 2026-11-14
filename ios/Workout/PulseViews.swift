@@ -85,8 +85,11 @@ struct MiniPlayer: View {
     }
 }
 
-/// The open workout full screen, as Podcasts' player: the ring of the set or the rest where the cover would be,
-/// the workout's progress as the scrubber, undo / Сделал / next as -15 / play / +30.
+/// The watch's accent (RGB565 0xFA23): the player is dark, the app's own accent is not.
+let brand = Color(red: 1, green: 0.27, blue: 0.09)
+
+/// The open workout full screen, as a music player with its queue: "now playing" is the current exercise (or the
+/// rest), the queue is the day's exercises with their set dots, the transport is undo / Сделал / next.
 struct ActiveWorkout: View {
     @Environment(AppStore.self) private var store
     @Environment(SyncController.self) private var sync
@@ -96,11 +99,22 @@ struct ActiveWorkout: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Capsule().fill(.white.opacity(0.45)).frame(width: 40, height: 5)
+            Capsule().fill(.white.opacity(0.35)).frame(width: 40, height: 5)
                 .padding(.vertical, 10).contentShape(.rect).onTapGesture { dismiss() }
             if let n = Now(store, sync, picked: picked) {
                 TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                    player(n, now: ctx.date)
+                    VStack(spacing: 0) {
+                        header(n)
+                        ScrollView {
+                            VStack(spacing: 14) {
+                                nowCard(n, now: ctx.date)
+                                queue(n)
+                            }
+                            .padding(.vertical, 12)
+                        }
+                        .scrollIndicators(.hidden)
+                        transport(n, resting: n.resting(ctx.date))
+                    }
                 }
             } else {
                 Spacer()
@@ -109,122 +123,36 @@ struct ActiveWorkout: View {
                 Spacer()
             }
         }
-        .padding(.horizontal, 28)
-        .padding(.bottom, 8)
-        .tint(.white)
+        .padding(.horizontal, 20)
+        .tint(brand)
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         .background {
             ZStack {
                 Color.black
-                Circle().fill(Color.accentColor).frame(width: 420).blur(radius: 120).offset(y: -160).opacity(0.7)
-                Color.black.opacity(0.25)
+                LinearGradient(colors: [brand.opacity(0.35), .clear], startPoint: .top, endPoint: .center)
             }
             .ignoresSafeArea()
         }
         .sensoryFeedback(.success, trigger: store.open?.sets.count)
     }
 
-    @ViewBuilder private func player(_ n: Now, now: Date) -> some View {
-        let resting = n.resting(now)
-        // the "cover": the rest ring, or the set's reps in a ring of its sets
-        ZStack {
-            Circle().stroke(.white.opacity(0.12), lineWidth: 16)
-            if resting, let end = n.restEnd, let last = n.o.sets.last, last.ex < n.day.exercises.count {
-                let total = Double(n.day.exercises[last.ex].exercise.restS)
-                Circle().trim(from: 0, to: max(0, min(1, end.timeIntervalSince(now) / max(total, 1))))
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 16, lineCap: .round))
-                    .rotationEffect(.degrees(-90)).animation(.linear(duration: 1), value: now)
-                VStack(spacing: 4) {
-                    Text("отдых").font(.headline).foregroundStyle(.secondary)
-                    Text(timerInterval: now...end, countsDown: true)
-                        .font(.system(size: 64, weight: .bold, design: .rounded)).monospacedDigit()
-                }
-            } else if let ex = n.ex, let e = n.exercise {
-                Circle().trim(from: 0, to: Double(n.o.done(ex)) / Double(max(e.sets, 1)))
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 16, lineCap: .round))
-                    .rotationEffect(.degrees(-90)).animation(.spring(duration: 0.5), value: n.o.done(ex))
-                VStack(spacing: 4) {
-                    Text(e.repsMin == e.repsMax ? "\(e.repsMin)" : "\(e.repsMin)–\(e.repsMax)")
-                        .font(.system(size: 72, weight: .bold, design: .rounded)).monospacedDigit()
-                    Text("повторений").font(.headline).foregroundStyle(.secondary)
-                    if !e.weight.isEmpty { Text(e.weight).font(.title3.bold()).foregroundStyle(Color.accentColor) }
-                }
-            } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "flag.checkered").font(.system(size: 56))
-                    Text("Все подходы сделаны").font(.headline)
-                }
-            }
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-        // title block, the exercises as the chapters menu
-        HStack(alignment: .bottom) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(n.day.name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                Text(n.exercise?.name ?? String(localized: "Готово")).font(.title2.bold()).lineLimit(2)
-                Text(n.setText).foregroundStyle(.secondary).lineLimit(1)
+    private func header(_ n: Now) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(n.day.name).font(.headline).lineLimit(1)
+                Text(startDate(n.o), style: .timer).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
             }
             Spacer()
-            Menu {
-                ForEach(Array(n.day.exercises.enumerated()), id: \.element.id) { i, item in
-                    let done = n.o.done(i), sets = item.exercise.sets
-                    Button { picked = i; sync.skippedRest = n.o.sets.count } label: {
-                        Label("\(item.exercise.name) · \(done)/\(sets)", systemImage: i == n.ex ? "figure.strengthtraining.traditional"
-                              : done >= sets ? "checkmark.circle.fill" : "circle")
-                    }
-                    .disabled(done >= sets)
-                }
-            } label: {
-                Image(systemName: "list.bullet").font(.headline).frame(width: 36, height: 36)
-                    .background(.white.opacity(0.15), in: .circle)
+            if let bpm = sync.bpm(for: n.o) {
+                let z = store.zones?.zone(bpm) ?? 0
+                Label("\(bpm)", systemImage: "heart.fill")
+                    .font(.headline).monospacedDigit()
+                    .foregroundStyle(z > 0 ? zoneColors[z - 1] : .red)
             }
-        }
-
-        // the "scrubber": sets done of the workout, elapsed on the left
-        VStack(spacing: 6) {
-            ProgressView(value: Double(n.o.sets.count), total: Double(max(n.planned, 1))).tint(.white)
-            HStack {
-                Text(startDate(n.o), style: .timer)
-                Spacer()
-                if let bpm = sync.bpm(for: n.o) { Label("\(bpm)", systemImage: "heart.fill").foregroundStyle(.red) }
-                Spacer()
-                Text("\(n.o.sets.count) из \(n.planned)")
-            }
-            .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(.secondary)
-            if let z = store.zones, let bpm = sync.bpm(for: n.o) {
-                ZoneBar(zone: z.zone(bpm)).padding(.top, 6)
-            }
-        }
-        .padding(.top, 22)
-
-        // undo, Сделал, next
-        HStack {
-            Spacer()
-            Button { sync.undoSet() } label: { Image(systemName: "arrow.uturn.backward").font(.system(size: 30, weight: .medium)) }
-                .disabled(n.o.sets.isEmpty)
-            Spacer()
-            Button { if let ex = n.ex { sync.doneSet(ex); picked = nil } } label: {
-                Image(systemName: "checkmark.circle.fill").font(.system(size: 84))
-                    .symbolRenderingMode(.hierarchical)
-            }
-            .disabled(n.ex == nil || resting)
-            Spacer()
-            Button { next(n, resting: resting) } label: { Image(systemName: "forward.end.fill").font(.system(size: 30, weight: .medium)) }
-                .disabled(n.ex == nil && !resting)
-            Spacer()
-        }
-        .padding(.vertical, 22)
-
-        HStack {
-            if let last = n.o.sets.last, last.ex < n.day.exercises.count {
-                Text("Последний: \(n.day.exercises[last.ex].exercise.name)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer()
             Button("Завершить") { asking = true }
-                .font(.subheadline.bold()).padding(.horizontal, 14).frame(height: 32)
+                .font(.subheadline.bold()).foregroundStyle(.white)
+                .padding(.horizontal, 12).frame(height: 32)
                 .background(.white.opacity(0.15), in: .capsule)
                 .confirmationDialog("Завершить тренировку?", isPresented: $asking, titleVisibility: .visible) {
                     Button("Завершить", role: .destructive) { sync.finishWorkout(); dismiss() }
@@ -234,23 +162,128 @@ struct ActiveWorkout: View {
         }
     }
 
-    /// Ends the rest, or moves on to the next exercise with sets left.
-    private func next(_ n: Now, resting: Bool) {
-        if resting { sync.skippedRest = n.o.sets.count; return }
-        let open = n.day.exercises.indices.filter { n.o.done($0) < n.day.exercises[$0].exercise.sets }
-        guard let ex = n.ex, let i = open.firstIndex(of: ex) else { return }
-        picked = open[(i + 1) % open.count]
+    /// "Now playing": the current exercise with its set, reps, weight and dots; the rest with its countdown ring.
+    @ViewBuilder private func nowCard(_ n: Now, now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if n.resting(now), let end = n.restEnd, let last = n.o.sets.last, last.ex < n.day.exercises.count {
+                let total = Double(max(n.day.exercises[last.ex].exercise.restS, 1))
+                HStack(spacing: 20) {
+                    ZStack {
+                        Circle().stroke(.white.opacity(0.12), lineWidth: 10)
+                        Circle().trim(from: 0, to: max(0, min(1, end.timeIntervalSince(now) / total)))
+                            .stroke(brand, style: StrokeStyle(lineWidth: 10, lineCap: .round))
+                            .rotationEffect(.degrees(-90)).animation(.linear(duration: 1), value: now)
+                        Text(timerInterval: now...end, countsDown: true)
+                            .font(.system(size: 30, weight: .bold, design: .rounded)).monospacedDigit()
+                    }
+                    .frame(width: 120, height: 120)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Отдых").font(.title2.bold())
+                        if let e = n.exercise { Text("Дальше: \(e.name)").foregroundStyle(.secondary) }
+                        Text(n.setText).foregroundStyle(.secondary)
+                    }
+                }
+            } else if let ex = n.ex, let e = n.exercise {
+                Text("Текущее упражнение").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(e.name).font(.title.bold()).lineLimit(2)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(e.repsMin == e.repsMax ? "\(e.repsMin)" : "\(e.repsMin)–\(e.repsMax)")
+                        .font(.system(size: 64, weight: .bold, design: .rounded)).monospacedDigit()
+                    Text("повт.").font(.title3).foregroundStyle(.secondary)
+                    Spacer()
+                    if !e.weight.isEmpty {
+                        Text(e.weight).font(.system(size: 28, weight: .bold, design: .rounded)).foregroundStyle(brand)
+                    }
+                }
+                HStack {
+                    Text(n.setText).foregroundStyle(.secondary)
+                    Spacer()
+                    Dots(done: n.o.done(ex), total: e.sets, size: 12, color: brand)
+                }
+            } else {
+                Label("Все подходы сделаны", systemImage: "flag.checkered").font(.title2.bold())
+                Text("Завершите тренировку").foregroundStyle(.secondary)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white.opacity(0.08), in: .rect(cornerRadius: 24, style: .continuous))
+    }
+
+    /// The queue: every exercise with its dots, the current one marked; a tap makes it current.
+    private func queue(_ n: Now) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Упражнения").font(.headline).padding(.leading, 4).padding(.bottom, 4)
+            ForEach(Array(n.day.exercises.enumerated()), id: \.element.id) { i, item in
+                let e = item.exercise, done = n.o.done(i), complete = done >= e.sets
+                Button { picked = i; sync.skippedRest = n.o.sets.count } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(e.name).font(.body.weight(i == n.ex ? .semibold : .regular))
+                                .foregroundStyle(complete ? .secondary : .primary).lineLimit(1)
+                            Text(item.summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Dots(done: done, total: e.sets, size: 9, color: brand)
+                    }
+                    .padding(.vertical, 12).padding(.horizontal, 14)
+                    .background(i == n.ex ? brand.opacity(0.18) : .clear, in: .rect(cornerRadius: 14, style: .continuous))
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .disabled(complete)
+            }
+        }
+    }
+
+    /// The workout's progress, then undo / Сделал / next.
+    private func transport(_ n: Now, resting: Bool) -> some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 6) {
+                ProgressView(value: Double(n.o.sets.count), total: Double(max(n.planned, 1))).tint(brand)
+                HStack {
+                    Text("\(n.o.sets.count) из \(n.planned) подходов")
+                    Spacer()
+                    if let z = store.zones, let bpm = sync.bpm(for: n.o), z.zone(bpm) > 0 {
+                        Text("Зона \(z.zone(bpm)) · \(Text(LocalizedStringKey(zoneNames[z.zone(bpm) - 1])))")
+                            .foregroundStyle(zoneColors[z.zone(bpm) - 1])
+                    }
+                }
+                .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(.secondary)
+            }
+            if resting {
+                Button { sync.skippedRest = n.o.sets.count } label: {
+                    Text("Пропустить отдых").font(.title3.bold()).frame(maxWidth: .infinity).padding(.vertical, 8)
+                }
+                .buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.large)
+            } else {
+                Button { if let ex = n.ex { sync.doneSet(ex); picked = nil } } label: {
+                    Text("Сделал").font(.title3.bold()).frame(maxWidth: .infinity).padding(.vertical, 8)
+                }
+                .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.large)
+                .disabled(n.ex == nil)
+            }
+            if let last = n.o.sets.last, last.ex < n.day.exercises.count {
+                Button("Отменить подход: \(n.day.exercises[last.ex].exercise.name)", systemImage: "arrow.uturn.backward") {
+                    sync.undoSet()
+                }
+                .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 }
 
 /// The sets of an exercise as on the watch: done ones filled in the accent.
 struct Dots: View {
     let done: Int, total: Int, size: CGFloat
+    var color: Color = .accentColor
 
     var body: some View {
         HStack(spacing: size * 0.6) {
             ForEach(0..<min(total, 8), id: \.self) { k in
-                Circle().fill(k < done ? Color.accentColor : Color(.tertiarySystemFill)).frame(width: size, height: size)
+                Circle().fill(k < done ? color : Color(.tertiarySystemFill)).frame(width: size, height: size)
             }
         }
         .accessibilityElement()

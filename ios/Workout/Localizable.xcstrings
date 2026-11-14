@@ -21,6 +21,16 @@
         }
       }
     },
+    "%@ · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ · %2$@"
+          }
+        }
+      }
+    },
     "%lld": {
       "localizations": {
         "en": {
@@ -31,12 +41,62 @@
         }
       }
     },
+    "%lld из %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "%lld из %lld подходов": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld of %2$lld sets"
+          }
+        }
+      }
+    },
+    "%lld мин": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld min"
+          }
+        }
+      }
+    },
+    "%lld+": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld+"
+          }
+        }
+      }
+    },
     "%lld-й подход · %@": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Set %lld · %@"
+          }
+        }
+      }
+    },
+    "%lld–%lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld–%2$lld"
           }
         }
       }
@@ -67,6 +127,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "“%@”: check the sets and reps"
+          }
+        }
+      }
+    },
+    "Аэробная": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aerobic"
           }
         }
       }
@@ -121,12 +191,82 @@
         }
       }
     },
+    "Вне зон": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Below the zones"
+          }
+        }
+      }
+    },
+    "Возраст: %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Age: %lld"
+          }
+        }
+      }
+    },
+    "Восстановление": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Recovery"
+          }
+        }
+      }
+    },
     "Время": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Time"
+          }
+        }
+      }
+    },
+    "Все подходы сделаны": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All sets done"
+          }
+        }
+      }
+    },
+    "Все подходы сделаны — завершите тренировку": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "All sets done: finish the workout"
+          }
+        }
+      }
+    },
+    "Вы ушли из зала: тренировка сохранена в истории.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "You left the gym: the workout is saved in History."
+          }
+        }
+      }
+    },
+    "Дальше: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next: %@"
           }
         }
       }
@@ -201,12 +341,72 @@
         }
       }
     },
+    "Другой день": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Another day"
+          }
+        }
+      }
+    },
+    "Завершите тренировку": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish the workout"
+          }
+        }
+      }
+    },
+    "Завершить": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish"
+          }
+        }
+      }
+    },
+    "Завершить тренировку": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish workout"
+          }
+        }
+      }
+    },
+    "Завершить тренировку?": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Finish the workout?"
+          }
+        }
+      }
+    },
     "Загрузчик": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Loader"
+          }
+        }
+      }
+    },
+    "Задать возраст": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set your age"
           }
         }
       }
@@ -227,6 +427,46 @@
           "stringUnit": {
             "state": "translated",
             "value": "Close the Workout app on the watch and try again."
+          }
+        }
+      }
+    },
+    "Закрыть": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close"
+          }
+        }
+      }
+    },
+    "Зона %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zone %lld"
+          }
+        }
+      }
+    },
+    "Зона %lld · %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zone %1$lld · %2$@"
+          }
+        }
+      }
+    },
+    "Зона %lld: ": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zone %lld: "
           }
         }
       }
@@ -261,6 +501,46 @@
         }
       }
     },
+    "Лёгкая": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Easy"
+          }
+        }
+      }
+    },
+    "Максимальная": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum"
+          }
+        }
+      }
+    },
+    "Максимальный": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum"
+          }
+        }
+      }
+    },
+    "Максимум по формуле Танаки (208 − 0,7 × возраст), зоны по 10 % от 50 %; с пульсом покоя — от резерва (Карвонен). Часы показывают зону цветом.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Maximum by the Tanaka formula (208 − 0.7 × age), zones in steps of 10 % from 50 %; with a resting rate, of the reserve (Karvonen). The watch shows the zone as a colour."
+          }
+        }
+      }
+    },
     "Минута": {
       "localizations": {
         "en": {
@@ -287,6 +567,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Day name"
+          }
+        }
+      }
+    },
+    "Начать: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start: %@"
           }
         }
       }
@@ -393,6 +683,26 @@
         }
       }
     },
+    "Отдых": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rest"
+          }
+        }
+      }
+    },
+    "Отдых закончился": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rest is over"
+          }
+        }
+      }
+    },
     "Отдых: %@": {
       "localizations": {
         "en": {
@@ -409,6 +719,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Open Workout on the watch: history and the program sync by themselves, even with the phone in your pocket."
+          }
+        }
+      }
+    },
+    "Отменить подход: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Undo set: %@"
           }
         }
       }
@@ -503,6 +823,16 @@
         }
       }
     },
+    "Подход %lld из %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set %1$lld of %2$lld"
+          }
+        }
+      }
+    },
     "Подходов": {
       "localizations": {
         "en": {
@@ -513,12 +843,32 @@
         }
       }
     },
+    "Подходов %lld из %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sets %1$lld of %2$lld"
+          }
+        }
+      }
+    },
     "Подходов сделано": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Sets done"
+          }
+        }
+      }
+    },
+    "Подходов: %lld из %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sets: %1$lld of %2$lld"
           }
         }
       }
@@ -539,6 +889,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Sets: %lld"
+          }
+        }
+      }
+    },
+    "Пороговая": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Threshold"
           }
         }
       }
@@ -583,6 +943,16 @@
         }
       }
     },
+    "Пропустить отдых": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skip rest"
+          }
+        }
+      }
+    },
     "Прошлый раз (%@)": {
       "localizations": {
         "en": {
@@ -623,6 +993,16 @@
         }
       }
     },
+    "Пульс покоя: %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resting rate: %lld"
+          }
+        }
+      }
+    },
     "Пульс средний / макс.": {
       "localizations": {
         "en": {
@@ -633,12 +1013,42 @@
         }
       }
     },
+    "Пульсовые зоны": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Heart-rate zones"
+          }
+        }
+      }
+    },
     "Свободный текст: «90 кг», «свой вес», «50–60 кг».": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Free text: “90 kg”, “bodyweight”, “50–60 kg”."
+          }
+        }
+      }
+    },
+    "Сделал": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        }
+      }
+    },
+    "Сделал подход": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set done"
           }
         }
       }
@@ -683,12 +1093,82 @@
         }
       }
     },
+    "Синхронизация тренировки не удалась: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workout sync failed: %@"
+          }
+        }
+      }
+    },
     "Синхронизирую…": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Syncing…"
+          }
+        }
+      }
+    },
+    "Следующий подход": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next set"
+          }
+        }
+      }
+    },
+    "Следующий подход: %@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next set: %@"
+          }
+        }
+      }
+    },
+    "Текущее упражнение": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Current exercise"
+          }
+        }
+      }
+    },
+    "Тренировка": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workout"
+          }
+        }
+      }
+    },
+    "Тренировка завершена": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Workout finished"
+          }
+        }
+      }
+    },
+    "Тренировка закончилась": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The workout is over"
           }
         }
       }
@@ -793,6 +1273,16 @@
         }
       }
     },
+    "Учитывать пульс покоя": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use resting rate"
+          }
+        }
+      }
+    },
     "Часы": {
       "localizations": {
         "en": {
@@ -859,6 +1349,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "version %u"
+          }
+        }
+      }
+    },
+    "до": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "to"
           }
         }
       }
@@ -933,12 +1433,52 @@
         }
       }
     },
+    "от": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "from"
+          }
+        }
+      }
+    },
+    "отдых": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "rest"
+          }
+        }
+      }
+    },
     "отдых %@": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "rest %@"
+          }
+        }
+      }
+    },
+    "повт.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "reps"
+          }
+        }
+      }
+    },
+    "подход %lld из %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "set %1$lld of %2$lld"
           }
         }
       }
