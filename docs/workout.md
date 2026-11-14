@@ -69,7 +69,7 @@ transfer from `B` (0) on.
 | `Y` | app → host | `index: u8, count: u8, start: u32, dur_s: u16, day: u8, done: u8, planned: u8`; an empty history is one `Y` with count 0 |
 | `T` | host → app | – (send the trace of the last workout); not part of a transfer |
 | `X` | app → host | `index: u8, count: u8, start: u32`, then up to 100 bytes of the trace (below); `start` 0 = no trace |
-| `P` | app → host | `start: u32, day: u8, bpm: u8` (0 = no reading), `ex: u8` (the exercise on screen, 0xFF = none), `done: u8` (sets so far). During a workout every 5 s and on every change of `ex` or `done`; not answered |
+| `P` | app → host | `start: u32, day: u8, bpm: u8` (0 = no reading), `ex: u8` (the exercise on screen, 0xFF = none), `done: u8` (sets so far), `ex_done: u8` (sets of `ex`), `rest_left: u16` (seconds, 0 = not resting). During a workout every 5 s and on every change of `ex`, `done` or resting; not answered |
 
 A gap in `seq`, a `C` at another offset than the bytes received so far, more bytes than `total`, or an `E` whose CRC
 or program does not check drops the transfer and the app sends `R` again. The program format is in

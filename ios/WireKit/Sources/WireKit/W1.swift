@@ -78,8 +78,9 @@ public enum Incoming: Equatable, Sendable {
     case ack(UInt32)
     /// Y: entry `index` of `count`, newest first; count 0 (entry nil) = empty history.
     case entry(index: Int, count: Int, Entry?)
-    /// P: live state of the workout that started at `start` on `day` (bpm 0 = none, ex nil = no exercise open).
-    case pulse(start: UInt32, day: Int, bpm: Int, ex: Int?, done: Int)
+    /// P: live state of the workout that started at `start` on `day` (bpm 0 = none, ex nil = no exercise open,
+    /// exDone: sets of `ex`, restLeft: seconds of rest left, 0 = not resting).
+    case pulse(start: UInt32, day: Int, bpm: Int, ex: Int?, done: Int, exDone: Int = 0, restLeft: Int = 0)
     /// X: part `index` of `count` of the trace of the workout that started at `start`.
     case trace(index: Int, count: Int, start: UInt32, Data)
 }
@@ -98,10 +99,11 @@ public func parseIncoming(_ d: Data) -> Incoming? {
         return .entry(index: index, count: count, Entry(
             start: d.le(UInt32.self, at: 5), durS: Int(d.le(UInt16.self, at: 9)), day: Int(d[d.startIndex + 11]),
             done: Int(d[d.startIndex + 12]), planned: Int(d[d.startIndex + 13])))
-    case UInt8(ascii: "P") where d.count == 11:
-        let ex = Int(d[d.startIndex + 9])
+    case UInt8(ascii: "P") where d.count == 11 || d.count == 14: // 11: workout v3
+        let ex = Int(d[d.startIndex + 9]), long = d.count == 14
         return .pulse(start: d.le(UInt32.self, at: 3), day: Int(d[d.startIndex + 7]), bpm: Int(d[d.startIndex + 8]),
-                      ex: ex == 0xFF ? nil : ex, done: Int(d[d.startIndex + 10]))
+                      ex: ex == 0xFF ? nil : ex, done: Int(d[d.startIndex + 10]),
+                      exDone: long ? Int(d[d.startIndex + 11]) : 0, restLeft: long ? Int(d.le(UInt16.self, at: 12)) : 0)
     case UInt8(ascii: "X") where d.count >= 9:
         return .trace(index: Int(d[d.startIndex + 3]), count: Int(d[d.startIndex + 4]), start: d.le(UInt32.self, at: 5),
                       Data(d.dropFirst(9)))
