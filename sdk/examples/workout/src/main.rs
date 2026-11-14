@@ -35,6 +35,7 @@ mod device {
     // swipe across a pill is also a tap on it
     const DEFER_MS: u32 = 150;
     const GESTURE_MS: u32 = 400;
+    const WAKE_KEY_MS: u32 = 500;
     /// A P to the phone at least this often during a workout (sooner when the exercise or the sets change).
     const PULSE_MS: u32 = 5000;
     const TRACE_MAX: usize = 1 + SETS_MAX * 3 + 2 + HR_MAX;
@@ -199,6 +200,7 @@ mod device {
         // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
         let mut locked = false;
         let mut shown_at = api.now();
+        let mut resumed_at = api.now().wrapping_sub(WAKE_KEY_MS);
         let mut button_at = api.now().wrapping_sub(GESTURE_MS);
         let mut pending: Option<(Hit, u32)> = None;
         loop {
@@ -271,6 +273,8 @@ mod device {
             let mut to: Option<View> = None;
             let mut hit = None;
             match api.event(wait) {
+                // the press that ends AOD can follow its RESUME: not a "back"
+                Some(e) if e.kind == BUTTON && api.now().wrapping_sub(resumed_at) < WAKE_KEY_MS => {}
                 Some(e) if e.kind == BUTTON => {
                     button_at = api.now();
                     pending = None;
@@ -283,11 +287,15 @@ mod device {
                 Some(e) if e.kind == PAUSE => {
                     motor.off();
                     while !api.event(u32::MAX).is_some_and(|e| e.kind == RESUME) {}
+                    resumed_at = api.now();
                     asked = None;
                     // a rest that ended meanwhile: the next set, no late buzz
                     to = Some(resume_view(m, now_s(api)));
                 }
-                Some(e) if e.kind == RESUME => to = Some(s.view),
+                Some(e) if e.kind == RESUME => {
+                    resumed_at = api.now();
+                    to = Some(s.view);
+                }
                 // x: worn; delta: bpm, 0 = no reading yet
                 Some(e) if e.kind == HEART => m.bpm = if e.x == 1 { e.delta.clamp(0, 255) as u8 } else { 0 },
                 Some(e) if e.kind == LV && e.y == CLICKED => {
