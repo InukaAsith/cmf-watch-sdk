@@ -20,10 +20,11 @@ from wp2apps import channel, paths, workout
 OUT = paths.ROOT / "runs" / "workout-e2e"
 ELF = paths.ROOT / "sdk/target/thumbv7em-none-eabi/release/workout"
 VIEW, SETS, BUZZES, ACKED, NEXT = range(5)  # STATS, main.rs
-START_V, DAY, SET, REST, ASK, DONE = range(6)
+START_V, DAY, SET, REST, ASK, DONE, PREVIEW = range(7)
 ROW = (233, 164)  # the list's first row (screen.rs: header 96, gap 8, stock::ROW_H 120)
 ROW2 = (233, 292)  # the row under it
 PILL = (233, 342)  # "Сделал" / "Пропустить" (pill at y 300, 84 high)
+BEGIN = (233, 402)  # "Начать" under day 1's two exercises (rows 104-224, 232-352, pill from 360)
 ASK_END = (233, 294)
 ASK_LEAVE = (233, 198)
 NOTES = {"Day 01.md": "## День 1: А\n\n- [ ] Жим: 2×5 отдых 0:05\n- Тяга: 1×8 (40 кг) отдых 0:05\n",
@@ -112,7 +113,11 @@ class WorkoutTest(unittest.TestCase):
         st = self.stats()
         self.assertEqual((st[VIEW], st[ACKED] & 0xFFFFFFFF, st[NEXT]), (START_V, workout.version(p), 0))
         self.shot("1-start")
-        self.tap(ROW)  # day 1
+        self.tap(ROW)  # day 1: its exercises and "Начать", nothing started yet
+        self.assertEqual(self.stats()[VIEW], PREVIEW)
+        self.assertFalse(self.stats()[SETS])
+        self.shot("1-preview")
+        self.tap(BEGIN)
         self.assertEqual(self.stats()[VIEW], DAY)
         # a synthetic reading in the stock cell (no PPG model; tests/test_hr_e2e.py): the header shows it
         self.emu.poke(HR_WEAR, b"\x01")

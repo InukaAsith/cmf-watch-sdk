@@ -31,6 +31,8 @@ const GROUP: usize = 1100;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum View {
     Start,
+    /// A day before it starts: its exercises and "Начать".
+    Preview { day: usize },
     Day,
     Set { ex: usize },
     Rest,
@@ -42,6 +44,8 @@ pub enum View {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hit {
     Day(usize),
+    /// "Начать" under a previewed day.
+    Begin,
     Exercise(usize),
     /// The day list's "Завершить" row.
     Finish,
@@ -240,10 +244,12 @@ impl Screen {
             return flush(b);
         };
         match view {
-            View::Start | View::Day => {
+            View::Start | View::Day | View::Preview { .. } => {
                 let mut title = Txt::<64>::new();
                 if view == View::Start {
                     let _ = title.write_str("Тренировка");
+                } else if let View::Preview { day } = view {
+                    let _ = write!(title, "День {}", day + 1);
                 } else if let Some(w) = w {
                     let _ = write!(title, "День {}", w.day + 1);
                 }
@@ -268,7 +274,25 @@ impl Screen {
                 b.style(page, Prop::PadLeft, 0, (SCREEN - ROW_W) / 2)?;
                 b.flex(page, Flow::Column, FlexAlign::Start, FlexAlign::Start, FlexAlign::Start)?;
                 self.page = page;
-                if view == View::Start {
+                if let View::Preview { day } = view {
+                    for i in 0..p.exercises(day) {
+                        room(b)?;
+                        let e = p.exercise(day, i);
+                        let row = self.row(b, e.name, WHITE)?;
+                        b.flags(row, &[], &[Flag::Clickable])?; // only "Начать" starts it
+                        let mut sub = Txt::<64>::new();
+                        let mut r = Txt::<16>::new();
+                        reps(e.reps.0, e.reps.1, "–", &mut r);
+                        let _ = write!(sub, "{} по {}", e.sets, r.as_str());
+                        if !e.weight.is_empty() {
+                            let _ = write!(sub, ", {}", e.weight);
+                        }
+                        line(b, row, sub.as_str(), GREY, TEXT_X, 22, TEXT_W)?;
+                    }
+                    room(b)?;
+                    let go = pill(b, self.page, "Начать", true, 0, ROW_W)?;
+                    self.hit(go, Hit::Begin);
+                } else if view == View::Start {
                     // the next day first: the focus list opens on its first row
                     let next = m.next_day();
                     for k in 0..p.days() {
@@ -547,7 +571,7 @@ mod tests {
         assert_eq!(s.hit_of(s.hits[0].0 .0), Some(Hit::Day(0)));
         m.start(0, 100);
         m.done_set(3, 110);
-        for v in [View::Day, View::Set { ex: 3 }, View::Rest, View::Ask, View::Day, View::Start] {
+        for v in [View::Preview { day: 0 }, View::Day, View::Set { ex: 3 }, View::Rest, View::Ask, View::Day, View::Start] {
             s.show(&mut b, &mut |b| l.flush(b), &m, v, 120).unwrap();
             assert_eq!(s.view, v);
         }
