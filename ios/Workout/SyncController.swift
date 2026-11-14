@@ -108,11 +108,24 @@ final class SyncController {
                         l.restEnd = restLeft > 0 ? .now.addingTimeInterval(TimeInterval(restLeft)) : nil
                         if bpm > 0 { l.samples.append((.now, bpm)) }
                         live = l
+                        let w = WatchWorkout(start: start, day: day, done: done)
+                        if w != watch {
+                            watch = w
+                            await reconcile(ch)
+                        }
                         continue
                     }
                     guard case let .request(_, running) = r else { continue }
                     if !running { live = nil }
                     if r != lastRequest || Date.now.timeIntervalSince(lastSync) > 60 { await run(ch, r) }
+                    if !running {
+                        // the watch ended the shared workout (its entry came with the sync, or it had no sets)
+                        if let o = store.open, let w = watch, w.start == o.start {
+                            store.setOpen(nil)
+                        }
+                        watch = nil
+                        await reconcile(ch)
+                    }
                 } catch WireError.timeout {
                     if let l = live, Date.now.timeIntervalSince(l.at) > 30 { live = nil } // the app closed or ended
                     continue
@@ -120,6 +133,105 @@ final class SyncController {
                     if ch === channel { channel = nil }
                 }
             }
+        }
+    }
+
+    /// The watch's open workout as its last P said; nil when it said none (R) or before it said anything.
+    private var watch: WatchWorkout?
+
+    /// Brings the phone's and the watch's open workouts together (WireKit `meet`). Errors leave it for the next P/R.
+    private func reconcile(_ ch: Channel) async {
+        let version = store.watchVersion ?? 0
+        do {
+            if watch == nil {
+                for e in store.unsent {
+                    try await ch.send(entryMessage(e))
+                    store.markSent(e.start)
+                }
+            } else if let w = watch, let e = store.unsent.first(where: { $0.start == w.start }) {
+                try await ch.send(finishMessage(start: w.start, end: e.start &+ UInt32(e.durS))) // finished here already
+                store.markSent(e.start)
+                return
+            }
+            switch meet(phone: store.open, watch: watch, watchVersion: version) {
+            case .nothing, .independent:
+                break
+            case .pushOwn:
+                try await pushOwn(ch)
+            case .exchange:
+                guard var o = store.open, let w = watch else { return }
+                let theirs = w.done == o.sets.count ? o.sets : try await watchSets(ch, start: o.start)
+                o.union(theirs, planned: store.planned)
+                store.setOpen(o)
+                for s in o.sets where !theirs.contains(s) { try await ch.send(setMessage(o, s)) }
+            case .adoptWatch:
+                guard let w = watch else { return }
+                store.setOpen(OpenWorkout(start: w.start, day: w.day, version: version))
+                var o = store.open!
+                o.union(try await watchSets(ch, start: w.start), planned: store.planned)
+                store.setOpen(o)
+            case .replaceWatch:
+                guard let w = watch else { return }
+                try await ch.send(finishMessage(start: w.start, end: watchSeconds()))
+                try await pushOwn(ch)
+            case .yieldToWatch:
+                if let e = store.finishWorkout(told: true) { try await ch.send(entryMessage(e)) }
+                await reconcile(ch)
+            }
+        } catch {
+            lastError = String(localized: "Синхронизация тренировки не удалась: \(String(describing: error))")
+        }
+    }
+
+    private func pushOwn(_ ch: Channel) async throws {
+        guard let o = store.open else { return }
+        try await ch.send(setMessage(o, nil))
+        for s in o.sets { try await ch.send(setMessage(o, s)) }
+    }
+
+    /// The watch's sets of the workout that started at `start` (its trace, T → X); empty if it has another.
+    private func watchSets(_ ch: Channel, start: UInt32) async throws -> [SetMark] {
+        try await ch.send(traceQuery())
+        var parts: [Int: Data] = [:]
+        var got: UInt32 = 0
+        while true {
+            guard case let .trace(i, n, s, d) = parseIncoming(try await ch.recv(timeout: .seconds(10))) else { continue }
+            (parts[i], got) = (d, s)
+            if parts.count >= n { break }
+        }
+        guard got == start, let t = parseTrace(parts.keys.sorted().reduce(Data()) { $0 + parts[$1]! }) else { return [] }
+        return t.sets
+    }
+
+    /// The watch's heart rate for this workout, while it sends one.
+    func bpm(for o: OpenWorkout) -> Int? { live.flatMap { $0.start == o.start && $0.bpm > 0 ? $0.bpm : nil } }
+
+    // MARK: the phone's own actions on the open workout
+
+    func startWorkout(day: Int) {
+        store.startWorkout(day: day)
+        Rest.ask()
+        if let ch = channel { Task { await reconcile(ch) } }
+    }
+
+    func doneSet(_ ex: Int) {
+        guard let m = store.doneSet(ex), let o = store.open else { return }
+        Rest.schedule(store.restEnd, name: o.day < store.days.count && ex < store.days[o.day].exercises.count
+                      ? store.days[o.day].exercises[ex].exercise.name : "")
+        if let ch = channel, watch?.start == o.start || watch == nil {
+            Task { try? await ch.send(setMessage(o, m)) }
+            if watch == nil { Task { await reconcile(ch) } } // the watch app idle: it adopts the workout
+        }
+    }
+
+    func finishWorkout() {
+        let shared = store.open != nil && watch?.start == store.open?.start && channel != nil
+        let end = watchSeconds()
+        guard let start = store.open?.start else { return }
+        store.finishWorkout(end: end) // stays unsent until the watch took F or H: a lost F must not revive it
+        Rest.cancel()
+        if shared, let ch = channel {
+            Task { if (try? await ch.send(finishMessage(start: start, end: end))) != nil { store.markSent(start) } }
         }
     }
 

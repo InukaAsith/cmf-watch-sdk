@@ -128,6 +128,21 @@ def messages(program: bytes) -> list[bytes]:
     return out
 
 
+def set_msg(start: int, day: int, program_version: int, ex: int, t: int) -> bytes:
+    """D: a set done on the phone (ex 0xFF: the workout only runs); docs/workout.md."""
+    return MAGIC + b"D\x00" + struct.pack("<IBIBH", start, day, program_version, ex, t)
+
+
+def finish_msg(start: int, end: int) -> bytes:
+    """F: the phone finished the workout that started at `start`."""
+    return MAGIC + b"F\x00" + struct.pack("<II", start, end)
+
+
+def entry_msg(e: Entry) -> bytes:
+    """H: a workout done on the phone alone."""
+    return MAGIC + b"H\x00" + struct.pack("<IHBBB", e.start, e.dur_s, e.day, e.done, e.planned)
+
+
 def decode_entry(msg: bytes) -> Entry | None:
     if len(msg) != 14 or msg[:3] != MAGIC + b"Y" or msg[4] == 0:
         return None
@@ -196,8 +211,10 @@ async def history(ch, wait: float = WAIT) -> list[Entry]:
 
 
 async def trace(ch, wait: float = WAIT) -> tuple[int, list[tuple[int, int]], bytes]:
-    """The last workout's trace: (start, [(exercise, seconds to "Сделал")], bpm per 10 s; 0 = none)."""
-    await _request(ch, wait)
+    """The last workout's trace: (start, [(exercise, seconds to "Сделал")], bpm per 10 s; 0 = none). `wait` 0: the
+    slot is known (ch.slot), no R to wait for (the app asks only on its start screen)."""
+    if wait:
+        await _request(ch, wait)
     await ch.send(MAGIC + b"T" + bytes([0]))
     parts: dict[int, bytes] = {}
     while True:
