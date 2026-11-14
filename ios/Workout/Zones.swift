@@ -78,3 +78,26 @@ func zoneMinutes(_ t: Trace, _ z: HeartZones) -> [Double] {
     for bpm in t.hr { let k = z.zone(Int(bpm)); if k > 0 { m[k - 1] += Double(Trace.step) / 60 } }
     return m
 }
+
+/// What the watch's last P said about the heart rate (docs/workout.md, Protocol): for finding why it shows none.
+struct HeartDiagnostics: View {
+    @Environment(SyncController.self) private var sync
+
+    var body: some View {
+        List {
+            if let d = sync.hrDiag {
+                Section {
+                    LabeledContent("Включение", value: "\(Int8(bitPattern: d[0]))")
+                    LabeledContent("Событий пульса", value: "\(d[1])")
+                    LabeledContent("На руке / владелец / ячейка", value: "\(d[2]) / \(d[3]) / \(d[4])")
+                } footer: {
+                    Text("Включение 0: часы приняли запрос. События растут раз в секунду. Ячейка 0: значения пульса нет.")
+                }
+            } else {
+                ContentUnavailableView("Нет данных", systemImage: "heart.slash",
+                                       description: Text("Начните тренировку на часах, телефон рядом."))
+            }
+        }
+        .navigationTitle("Диагностика пульса")
+    }
+}
