@@ -110,9 +110,9 @@ pub fn trace_msg(index: u8, count: u8, start: u32, chunk: &[u8], out: &mut [u8; 
 
 /// Live state of the workout that started at `start` on `day`: heart rate (0 = none), the open exercise (0xFF =
 /// none), sets done so far.
-pub fn pulse(start: u32, day: u8, bpm: u8, ex: u8, done: u8) -> [u8; 11] {
-    let s = start.to_le_bytes();
-    [MAGIC[0], MAGIC[1], b'P', s[0], s[1], s[2], s[3], day, bpm, ex, done]
+pub fn pulse(start: u32, day: u8, bpm: u8, ex: u8, done: u8, ex_done: u8, rest_left: u16) -> [u8; 14] {
+    let (s, r) = (start.to_le_bytes(), rest_left.to_le_bytes());
+    [MAGIC[0], MAGIC[1], b'P', s[0], s[1], s[2], s[3], day, bpm, ex, done, ex_done, r[0], r[1]]
 }
 
 #[cfg(test)]
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(&ack(0x0102_0304), b"w1A\x04\x03\x02\x01");
         let e = Entry { start: 0x0A0B_0C0D, dur_s: 0x0102, day: 2, done: 7, planned: 9 };
         assert_eq!(&history_msg(1, 3, &e), b"w1Y\x01\x03\x0D\x0C\x0B\x0A\x02\x01\x02\x07\x09");
-        assert_eq!(&pulse(0x0A0B_0C0D, 1, 72, 3, 5), b"w1P\x0D\x0C\x0B\x0A\x01\x48\x03\x05");
+        assert_eq!(&pulse(0x0A0B_0C0D, 1, 72, 3, 5, 2, 0x0102), b"w1P\x0D\x0C\x0B\x0A\x01\x48\x03\x05\x02\x02\x01");
         let mut out = [0u8; 9 + X_CHUNK];
         let n = trace_msg(1, 2, 0x0A0B_0C0D, &[7, 8], &mut out);
         assert_eq!(&out[..n], b"w1X\x01\x02\x0D\x0C\x0B\x0A\x07\x08");

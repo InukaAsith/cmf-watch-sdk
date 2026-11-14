@@ -8,7 +8,6 @@ struct WatchView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let live = sync.live { LiveSection(live: live) }
                 Section {
                     HStack(spacing: 16) {
                         Image(systemName: "applewatch")

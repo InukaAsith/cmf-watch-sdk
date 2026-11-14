@@ -2,32 +2,127 @@ import Charts
 import SwiftUI
 import WireKit
 
-/// The workout running on the watch: heart rate now and since the phone saw it, the day and the open exercise.
-struct LiveSection: View {
+/// The workout running on the watch, as a row that opens it.
+struct ActiveSection: View {
     @Environment(AppStore.self) private var store
+    @State private var open = false
     let live: SyncController.Live
 
     var body: some View {
-        Section("Сейчас на часах") {
-            HStack(alignment: .firstTextBaseline) {
-                Image(systemName: "heart.fill").foregroundStyle(.red)
-                Text(live.bpm > 0 ? "\(live.bpm)" : "–").font(.system(size: 44, weight: .bold, design: .rounded))
-                    .monospacedDigit().contentTransition(.numericText())
-                Text("уд/мин").foregroundStyle(.secondary)
+        Section("Активная тренировка") {
+            Button { open = true } label: {
+                HStack(spacing: 14) {
+                    Image(systemName: "figure.strengthtraining.traditional").font(.title2)
+                        .foregroundStyle(Color(.secondarySystemGroupedBackground))
+                        .frame(width: 44, height: 44)
+                        .background(Color.accentColor, in: .rect(cornerRadius: 14, style: .continuous))
+                        .symbolEffect(.pulse)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(live.dayName(store)).font(.body.weight(.semibold))
+                        Text(live.started, style: .timer).font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Spacer()
+                    if live.bpm > 0 {
+                        Label("\(live.bpm)", systemImage: "heart.fill").labelStyle(.titleAndIcon)
+                            .foregroundStyle(.red).monospacedDigit().contentTransition(.numericText())
+                    }
+                    Image(systemName: "chevron.up").font(.footnote.bold()).foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 4)
             }
-            .accessibilityElement(children: .combine)
-            if live.samples.count > 1 {
-                Chart(live.samples, id: \.0) { LineMark(x: .value("Время", $0.0), y: .value("Пульс", $0.1)) }
-                    .foregroundStyle(.red).chartYScale(domain: .automatic(includesZero: false)).frame(height: 120)
-                    .accessibilityLabel("Пульс за тренировку")
-            }
-            let day = live.day < store.days.count ? store.days[live.day] : nil
-            if let day { LabeledContent("День", value: day.name) }
-            if let ex = live.ex, let day, ex < day.exercises.count {
-                LabeledContent("Упражнение", value: day.exercises[ex].exercise.name)
-            }
-            LabeledContent("Подходов сделано", value: "\(live.done)")
+            .buttonStyle(.plain)
         }
+        .sheet(isPresented: $open) { ActiveWorkout().presentationDragIndicator(.visible) }
+    }
+}
+
+/// What the watch shows, bigger: time, heart rate, the open exercise and its set or rest.
+struct ActiveWorkout: View {
+    @Environment(AppStore.self) private var store
+    @Environment(SyncController.self) private var sync
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                if let live = sync.live {
+                    let day = live.day < store.days.count ? store.days[live.day] : nil
+                    VStack(spacing: 12) {
+                        Text(live.started, style: .timer)
+                            .font(.system(size: 56, weight: .bold, design: .rounded)).monospacedDigit()
+                            .frame(maxWidth: .infinity)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: "heart.fill").foregroundStyle(.red)
+                                .symbolEffect(.pulse, isActive: live.bpm > 0)
+                            Text(live.bpm > 0 ? "\(live.bpm)" : "–").font(.system(size: 34, weight: .semibold, design: .rounded))
+                                .monospacedDigit().contentTransition(.numericText())
+                            Text("уд/мин").foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                        if live.samples.count > 1 {
+                            Chart(live.samples, id: \.0) {
+                                LineMark(x: .value("Время", $0.0), y: .value("Пульс", $0.1)).interpolationMethod(.catmullRom)
+                            }
+                            .foregroundStyle(.red).chartYScale(domain: .automatic(includesZero: false))
+                            .chartXAxis(.hidden).frame(height: 100)
+                            .accessibilityLabel("Пульс за тренировку")
+                        }
+                        if let ex = live.ex, let day, ex < day.exercises.count {
+                            let e = day.exercises[ex]
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(e.exercise.name).font(.title2.bold())
+                                Text(e.summary).font(.subheadline).foregroundStyle(.secondary)
+                                if let end = live.restEnd, end > .now {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text("Отдых").font(.headline)
+                                        Spacer()
+                                        Text(timerInterval: Date.now...end, countsDown: true)
+                                            .font(.system(.largeTitle, design: .rounded, weight: .bold)).monospacedDigit()
+                                    }
+                                    .padding(.top, 4)
+                                } else {
+                                    Text("Подход \(min(live.exDone + 1, e.exercise.sets)) из \(e.exercise.sets)")
+                                        .font(.system(.title, design: .rounded, weight: .bold)).padding(.top, 4)
+                                }
+                                ProgressView(value: Double(live.exDone), total: Double(max(e.exercise.sets, 1)))
+                            }
+                            .card()
+                        }
+                        if let day {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(Array(day.exercises.enumerated()), id: \.element.id) { i, e in
+                                    HStack {
+                                        Image(systemName: i == live.ex ? "play.circle.fill" : "circle")
+                                            .foregroundStyle(i == live.ex ? Color.accentColor : .secondary)
+                                        Text(e.exercise.name).fontWeight(i == live.ex ? .semibold : .regular)
+                                        Spacer()
+                                        Text("\(e.exercise.sets)×").foregroundStyle(.secondary).monospacedDigit()
+                                    }
+                                }
+                                Divider()
+                                LabeledContent("Подходов сделано", value: "\(live.done) из \(day.exercises.map(\.exercise.sets).reduce(0, +))")
+                            }
+                            .card()
+                        }
+                    }
+                    .padding()
+                } else {
+                    ContentUnavailableView("Тренировка закончилась", systemImage: "checkmark.circle")
+                        .padding(.top, 120)
+                }
+            }
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle(sync.live.map { $0.dayName(store) } ?? "")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { Button("Готово") { dismiss() } }
+        }
+    }
+}
+
+extension SyncController.Live {
+    var started: Date { Entry(start: start, durS: 0, day: 0, done: 0, planned: 0).date }
+    @MainActor func dayName(_ store: AppStore) -> String {
+        day < store.days.count ? store.days[day].name : String(localized: "День \(day + 1)")
     }
 }
 
