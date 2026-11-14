@@ -1,0 +1,114 @@
+# The FMC store's apps (sdk/examples/*/store.toml, see docs/store.md): build every one a change
+# touches, all of them when shared SDK code or the build tooling changes. A pull request only
+# builds; a push to main (a merged PR) also publishes them to the store.
+name: Store
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: Store apps to build, space-separated (empty = all)
+        default: ""
+      dry_run:
+        description: Dry run (the store answers what would change and saves nothing)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# ponytail: one run per ref at a time. A main run still waiting when a newer one queues is
+# cancelled by GitHub; its apps go out with the next change to them, or by a workflow_dispatch.
+concurrency:
+  group: store-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      apps: ${{ steps.pick.outputs.apps }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: pick
+        name: Pick the store apps to build
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          INPUT_APPS: ${{ inputs.apps }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            apps=${INPUT_APPS:-$(scripts/store changed)}
+          else
+            apps=$(scripts/store changed "$BASE")
+          fi
+          echo "apps=$apps" >> "$GITHUB_OUTPUT"
+          echo "Store apps: ${apps:-none}"
+
+      - if: steps.pick.outputs.apps
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi
+          components: llvm-tools
+
+      - if: steps.pick.outputs.apps
+        name: Put llvm-objcopy and resvg on PATH
+        run: |
+          echo "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+          curl -sSfL -o "$RUNNER_TEMP/resvg.tar.gz" \
+            https://github.com/linebender/resvg/releases/download/v0.49.0/resvg-linux-x86_64.tar.gz
+          echo "216637e75e909e53e3098b0875cd5f7da2fdc8b4359771b4a29b539afff9d3f5  $RUNNER_TEMP/resvg.tar.gz" | sha256sum -c
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/resvg.tar.gz" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - if: steps.pick.outputs.apps
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sdk
+
+      - if: steps.pick.outputs.apps
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - if: steps.pick.outputs.apps
+        name: Build
+        env:
+          APPS: ${{ steps.pick.outputs.apps }}
+        run: scripts/store build $APPS
+
+      - if: steps.pick.outputs.apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: store-apps
+          path: |
+            target/*.wp2app
+            target/*-icon.png
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: needs.build.outputs.apps && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: store-apps
+          path: target
+
+      - name: Publish
+        env:
+          APPS: ${{ needs.build.outputs.apps }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+          STORE_URL: ${{ vars.STORE_URL }}
+          STORE_PUBLISH_TOKEN: ${{ secrets.STORE_PUBLISH_TOKEN }}
+        run: scripts/store publish $APPS $DRY_RUN
