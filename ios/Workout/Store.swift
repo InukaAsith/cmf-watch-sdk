@@ -40,6 +40,10 @@ final class AppStore {
         var deleted: Set<UInt32>?
         /// each pushed version's exercise names per day (history names a trace's sets from them)
         var pushedExercises: [UInt32: [[String]]]?
+        /// the workout in progress, on the phone, the watch or both (docs/specs/2026-11-14-shared-workout-design.md)
+        var open: OpenWorkout?
+        /// workouts finished on the phone the watch has not heard of yet (H or F at the next meeting)
+        var unsent: [Entry]?
     }
 
     private(set) var saved: Saved
@@ -79,10 +83,83 @@ final class AppStore {
         save()
     }
 
+    var open: OpenWorkout? { saved.open }
+    var unsent: [Entry] { saved.unsent ?? [] }
+
+    /// The day the rotation offers: the one after the newest workout's (by name), else the first.
+    var nextDay: Int {
+        guard let last = history.first, let i = days.firstIndex(where: { $0.name == last.dayName }) else { return 0 }
+        return (i + 1) % max(days.count, 1)
+    }
+
+    func planned(_ ex: Int) -> Int {
+        guard let o = open, o.day < days.count, ex < days[o.day].exercises.count else { return 0 }
+        return days[o.day].exercises[ex].exercise.sets
+    }
+
+    func startWorkout(day: Int) {
+        guard case let .success(p) = encoded, day < days.count else { return }
+        saved.open = OpenWorkout(start: watchSeconds(), day: day, version: programVersion(p))
+        save()
+    }
+
+    /// The watch's workout (or the merged one) replaces the phone's view of it.
+    func setOpen(_ w: OpenWorkout?) {
+        saved.open = w
+        save()
+    }
+
+    /// The next set of `ex` done now; nil when it has none left.
+    func doneSet(_ ex: Int) -> SetMark? {
+        guard var o = saved.open, o.done(ex) < planned(ex) else { return nil }
+        let m = SetMark(ex: ex, t: max(0, Int(watchSeconds()) - Int(o.start)))
+        o.union([m], planned: planned)
+        saved.open = o
+        save()
+        return m
+    }
+
+    /// Ends the open workout: with sets it goes to the history (and, unless `told`, to the watch later with H).
+    /// Returns its entry.
+    @discardableResult
+    func finishWorkout(told: Bool = false, end: UInt32 = watchSeconds()) -> Entry? {
+        guard let o = saved.open else { return nil }
+        saved.open = nil
+        defer { save() }
+        guard !o.sets.isEmpty else { return nil }
+        let day = o.day < days.count ? days[o.day] : nil
+        let e = Entry(start: o.start, durS: Int(end &- o.start), day: o.day, done: o.sets.count,
+                      planned: day?.exercises.map(\.exercise.sets).reduce(0, +) ?? o.sets.count)
+        if !history.contains(where: { $0.start == o.start }) {
+            var h = HistoryEntry(start: e.start, durS: e.durS, dayName: day?.name ?? "День \(o.day + 1)", done: e.done,
+                                 planned: e.planned)
+            h.exercises = day?.exercises.map(\.exercise.name)
+            h.trace = Trace(sets: o.sets, hr: [])
+            saved.history = ([h] + saved.history).sorted { $0.start > $1.start }
+        }
+        if !told { saved.unsent = unsent + [e] }
+        return e
+    }
+
+    /// When the rest after the newest set ends (nil: no set yet).
+    var restEnd: Date? {
+        guard let o = open, let last = o.sets.last, o.day < days.count, last.ex < days[o.day].exercises.count else { return nil }
+        let rest = days[o.day].exercises[last.ex].exercise.restS
+        return Entry(start: o.start &+ UInt32(last.t + rest), durS: 0, day: 0, done: 0, planned: 0).date
+    }
+
+    func markSent(_ start: UInt32) {
+        saved.unsent = unsent.filter { $0.start != start }
+        save()
+    }
+
     /// Entries a sync must not fetch again: kept ones and deleted ones.
     var knownStarts: Set<UInt32> { Set(history.map(\.start)).union(saved.deleted ?? []) }
     /// Entries whose trace a sync need not fetch.
-    var tracedStarts: Set<UInt32> { Set(history.filter { $0.trace != nil }.map(\.start)).union(saved.deleted ?? []) }
+    var tracedStarts: Set<UInt32> {
+        // a phone-made trace has no heart rate: the watch's, if it shared the workout, is better
+        Set(history.filter { $0.trace.map { !$0.hr.isEmpty } ?? false }.map(\.start)).union(saved.deleted ?? [])
+    }
 
     func deleteHistory(_ starts: [UInt32]) {
         saved.deleted = (saved.deleted ?? []).union(starts)

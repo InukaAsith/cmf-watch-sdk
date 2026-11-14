@@ -166,7 +166,7 @@ fn heart(b: &mut Batch, parent: Obj, x: i16, y: i16) -> Result<Obj, LvError> {
     b.style(dot, Prop::BgColor, 0, HEART)?;
     b.style(dot, Prop::BgOpa, 0, 255)?;
     b.flags(dot, &[], &[Flag::Clickable])?;
-    let l = labelf(b, MID, parent, "--", WHITE, Align::TopLeft, 0, y, 0)?;
+    let l = label(b, parent, "--", WHITE, Align::TopLeft, 0, y, 0)?;
     b.align(l, Align::TopMid, x + 10, y)?;
     Ok(l)
 }

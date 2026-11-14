@@ -224,6 +224,7 @@ class WorkoutTest(unittest.TestCase):
         self.assertNotIsInstance(out[0], Exception, out)
         self.assertEqual([(e.day, e.done, e.planned) for e in out[0]], [(0, 2, 3)])
         start = out[0][0].start
+        self.__class__.last_start = start
         out, done = self.with_app(workout.trace)  # the finished workout's sets and heart-rate samples
         self.wait(done, 60)
         self.assertNotIsInstance(out[0], Exception, out)
@@ -232,6 +233,52 @@ class WorkoutTest(unittest.TestCase):
         self.assertEqual([ex for ex, _ in sets], [0, 0])
         self.assertTrue(0 < sets[0][1] <= sets[1][1], sets)
         self.assertIn(SYNTH_BPM, hr, "the synthetic reading reached the trace")
+
+
+    def test_4_phone_drives(self):
+        """The phone's workout (docs/specs/2026-11-14-shared-workout-design.md): D adopts it and counts a set, the
+        watch's sets come back in X, F finishes it, H moves the rotation."""
+        self.assertEqual(self.stats()[VIEW], START_V)
+        last = self.__class__.last_start
+        start, v = last + 120, workout.version(program())  # later than the last one: not stale, not known
+
+        async def adopt(ch):
+            await workout._request(ch, 30)  # the slot
+            await ch.send(workout.set_msg(start, 1, v, 0xFF, 0))
+            await asyncio.sleep(2)
+            await ch.send(workout.set_msg(start, 1, v, 0, 5))
+            await ch.send(workout.set_msg(start, 1, v, 0, 5))  # again: one set
+            return ch.slot
+        out, done = self.with_app(adopt)
+        self.wait(done, 60)
+        self.assertNotIsInstance(out[0], Exception, out)
+        slot = out[0]
+        self.emu.sleep(2)
+        st = self.stats()
+        self.assertEqual((st[VIEW], st[SETS]), (DAY, 1), "the phone's workout was not adopted")
+        self.shot("4-adopted")
+
+        async def sets_then_finish(ch):
+            ch.slot = slot
+            t = await workout.trace(ch, 0)
+            await ch.send(workout.finish_msg(start, start + 60))
+            await asyncio.sleep(2)
+            await ch.send(workout.entry_msg(workout.Entry(start + 600, 900, 0, 3, 3)))
+            return t
+        out, done = self.with_app(sets_then_finish)
+        self.wait(done, 60)
+        self.assertNotIsInstance(out[0], Exception, out)
+        t_start, sets, _ = out[0]
+        self.assertEqual((t_start, sets), (start, [(0, 5)]))
+        self.emu.sleep(2)
+        self.assertEqual(self.stats()[VIEW], DONE)
+        self.button(pause=2)  # leaves
+        tap_row(self.emu, 0)
+        self.emu.sleep(1)
+        self.assertEqual(self.stats()[NEXT], 1, "H (day 0, the newest) did not move the rotation")
+        out, done = self.with_app(workout.history)
+        self.wait(done, 60)
+        self.assertEqual([(e.start, e.day) for e in out[0]][:3], [(start + 600, 0), (start, 1), (last, 0)])
 
 
 if __name__ == "__main__":

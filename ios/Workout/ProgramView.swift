@@ -12,7 +12,7 @@ struct ProgramView: View {
         @Bindable var store = store
         NavigationStack {
             List {
-                if let live = sync.live { ActiveSection(live: live) }
+                ActiveSection()
                 if case let .failure(e) = store.encoded, !store.days.isEmpty {
                     Section { Label(e.text, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 }
