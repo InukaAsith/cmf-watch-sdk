@@ -108,6 +108,7 @@ mod view {
             }
             DELETE => {
                 app::stop_app();
+                hold_face(false);
                 menu::lv::delete();
                 ui::delete();
                 0
@@ -246,6 +247,7 @@ mod view {
         motor::watchdog();
         svc::tick(app::running(), app::paused());
         crate::hr::tick(app::running(), app::paused());
+        hold_face(app::running());
         if app::running() {
             let exited = app::exited();
             let owned = app::OWN_BACK.load(Ordering::Acquire);
@@ -267,6 +269,13 @@ mod view {
             restore(row);
         }
         ui::flush(ui::PUBLISHED.swap(wp2_core::gfx::EMPTY, Ordering::Acquire));
+    }
+
+    // The stock exempts its own workout views from "return to watch face"; an app gets the same while it runs. Before
+    // heart rate, deep sleep stopped the launcher's clock and hid the return (docs/recon.md, "Return to watch face").
+    fn hold_face(on: bool) {
+        use wp2_core::stock::{RETURN_CB, RETURN_CLOCK};
+        unsafe { (RETURN_CB as *mut u32).write_volatile(if on { 0 } else { RETURN_CLOCK }) };
     }
 
     #[panic_handler]
