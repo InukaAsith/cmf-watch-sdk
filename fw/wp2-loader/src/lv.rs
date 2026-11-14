@@ -486,8 +486,7 @@ fn pager_crown(h: u16, step: i32) {
     let obj = s.objs[h as usize];
     let at = u32::from(s.options[h as usize]);
     let page = child(obj, at);
-    // still gliding to `at`: a fast turn's steps would each add a page and fly through them all
-    if page.is_null() || stock!(LV_TILEVIEW_GET_TILE_ACT, fn(Obj) -> Obj)(obj) != page {
+    if page.is_null() {
         return;
     }
     let y = stock!(LV_OBJ_GET_SCROLL_Y, fn(Obj) -> i32)(page);
@@ -495,12 +494,17 @@ fn pager_crown(h: u16, step: i32) {
     if room > 0 {
         let dy = step.abs().min(room) * step.signum();
         stock!(LV_OBJ_SCROLL_TO_Y, fn(Obj, i32, u32))(page, y + dy, 0);
-    } else if step > 0 {
-        go_page(h, at + 1, true);
-    } else if at > 0 {
-        go_page(h, at - 1, true);
+    } else if crate::app::millis().wrapping_sub(unsafe { PAGED_AT }) < GLIDE_MS {
+        // a turn gives many steps: one page per glide, not one per step (the stock tileview sets its active tile at
+        // the glide's start, so it cannot tell a glide)
+    } else if step > 0 || at > 0 {
+        unsafe { PAGED_AT = crate::app::millis() };
+        go_page(h, if step > 0 { at + 1 } else { at - 1 }, true);
     }
 }
+
+const GLIDE_MS: u32 = 400;
+static mut PAGED_AT: u32 = 0;
 
 // VALUE_CHANGED of a pager (the stock tileview sends it when a scroll settles on a page): the page index to the app.
 // user_data = handle

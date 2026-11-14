@@ -93,6 +93,17 @@ struct HeartDiagnostics: View {
                 } footer: {
                     Text("Включение 0: часы приняли запрос. События растут раз в секунду. Ячейка 0: значения пульса нет.")
                 }
+                if d.count >= 13 {
+                    Section {
+                        LabeledContent("Кнопка / пауза / возврат", value: "\(d[5]) / \(d[6]) / \(d[7])")
+                        LabeledContent("Уходов с подхода", value: "\(d[8])")
+                        LabeledContent("Причина последнего", value: [String(localized: "нет"), String(localized: "кнопка"), String(localized: "пауза"), String(localized: "возврат"), String(localized: "телефон"), String(localized: "касание")][min(Int(d[9]), 5)])
+                        LabeledContent("Кнопка после возврата", value: String(localized: "\(Int(d[10]) | Int(d[11]) << 8) мс"))
+                        LabeledContent("Приложение работает", value: String(localized: "\(d[12]) мин"))
+                    } header: {
+                        Text("Экран")
+                    }
+                }
             } else {
                 ContentUnavailableView("Нет данных", systemImage: "heart.slash",
                                        description: Text("Начните тренировку на часах, телефон рядом."))

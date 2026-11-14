@@ -81,6 +81,16 @@
         }
       }
     },
+    "%lld мс": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld ms"
+          }
+        }
+      }
+    },
     "%lld+": {
       "localizations": {
         "en": {
@@ -107,6 +117,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "%1$lld–%2$lld"
+          }
+        }
+      }
+    },
+    "%u мин": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%u min"
           }
         }
       }
@@ -557,6 +577,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "Looking for the watch…"
+          }
+        }
+      }
+    },
+    "Кнопка / пауза / возврат": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Button / pause / resume"
+          }
+        }
+      }
+    },
+    "Кнопка после возврата": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Button after resume"
           }
         }
       }
@@ -1023,6 +1063,26 @@
         }
       }
     },
+    "Приложение работает": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App running"
+          }
+        }
+      }
+    },
+    "Причина последнего": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Last cause"
+          }
+        }
+      }
+    },
     "Программа": {
       "localizations": {
         "en": {
@@ -1413,6 +1473,16 @@
         }
       }
     },
+    "Уходов с подхода": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Set screen leaves"
+          }
+        }
+      }
+    },
     "Учитывать пульс покоя": {
       "localizations": {
         "en": {
@@ -1439,6 +1509,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "The watch did not answer: %@"
+          }
+        }
+      }
+    },
+    "Экран": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Screen"
           }
         }
       }
@@ -1493,6 +1573,16 @@
         }
       }
     },
+    "возврат": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "resume"
+          }
+        }
+      }
+    },
     "до": {
       "localizations": {
         "en": {
@@ -1519,6 +1609,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "in 30 days"
+          }
+        }
+      }
+    },
+    "касание": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "tap"
+          }
+        }
+      }
+    },
+    "кнопка": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "button"
           }
         }
       }
@@ -1613,6 +1723,16 @@
         }
       }
     },
+    "пауза": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "pause"
+          }
+        }
+      }
+    },
     "повт.": {
       "localizations": {
         "en": {
@@ -1649,6 +1769,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "outdated, will update"
+          }
+        }
+      }
+    },
+    "телефон": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "phone"
           }
         }
       }

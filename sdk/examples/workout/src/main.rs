@@ -124,9 +124,12 @@ mod device {
     /// P's heart-rate diagnostics for the phone (the measurement is unproven on hardware): heart_rate()'s result,
     /// HEART events seen, and the stock cells the loader reads (wp2_core::stock HR_WEAR, HR_OWNER, HR_BPM; JX402
     /// 1.0.0.73). Read only.
-    fn hr_diag(rc: i8, events: u8) -> [u8; 5] {
+    fn hr_diag(rc: i8, events: u8, ui: [u8; 8]) -> [u8; 13] {
         let cell = |a: u32| unsafe { (a as *const u8).read_volatile() };
-        [rc as u8, events, cell(0x3804_B30C), cell(0x3804_B30F), cell(0x3804_B310)]
+        let mut d = [0; 13];
+        d[..5].copy_from_slice(&[rc as u8, events, cell(0x3804_B30C), cell(0x3804_B30F), cell(0x3804_B310)]);
+        d[5..].copy_from_slice(&ui);
+        d
     }
 
     fn sets_done(m: &Model) -> i32 {
@@ -222,7 +225,14 @@ mod device {
         let mut resumed_at = api.now().wrapping_sub(WAKE_KEY_MS);
         let mut button_at = api.now().wrapping_sub(GESTURE_MS);
         let mut pending: Option<(Hit, u32)> = None;
+        // P's UI diagnostics (the set screen leaves for the day list on hardware, not in the emulator):
+        // BUTTONs, PAUSEs, RESUMEs, set-screen leaves, the cause of the last leave (1 button, 2 pause, 3 resume,
+        // 4 phone, 5 tap, 0 other), ms from the last RESUME to the last BUTTON (u16), minutes since the app started
+        let t0 = api.now();
+        let mut ui = [0u8; 8];
         loop {
+            let mut cause = 0u8;
+            ui[7] = (api.now().wrapping_sub(t0) / 60_000).min(255) as u8;
             let ms = api.now();
             let now = now_s(api);
             motor.update();
@@ -262,7 +272,7 @@ mod device {
                 let ex_done = w.done.get(usize::from(ex)).copied().unwrap_or(0);
                 let rest = if s.view == View::Rest { (w.rest_until.wrapping_sub(now) as i32).clamp(0, 0xFFFF) as u16 } else { 0 };
                 if pulsed.is_none_or(|(t, e, d, r)| ms.wrapping_sub(t) >= PULSE_MS || (e, d, r) != (ex, done, rest > 0)) {
-                    api.send(&pulse(w.started, w.day, m.bpm, ex, done, ex_done, rest, hr_diag(hr_rc, hr_events)));
+                    api.send(&pulse(w.started, w.day, m.bpm, ex, done, ex_done, rest, hr_diag(hr_rc, hr_events, ui)));
                     pulsed = Some((ms, ex, done, rest > 0));
                 }
             }
@@ -297,6 +307,10 @@ mod device {
                 Some(e) if e.kind == BUTTON && api.now().wrapping_sub(resumed_at) < WAKE_KEY_MS => {}
                 Some(e) if e.kind == BUTTON => {
                     button_at = api.now();
+                    cause = 1;
+                    ui[0] = ui[0].wrapping_add(1);
+                    let gap = button_at.wrapping_sub(resumed_at).min(0xFFFF) as u16;
+                    ui[5..7].copy_from_slice(&gap.to_le_bytes());
                     pending = None;
                     match s.view {
                         View::Set { .. } | View::Rest | View::Ask => to = Some(View::Day),
@@ -306,6 +320,9 @@ mod device {
                     }
                 }
                 Some(e) if e.kind == PAUSE => {
+                    cause = 2;
+                    ui[1] = ui[1].wrapping_add(1);
+                    ui[2] = ui[2].wrapping_add(1); // its RESUME is awaited here
                     motor.off();
                     while !api.event(u32::MAX).is_some_and(|e| e.kind == RESUME) {}
                     resumed_at = api.now();
@@ -314,6 +331,8 @@ mod device {
                     to = Some(if s.view == View::Rest { resume_view(m, now_s(api)) } else { s.view });
                 }
                 Some(e) if e.kind == RESUME => {
+                    cause = 3;
+                    ui[2] = ui[2].wrapping_add(1);
                     resumed_at = api.now();
                     to = Some(s.view);
                 }
@@ -381,6 +400,7 @@ mod device {
 
             let mut msg = [0u8; MSG_MAX];
             while let Some(data) = api.recv(&mut msg) {
+                cause = 4;
                 match t.apply(data) {
                     Got::Program(bytes) => {
                         if take_program(api, m, bytes) {
@@ -451,6 +471,10 @@ mod device {
                 }
             }
             if let Some(v) = to {
+                if matches!(s.view, View::Set { .. }) && !matches!(v, View::Set { .. } | View::Rest) {
+                    ui[3] = ui[3].wrapping_add(1);
+                    ui[4] = if cause == 0 && hit.is_some() { 5 } else { cause };
+                }
                 let _ = go(s, b, m, v, now_s(api));
                 shown_at = api.now();
                 pending = None;

@@ -85,7 +85,7 @@ transfer from `B` (0) on.
 | `Y` | app → host | `index: u8, count: u8, start: u32, dur_s: u16, day: u8, done: u8, planned: u8`; an empty history is one `Y` with count 0 |
 | `T` | host → app | – (send the trace of the last workout); not part of a transfer |
 | `X` | app → host | `index: u8, count: u8, start: u32`, then up to 100 bytes of the trace (below); `start` 0 = no trace |
-| `P` | app → host | `start: u32, day: u8, bpm: u8` (0 = no reading), `ex: u8` (the exercise on screen, 0xFF = none), `done: u8` (sets so far), `ex_done: u8` (sets of `ex`), `rest_left: u16` (seconds, 0 = not resting). During a workout every 5 s and on every change of `ex`, `done` or resting; not answered |
+| `P` | app → host | `start: u32, day: u8, bpm: u8` (0 = no reading), `ex: u8` (the exercise on screen, 0xFF = none), `done: u8` (sets so far), `ex_done: u8` (sets of `ex`), `rest_left: u16` (seconds, 0 = not resting), then diagnostics: 5 B heart rate (`heart_rate()` result, HEART events, stock cells worn / owner / bpm) and 8 B screen (BUTTONs, PAUSEs, RESUMEs, set-screen leaves, cause of the last leave 1 button 2 pause 3 resume 4 phone 5 tap, ms RESUME → BUTTON u16, minutes since the app started). During a workout every 5 s and on every change of `ex`, `done` or resting; not answered |
 | `D` | host → app | `start: u32, day: u8, version: u32, ex: u8, t: u16`: a set done on the phone (`ex` 0xFF: the workout only runs). Adopted with no workout open (unless stale or in the history), merged into the same one, ignored for another program version |
 | `U` | host → app | `start: u32, ex: u8, t: u16`: the phone took that set back |
 | `Z` | host → app | `low: u8 × 5`: the lowest bpm of heart-rate zones 1..5 (saved after the trace in the blob) |
