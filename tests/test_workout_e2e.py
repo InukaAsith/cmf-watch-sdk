@@ -133,7 +133,7 @@ class WorkoutTest(unittest.TestCase):
         self.wait(done, 30)
         self.assertNotIsInstance(out[0], Exception, out)
         p = out[0]
-        self.assertEqual((len(p), p[7], p[9]), (19, 0, 0xFF), p.hex())  # bpm: maybe sent before the first reading
+        self.assertEqual((len(p), p[7], p[9]), (27, 0, 0xFF), p.hex())  # bpm: maybe sent before the first reading
         self.tap(ROW)  # its first exercise
         self.assertEqual(self.stats()[VIEW], SET)
         self.assertEqual(self.stats()[EX], 0)

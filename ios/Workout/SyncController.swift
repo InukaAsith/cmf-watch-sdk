@@ -121,7 +121,7 @@ final class SyncController {
                 do {
                     let raw = try await ch.recv(timeout: .seconds(15))
                     let r = parseIncoming(raw)
-                    if raw.count == 19, raw.dropFirst(2).first == UInt8(ascii: "P") { hrDiag = Array(raw.suffix(5)) }
+                    if raw.count >= 19, raw.dropFirst(2).first == UInt8(ascii: "P") { hrDiag = Array(raw.dropFirst(14)) }
                     if case let .pulse(start, day, bpm, ex, done, exDone, restLeft) = r {
                         var l = live?.start == start ? live! : Live(start: start, day: day, bpm: 0, ex: nil, done: 0,
                                                                      restEnd: nil, at: .now, samples: [])
