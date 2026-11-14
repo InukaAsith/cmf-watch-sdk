@@ -14,6 +14,39 @@ Status: proven in the emulator. On a real watch: the stub firmware (OTA), the 1.
 - herdr agents on the watch (example app + Mac daemon): [docs/herdr-agents.md](docs/herdr-agents.md)
 - Plan, part 1: [docs/plans/2026-11-10-wp2-app-loader-foundations.md](docs/plans/2026-11-10-wp2-app-loader-foundations.md)
 
+## Make your own app
+
+Apps are Rust crates in `sdk/examples/`, and every app merged here with a `store.toml` is published to the
+[FMC store](https://fmc.freethinkel.dev/apps), where anyone with the patched firmware and the App Loader installs it
+from the browser.
+
+**Create it**
+
+1. Copy `sdk/examples/vibration-lab` to `sdk/examples/<name>` and rename it in its `Cargo.toml` (package and
+   `[[bin]]`). Add `"examples/<name>"` to `members` in `sdk/Cargo.toml`. `<name>` is the package name: at most
+   23 bytes, lowercase letters, digits, `-` and `_`.
+2. Write `src/main.rs`; [docs/app-guide.md](docs/app-guide.md) starts with a complete minimal app and covers the
+   API, the stock look, limits and tests. Draw `icon.svg` (96×96, a gradient circle and a white glyph,
+   [docs/app-icons.md](docs/app-icons.md)).
+3. Build and check it:
+
+   ```bash
+   scripts/build-app <name> 1                      # target/<name>.wp2app
+   uv run --locked wp2apps info target/<name>.wp2app
+   ```
+
+   Try it in the emulator (below) or on your own watch:
+   `uv run --locked wp2apps install target/<name>.wp2app --address <address>`.
+
+**Publish it**
+
+1. Next to `Cargo.toml`, add `store.toml` (title, one-line summary, version, `build` number, author,
+   `published = true`) and `store.md`, the page text with a `## Requirements` section. The format:
+   [docs/store.md](docs/store.md).
+2. Open a pull request. The **Store** check builds the app and attaches the `.wp2app` to the run.
+3. Once it's merged to `main`, the app is built again and appears in the store on its own. To update it later,
+   bump `build` in `store.toml` and open another pull request.
+
 ## Relation to cmf-watch-utils
 
 The emulator, the firmware tooling and the reference firmware come from
