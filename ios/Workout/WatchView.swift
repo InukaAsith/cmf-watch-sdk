@@ -33,14 +33,6 @@ struct WatchView: View {
                     Text("Откройте «Тренировка» на часах: история и программа синхронизируются сами, в том числе когда телефон в кармане.")
                 }
 
-                if let d = sync.hrDiag {
-                    Section("Диагностика пульса") {
-                        LabeledContent("Включение", value: "\(Int8(bitPattern: d[0]))")
-                        LabeledContent("Событий пульса", value: "\(d[1])")
-                        LabeledContent("На руке / владелец / ячейка", value: "\(d[2]) / \(d[3]) / \(d[4])")
-                    }
-                }
-
                 Section {
                     NavigationLink {
                         List { ZonesSection() }.navigationTitle("Пульсовые зоны")
@@ -48,6 +40,7 @@ struct WatchView: View {
                         LabeledContent("Пульсовые зоны", value: store.zones.map { String(localized: "\($0.age) лет · макс. \($0.max)") }
                                        ?? String(localized: "не заданы"))
                     }
+                    NavigationLink("Диагностика пульса") { HeartDiagnostics() }
                 }
 
                 Section("Приложение на часах") {

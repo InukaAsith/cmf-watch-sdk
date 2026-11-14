@@ -211,6 +211,16 @@
         }
       }
     },
+    "Включение 0: часы приняли запрос. События растут раз в секунду. Ячейка 0: значения пульса нет.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start result 0: the watch took the request. Events grow once a second. Cell 0: no reading."
+          }
+        }
+      }
+    },
     "Вне зон": {
       "localizations": {
         "en": {
@@ -621,6 +631,16 @@
         }
       }
     },
+    "Начните тренировку на часах, телефон рядом.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start a workout on the watch with the phone nearby."
+          }
+        }
+      }
+    },
     "Не влезет на часы": {
       "localizations": {
         "en": {
@@ -637,6 +657,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Week"
+          }
+        }
+      }
+    },
+    "Нет данных": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No data"
           }
         }
       }
