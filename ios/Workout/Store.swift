@@ -18,15 +18,9 @@ struct ExerciseItem: Codable, Identifiable, Hashable {
     var summary: String {
         let e = exercise
         let reps = e.repsMin == e.repsMax ? "\(e.repsMin)" : "\(e.repsMin)–\(e.repsMax)"
-        return ([ "\(e.sets)×\(reps)", e.weight.isEmpty ? nil : e.weight, "отдых \(restText(e.restS))"] as [String?])
+        return ([ "\(e.sets)×\(reps)", e.weight.isEmpty ? nil : e.weight, String(localized: "отдых \(restText(e.restS))")] as [String?])
             .compactMap { $0 }.joined(separator: " · ")
     }
-}
-
-/// 1 упражнение, 2 упражнения, 5 упражнений.
-func plural(_ n: Int, _ one: String, _ few: String, _ many: String) -> String {
-    let (d, h) = (n % 10, n % 100)
-    return "\(n) " + (d == 1 && h != 11 ? one : (2...4).contains(d) && !(12...14).contains(h) ? few : many)
 }
 
 func restText(_ s: Int) -> String { String(format: "%d:%02d", s / 60, s % 60) }
@@ -44,6 +38,8 @@ final class AppStore {
         var lastSync: Date?
         /// starts of entries the owner deleted: the watch still has them, a sync must not bring them back
         var deleted: Set<UInt32>?
+        /// each pushed version's exercise names per day (history names a trace's sets from them)
+        var pushedExercises: [UInt32: [[String]]]?
     }
 
     private(set) var saved: Saved
@@ -76,7 +72,7 @@ final class AppStore {
     }
 
     func apply(_ r: SyncResult) {
-        saved.history = merge(saved.history, r, pushed: saved.pushed).filter { !(saved.deleted ?? []).contains($0.start) }
+        saved.history = merge(saved.history, r, pushed: saved.pushed, exercises: saved.pushedExercises ?? [:]).filter { !(saved.deleted ?? []).contains($0.start) }
         saved.watchVersion = r.pushed ?? r.watchVersion
         saved.heldBack = r.heldBack
         saved.lastSync = .now
@@ -85,6 +81,8 @@ final class AppStore {
 
     /// Entries a sync must not fetch again: kept ones and deleted ones.
     var knownStarts: Set<UInt32> { Set(history.map(\.start)).union(saved.deleted ?? []) }
+    /// Entries whose trace a sync need not fetch.
+    var tracedStarts: Set<UInt32> { Set(history.filter { $0.trace != nil }.map(\.start)).union(saved.deleted ?? []) }
 
     func deleteHistory(_ starts: [UInt32]) {
         saved.deleted = (saved.deleted ?? []).union(starts)
@@ -95,6 +93,8 @@ final class AppStore {
     /// Before a push: remember the day names of this version (history names its entries from them).
     func willPush(_ program: Data) {
         saved.pushed[programVersion(program)] = days.map(\.name)
+        saved.pushedExercises = (saved.pushedExercises ?? [:])
+            .merging([programVersion(program): days.map { $0.exercises.map(\.exercise.name) }]) { $1 }
         save()
     }
 
@@ -133,11 +133,11 @@ final class AppStore {
 extension ProgramError {
     var text: String {
         switch self {
-        case let .days(n): n == 0 ? "Добавьте хотя бы один день" : "Дней \(n), часы берут до \(daysMax)"
-        case let .exercises(day, n): n == 0 ? "В дне «\(day)» нет упражнений" :
-            "В дне «\(day)» \(n) упражнений, часы берут до \(exercisesMax)"
-        case let .range(name): "«\(name)»: проверьте подходы и повторы"
-        case let .size(n): "Программа \(n) Б, часы берут \(programMax) Б: сократите названия"
+        case let .days(n): n == 0 ? String(localized: "Добавьте хотя бы один день") : String(localized: "Дней \(n), часы берут до \(daysMax)")
+        case let .exercises(day, n): n == 0 ? String(localized: "В дне «\(day)» нет упражнений") :
+            String(localized: "В дне «\(day)» \(n) упражнений, часы берут до \(exercisesMax)")
+        case let .range(name): String(localized: "«\(name)»: проверьте подходы и повторы")
+        case let .size(n): String(localized: "Программа \(n) Б, часы берут \(programMax) Б: сократите названия")
         }
     }
 }

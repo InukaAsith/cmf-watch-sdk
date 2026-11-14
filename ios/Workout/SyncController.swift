@@ -16,6 +16,13 @@ final class SyncController {
     private(set) var lastError: String?
     private(set) var installed: PackageHeader?
     private(set) var installProgress: Double?
+    /// The workout running on the watch, from its P messages; nil when none came for a while.
+    private(set) var live: Live?
+    struct Live {
+        var start: UInt32, day: Int, bpm: Int, ex: Int?, done: Int, at: Date
+        /// heart rate since the phone saw this workout (phone time, bpm > 0)
+        var samples: [(Date, Int)]
+    }
     let bundled: Data? = Bundle.main.url(forResource: "workout", withExtension: "wp2app")
         .flatMap { try? Data(contentsOf: $0) }
     var bundledHeader: PackageHeader? { bundled.flatMap(parseHeader) }
@@ -78,7 +85,7 @@ final class SyncController {
             listen()
         } catch {
             Keychain.secret = nil // a factory reset changes the secret: read it again next time
-            phase = .failed("Часы не ответили: \(error)")
+            phase = .failed(String(localized: "Часы не ответили: \(String(describing: error))"))
         }
     }
 
@@ -89,10 +96,20 @@ final class SyncController {
         Task {
             while let ch = channel {
                 do {
-                    let r = parseIncoming(try await ch.recv(timeout: .seconds(3600)))
-                    guard case .request = r else { continue }
+                    let r = parseIncoming(try await ch.recv(timeout: .seconds(15)))
+                    if case let .pulse(start, day, bpm, ex, done) = r {
+                        var l = live?.start == start ? live! : Live(start: start, day: day, bpm: 0, ex: nil, done: 0,
+                                                                     at: .now, samples: [])
+                        (l.bpm, l.ex, l.done, l.at) = (bpm, ex, done, .now)
+                        if bpm > 0 { l.samples.append((.now, bpm)) }
+                        live = l
+                        continue
+                    }
+                    guard case let .request(_, running) = r else { continue }
+                    if !running { live = nil }
                     if r != lastRequest || Date.now.timeIntervalSince(lastSync) > 60 { await run(ch, r) }
                 } catch WireError.timeout {
+                    if let l = live, Date.now.timeIntervalSince(l.at) > 30 { live = nil } // the app closed or ended
                     continue
                 } catch {
                     if ch === channel { channel = nil }
@@ -111,14 +128,14 @@ final class SyncController {
         let program = try? store.encoded.get()
         if let program { store.willPush(program) }
         do {
-            let result = try await sync(channel: ch, program: program, knownStarts: store.knownStarts,
+            let result = try await sync(channel: ch, program: program, knownStarts: store.knownStarts, tracedStarts: store.tracedStarts,
                                         firstRequest: r)
             store.apply(result)
             lastRequest = result.pushed.map { .request(version: $0, running: false) } ?? r
             lastSync = .now
             lastError = nil
         } catch {
-            lastError = "Синхронизация не удалась: \(error)"
+            lastError = String(localized: "Синхронизация не удалась: \(String(describing: error))")
         }
     }
 
@@ -131,9 +148,9 @@ final class SyncController {
             installed = bundledHeader
             lastError = nil
         } catch InstallError.busy {
-            lastError = "Закройте приложение «Тренировка» на часах и повторите."
+            lastError = String(localized: "Закройте приложение «Тренировка» на часах и повторите.")
         } catch {
-            lastError = "Установка не удалась: \(error)"
+            lastError = String(localized: "Установка не удалась: \(String(describing: error))")
         }
     }
 }
