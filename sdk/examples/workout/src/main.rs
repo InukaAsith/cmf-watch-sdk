@@ -64,10 +64,17 @@ mod device {
         unsafe { (&raw const STATS[i]).read_volatile() }
     }
 
-    /// Wall-clock seconds since 2000, or boot seconds without a clock (a stored rest deadline is then off after a
-    /// reboot; the next set still works).
+    // (wall-clock s, millis) read once per launch
+    static mut CLOCK: Option<(u32, u32)> = None;
+
+    /// Wall-clock seconds since 2000 (boot seconds without a clock: a stored rest deadline is then off after a
+    /// reboot; the next set still works). The RTC is read once per launch and then advanced by `now()`: a phone
+    /// time sync does not jump a running rest, and the emulator's slow RTC (docs/recon.md) does not stretch it.
     fn now_s(api: &Api) -> u32 {
-        api.time().map_or(api.now() / 1000, |t| epoch_s(&t))
+        let ms = api.now();
+        let (s, at) = *unsafe { &mut *&raw mut CLOCK }
+            .get_or_insert_with(|| (api.time().map_or(ms / 1000, |t| epoch_s(&t)), ms));
+        s.wrapping_add(ms.wrapping_sub(at) / 1000)
     }
 
     // not inlined: each copy would add Model::save's 768 B history buffer to main's frame (8 KiB stack)
@@ -337,7 +344,10 @@ mod device {
                         to = Some(after_rest(api, m, now));
                     }
                     Some(Hit::Finish) | Some(Hit::End) => to = Some(finish(api, m, now)),
-                    Some(Hit::Leave) => break,
+                    Some(Hit::Leave) => {
+                        save(api, m); // keeps the heart-rate samples since the last set
+                        break;
+                    }
                     Some(Hit::Cancel) => to = Some(View::Day),
                     None => {}
             }
