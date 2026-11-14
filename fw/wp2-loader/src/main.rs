@@ -10,6 +10,8 @@ macro_rules! stock {
 #[cfg(target_os = "none")]
 mod app;
 #[cfg(target_os = "none")]
+mod hr;
+#[cfg(target_os = "none")]
 mod lv;
 mod menu;
 #[cfg(target_os = "none")]
@@ -33,6 +35,11 @@ mod view {
     const FOCUS: u32 = 7;
     const DEFOCUS: u32 = 8;
     const KEY: u32 = 0xD;
+    // the launcher's early-suspend / late-resume to the top view (docs/recon.md, "Screen-off and the app view")
+    const SUSPEND: u32 = 0x82;
+    const WAKE: u32 = 0x83;
+    // a key this soon after WAKE is the one that woke the panel (AOD exit passes it on to the view)
+    const WAKE_KEY_MS: u32 = 500;
     const ERROR_MS: u32 = 2000;
 
     struct Menu {
@@ -47,6 +54,9 @@ mod view {
         answer: u8,
         asked: usize,
         scr: *mut c_void,
+        asleep: bool,
+        // millis() | 1 of the last WAKE
+        woke_at: u32,
     }
     const ASK_CLOSE: u8 = 1;
     const ASK_DELETE: u8 = 2;
@@ -61,6 +71,8 @@ mod view {
         answer: 0,
         asked: 0,
         scr: core::ptr::null_mut(),
+        asleep: false,
+        woke_at: 0,
     };
 
     fn st() -> &'static mut Menu {
@@ -82,6 +94,12 @@ mod view {
             }
             FOCUS | DEFOCUS => {
                 app::DEFOCUSED.store(msg == DEFOCUS, Ordering::Release);
+                0
+            }
+            SUSPEND | WAKE => {
+                let m = st();
+                m.asleep = msg == SUSPEND;
+                m.woke_at = if msg == WAKE { app::millis() | 1 } else { 0 };
                 0
             }
             KEY => {
@@ -126,6 +144,11 @@ mod view {
             return;
         }
         let m = st();
+        if m.asleep || (m.woke_at != 0 && app::millis().wrapping_sub(m.woke_at) < WAKE_KEY_MS) {
+            m.asleep = false; // one key at most: a WAKE that never comes must not eat the button for good
+            unsafe { *(data as *mut u8).add(4) = 1 };
+            return;
+        }
         // an app that owns "back" and read the last BUTTON gets a fresh escape window per press (ABI 1.3)
         let owned_read = app::OWN_BACK.load(Ordering::Acquire) && app::CONSUMED.load(Ordering::Acquire);
         if e.kind == BUTTON && !app::paused() && (m.button_at == 0 || owned_read) {
@@ -222,6 +245,7 @@ mod view {
         app::pause_tick();
         motor::watchdog();
         svc::tick(app::running(), app::paused());
+        crate::hr::tick(app::running(), app::paused());
         if app::running() {
             let exited = app::exited();
             let owned = app::OWN_BACK.load(Ordering::Acquire);

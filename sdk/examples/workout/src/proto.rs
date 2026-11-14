@@ -9,6 +9,7 @@ pub enum Got<'a> {
     Program(&'a [u8]),
     Resync,
     History,
+    Trace,
 }
 
 const MAGIC: &[u8; 2] = b"w1";
@@ -36,6 +37,7 @@ impl Transfer {
         let (kind, seq) = (*kind, *seq);
         match kind {
             b'Q' => Got::History,
+            b'T' => Got::Trace,
             b'B' => match body {
                 [a, b] if (1..=PROGRAM_MAX).contains(&usize::from(u16::from_le_bytes([*a, *b]))) => {
                     (self.got, self.total, self.next_seq) = (0, Some(usize::from(u16::from_le_bytes([*a, *b]))), seq.wrapping_add(1));
@@ -55,7 +57,7 @@ impl Transfer {
                     (b'E', [a, b, c, d]) => {
                         let bytes = &self.buf[..total];
                         let ok = self.got == total && crate::model::crc32(bytes) == u32::from_le_bytes([*a, *b, *c, *d])
-                            && crate::model::Program::parse(bytes).is_some();
+                            && crate::model::Program::check(bytes).is_some();
                         self.total = None;
                         if ok { Got::Program(&self.buf[..total]) } else { Got::Resync }
                     }
@@ -93,6 +95,24 @@ pub fn ack(version: u32) -> [u8; 7] {
 pub fn history_msg(index: u8, count: u8, e: &Entry) -> [u8; 14] {
     let (s, d) = (e.start.to_le_bytes(), e.dur_s.to_le_bytes());
     [MAGIC[0], MAGIC[1], b'Y', index, count, s[0], s[1], s[2], s[3], d[0], d[1], e.day, e.done, e.planned]
+}
+
+/// Trace bytes per X message.
+pub const X_CHUNK: usize = 100;
+
+/// Part `index` of `count` of the last workout's trace (`Trace::encode`) for the workout that started at `start`.
+pub fn trace_msg(index: u8, count: u8, start: u32, chunk: &[u8], out: &mut [u8; 9 + X_CHUNK]) -> usize {
+    let s = start.to_le_bytes();
+    out[..9].copy_from_slice(&[MAGIC[0], MAGIC[1], b'X', index, count, s[0], s[1], s[2], s[3]]);
+    out[9..9 + chunk.len()].copy_from_slice(chunk);
+    9 + chunk.len()
+}
+
+/// Live state of the workout that started at `start` on `day`: heart rate (0 = none), the open exercise (0xFF =
+/// none), sets done so far.
+pub fn pulse(start: u32, day: u8, bpm: u8, ex: u8, done: u8, ex_done: u8, rest_left: u16) -> [u8; 14] {
+    let (s, r) = (start.to_le_bytes(), rest_left.to_le_bytes());
+    [MAGIC[0], MAGIC[1], b'P', s[0], s[1], s[2], s[3], day, bpm, ex, done, ex_done, r[0], r[1]]
 }
 
 #[cfg(test)]
@@ -192,6 +212,7 @@ mod tests {
     fn query() {
         let mut t = Transfer::new();
         assert_eq!(t.apply(b"w1Q\x07"), Got::History);
+        assert_eq!(t.apply(b"w1T\x00"), Got::Trace);
     }
 
     #[test]
@@ -201,5 +222,10 @@ mod tests {
         assert_eq!(&ack(0x0102_0304), b"w1A\x04\x03\x02\x01");
         let e = Entry { start: 0x0A0B_0C0D, dur_s: 0x0102, day: 2, done: 7, planned: 9 };
         assert_eq!(&history_msg(1, 3, &e), b"w1Y\x01\x03\x0D\x0C\x0B\x0A\x02\x01\x02\x07\x09");
+        assert_eq!(&pulse(0x0A0B_0C0D, 1, 72, 3, 5, 2, 0x0102), b"w1P\x0D\x0C\x0B\x0A\x01\x48\x03\x05\x02\x02\x01");
+        let mut out = [0u8; 9 + X_CHUNK];
+        let n = trace_msg(1, 2, 0x0A0B_0C0D, &[7, 8], &mut out);
+        assert_eq!(&out[..n], b"w1X\x01\x02\x0D\x0C\x0B\x0A\x07\x08");
+        assert!(9 + X_CHUNK <= 128);
     }
 }

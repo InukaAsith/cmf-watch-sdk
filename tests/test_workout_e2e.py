@@ -37,6 +37,10 @@ def program() -> bytes:
         return workout.encode(workout.parse_dir(Path(tmp)))
 
 
+HR_WEAR, HR_BPM = 0x3804B30C, 0x3804B310  # wp2_core::stock HR_*, as tests/test_hr_e2e.py
+SYNTH_BPM = 123  # synthetic: real heart-rate values are personal data and never appear in tests
+
+
 @skipUnless(harness.E2E, "set WP2_E2E=1 (needs the emulator, netsimd, gdb and llvm-nm)")
 class WorkoutTest(unittest.TestCase):
     """One watch for the whole walk; the tests run in name order and build on each other."""
@@ -110,6 +114,10 @@ class WorkoutTest(unittest.TestCase):
         self.shot("1-start")
         self.tap(ROW)  # day 1
         self.assertEqual(self.stats()[VIEW], DAY)
+        # a synthetic reading in the stock cell (no PPG model; tests/test_hr_e2e.py): the header shows it
+        self.emu.poke(HR_WEAR, b"\x01")
+        self.emu.poke(HR_BPM, bytes([SYNTH_BPM]))
+        self.emu.sleep(2.5)
         self.shot("1-day")
         self.tap(ROW)  # its first exercise
         self.assertEqual(self.stats()[VIEW], SET)
@@ -208,6 +216,15 @@ class WorkoutTest(unittest.TestCase):
         self.wait(done, 60)
         self.assertNotIsInstance(out[0], Exception, out)
         self.assertEqual([(e.day, e.done, e.planned) for e in out[0]], [(0, 2, 3)])
+        start = out[0][0].start
+        out, done = self.with_app(workout.trace)  # the finished workout's sets and heart-rate samples
+        self.wait(done, 60)
+        self.assertNotIsInstance(out[0], Exception, out)
+        t_start, sets, hr = out[0]
+        self.assertEqual(t_start, start)
+        self.assertEqual([ex for ex, _ in sets], [0, 0])
+        self.assertTrue(0 < sets[0][1] <= sets[1][1], sets)
+        self.assertIn(SYNTH_BPM, hr, "the synthetic reading reached the trace")
 
 
 if __name__ == "__main__":

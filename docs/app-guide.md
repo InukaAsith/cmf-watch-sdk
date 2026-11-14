@@ -301,6 +301,7 @@ have ~5 ms granularity (`next_event` in `fw/wp2-loader/src/app.rs`). Never spin 
 | `PAUSE` (5) | a stock popup (charger, incoming call, "Paired"; notifications use the call's popup type, untested) or another view covers the app | The queue is cleared, input is dropped, `vibrate` returns `-3` and the motor is cut, `show` does not reach the panel, host messages are refused with `PAUSED`. Stop the motor and animations, then block in `event(u32::MAX)` until `RESUME` (handle `BUTTON` there too, as `paused()` in agent-glow and herdr-agents does) |
 | `RESUME` (6) | the popup closed | The loader repaints the whole framebuffer itself. Redraw time-dependent parts; ask the host for a fresh snapshot |
 | `MESSAGE` (7) | ABI 1.1: a host message is in the inbox | `x` = its length. A hint: drain with `recv` until `None` |
+| `HEART` (9) | about once a second after `heart_rate(true)` (loader of 2026-11-14) | `delta` = bpm, 0 = no reading yet or off the wrist; `x` = 1 on the wrist. Personal data: never log it |
 
 - The queue holds 15 events; more are dropped (`fw/wp2-core/src/events.rs`).
 - **An app can end without any event.** Closing the "Paired" popup jumps to the clock and deletes the view. All of
@@ -309,6 +310,9 @@ have ~5 ms granularity (`next_event` in `fw/wp2-loader/src/app.rs`). Never spin 
   stack across auto-sleep, drops the key press that wakes the panel, and the app is shown again; an AOD overlay
   pauses it (`PAUSE`/`RESUME`). Proven in the emulator for light sleep (S1, `tests/test_back_e2e.py`
   `ScreenOffTest`); deep sleep (S2/S3BT) and AOD are not modelled there and are unverified on hardware.
+- **The press that ends AOD** reaches the view after the launcher's late-resume (`0x83`): the loader drops a key that
+  comes while asleep (`0x82`) or within 500 ms of `0x83`. An app on an older loader drops a `BUTTON` within 500 ms of
+  `RESUME` itself (workout does). The emulator does not model AOD: seen on hardware only.
 
 ### Time
 
@@ -363,6 +367,7 @@ One blob of at most `STORE_MAX = 4096` bytes per slot, in `/NAND:/wp2apps/<slot>
 |---|---|---|
 | `battery() -> Option<Battery>` | `percent` (the stock estimate), `charging`, `full`, `charger` | `None` on a driver error |
 | `own_back(on: bool)` (1.3) | – | The app handles `BUTTON` itself ("back", an exit dialog); see `BUTTON` above and `docs/abi-1.3.md`. No-op on an older loader |
+| `heart_rate(on: bool) -> i32` | `0`, `-22` on an older loader | Starts or stops the stock heart-rate measurement for `HEART` events. Held only while the app runs and is not paused; stopped on pause, exit, crash, force stop and view delete; started again on resume. Costs battery (the PPG LED). Works in canvas and LVGL apps; `docs/abi-1.4.md`, "Heart rate" |
 | `keep_screen_on(on: bool)` | – | Records the wish; the next UI tick takes or drops the stock wake lock. Held only while the app runs and is not paused; dropped on pause, exit, crash, force stop and view delete; taken again on resume. Costs display power: hold it with a deadline (herdr-agents: 20 s after a buzz) |
 
 ### Host messages (1.1)

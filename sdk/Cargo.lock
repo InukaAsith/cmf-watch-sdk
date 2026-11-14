@@ -54,6 +54,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hr-probe"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+]
+
+[[package]]
 name = "kit-gallery"
 version = "0.1.0"
 dependencies = [

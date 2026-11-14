@@ -10,6 +10,7 @@ final class FakeWatch: Channel, @unchecked Sendable {
     var stored: UInt32
     var running: Bool
     var ackPushes = true
+    var trace: [Data] = []
 
     init(stored: UInt32 = 0, running: Bool = false, history: [Entry] = []) {
         (self.stored, self.running, self.history) = (stored, running, history)
@@ -33,6 +34,8 @@ final class FakeWatch: Channel, @unchecked Sendable {
                 y += Data([UInt8(e.day), UInt8(e.done), UInt8(e.planned)])
                 await inbox.put(y)
             }
+        } else if data == traceQuery() {
+            for x in trace { await inbox.put(x) }
         } else if data.starts(with: Data("w1E".utf8)), ackPushes {
             stored = data.le(UInt32.self, at: 4)
             var a = Data("w1A".utf8)
@@ -116,3 +119,34 @@ let e3 = Entry(start: 300, durS: 80, day: 0, done: 1, planned: 3)
         try await sync(channel: w, program: program, knownStarts: [], ackWait: .milliseconds(200))
     }
 }
+
+@Test func fetchesTheNewestTraceOnce() async throws {
+    let w = FakeWatch(history: [e3, e2])
+    // trace of e3: one set of exercise 1 at 40 s, bpm 70, none, 90; sent in two parts
+    let payload = Data([1, 1, 40, 0, 3, 0, 70, 0, 90])
+    w.trace = [Data("w1X".utf8) + Data([0, 2]) + le32(300) + payload.prefix(5),
+               Data("w1X".utf8) + Data([1, 2]) + le32(300) + payload.dropFirst(5)]
+    await w.ask()
+    let r = try await sync(channel: w, program: nil, knownStarts: [], tracedStarts: [])
+    #expect(r.trace?.start == 300)
+    #expect(r.trace?.1 == Trace(sets: [SetMark(ex: 1, t: 40)], hr: [70, 0, 90]))
+    let merged = merge([], r, pushed: [:])
+    #expect(merged.first { $0.start == 300 }?.trace?.hr == [70, 0, 90])
+    // already traced, or a workout running: no T
+    await w.ask()
+    _ = try await sync(channel: w, program: nil, knownStarts: [300, 200], tracedStarts: [300])
+    #expect(w.sent.filter { $0 == traceQuery() }.count == 1)
+}
+
+@Test func parsesPulse() {
+    var p = Data("w1P".utf8) + le32(300)
+    p += Data([1, 72, 0xFF, 5])
+    #expect(parseIncoming(p) == .pulse(start: 300, day: 1, bpm: 72, ex: nil, done: 5))
+    var q = Data("w1P".utf8) + le32(300)
+    q += Data([1, 72, 2, 5, 1, 0x02, 0x01])
+    #expect(parseIncoming(q) == .pulse(start: 300, day: 1, bpm: 72, ex: 2, done: 5, exDone: 1, restLeft: 0x0102))
+    #expect(parseTrace(Data([0, 0, 0])) == Trace(sets: [], hr: []))
+    #expect(parseTrace(Data([1, 0])) == nil)
+}
+
+func le32(_ v: UInt32) -> Data { var d = Data(); d.le(v); return d }

@@ -15,11 +15,11 @@ fn main() {}
 
 #[cfg(target_os = "none")]
 mod device {
-    use crate::model::{epoch_s, Model, Next, Program};
-    use crate::proto::{ack, history_msg, request, Got, Transfer};
+    use crate::model::{epoch_s, Model, Next, Program, HR_MAX, SETS_MAX};
+    use crate::proto::{ack, history_msg, pulse, request, trace_msg, Got, Transfer, X_CHUNK};
     use crate::screen::{Hit, Screen, View};
     use cmf_wp2_app::lv::{Batch, LvError};
-    use cmf_wp2_app::{Api, BUTTON, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
+    use cmf_wp2_app::{Api, BUTTON, HEART, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
     use cmf_wp2_ui::haptic::{Motor, ALERT};
 
     cmf_wp2_app::entry!(main);
@@ -35,11 +35,16 @@ mod device {
     // swipe across a pill is also a tap on it
     const DEFER_MS: u32 = 150;
     const GESTURE_MS: u32 = 400;
+    const WAKE_KEY_MS: u32 = 500;
+    /// A P to the phone at least this often during a workout (sooner when the exercise or the sets change).
+    const PULSE_MS: u32 = 5000;
+    const TRACE_MAX: usize = 1 + SETS_MAX * 3 + 2 + HR_MAX;
 
     static mut STORE: [u8; STORE_MAX] = [0; STORE_MAX];
     static mut MODEL: Model = Model::new();
     static mut TRANSFER: Transfer = Transfer::new();
     static mut SCREEN: Screen = Screen::empty();
+    static mut TRACE: [u8; TRACE_MAX] = [0; TRACE_MAX];
 
     // read by tests/test_workout_e2e.py: view (0 start, 1 day, 2 set, 3 rest, 4 ask, 5 done), sets done in the
     // workout, buzzes, last acked version, the next day of the rotation; non-zero initialiser: .data, fresh at every
@@ -59,16 +64,55 @@ mod device {
         unsafe { (&raw const STATS[i]).read_volatile() }
     }
 
-    /// Wall-clock seconds since 2000, or boot seconds without a clock (a stored rest deadline is then off after a
-    /// reboot; the next set still works).
+    // (wall-clock s, millis) read once per launch
+    static mut CLOCK: Option<(u32, u32)> = None;
+
+    /// Wall-clock seconds since 2000 (boot seconds without a clock: a stored rest deadline is then off after a
+    /// reboot; the next set still works). The RTC is read once per launch and then advanced by `now()`: a phone
+    /// time sync does not jump a running rest, and the emulator's slow RTC (docs/recon.md) does not stretch it.
     fn now_s(api: &Api) -> u32 {
-        api.time().map_or(api.now() / 1000, |t| epoch_s(&t))
+        let ms = api.now();
+        let (s, at) = *unsafe { &mut *&raw mut CLOCK }
+            .get_or_insert_with(|| (api.time().map_or(ms / 1000, |t| epoch_s(&t)), ms));
+        s.wrapping_add(ms.wrapping_sub(at) / 1000)
     }
 
+    // not inlined: each copy would add Model::save's 768 B history buffer to main's frame (8 KiB stack)
+    #[inline(never)]
     fn save(api: &Api, m: &Model) {
         let buf = unsafe { &mut *&raw mut STORE };
         let n = m.save(buf);
         api.save(&buf[..n]);
+    }
+
+    /// The exercise on screen (set or rest), 0xFF otherwise.
+    fn open_ex(v: View, m: &Model) -> u8 {
+        match v {
+            View::Set { ex } => ex as u8,
+            View::Rest => m.workout.map_or(0xFF, |w| w.rest_ex),
+            _ => 0xFF,
+        }
+    }
+
+    // not inlined: its 2 KB Program temporaries stay out of main's frame (8 KiB stack, no guard)
+    #[inline(never)]
+    fn take_program(api: &Api, m: &mut Model, bytes: &[u8]) -> bool {
+        let Some(v) = m.take_program(bytes, now_s(api)) else { return false };
+        save(api, m);
+        api.send(&ack(v));
+        set(ACKED, v as i32);
+        set(SETS, 0);
+        true
+    }
+
+    static mut BATCH: Option<Batch> = None;
+
+    // the 2 KB Batch lives in a static and is built here, so neither it nor its temporary sits in main's frame
+    #[inline(never)]
+    fn batch() -> Option<&'static mut Batch> {
+        let slot = unsafe { &mut *&raw mut BATCH };
+        *slot = Some(Batch::new()?);
+        slot.as_mut()
     }
 
     fn version(m: &Model) -> u32 {
@@ -124,7 +168,7 @@ mod device {
 
     fn main(api: &'static Api) -> i32 {
         let Some(lv) = api.lv() else { return -95 }; // loader older than ABI 1.2
-        let Some(mut b) = Batch::new() else { return -1 };
+        let Some(b) = batch() else { return -1 };
         api.own_back(true);
         let m = unsafe { &mut *&raw mut MODEL };
         let t = unsafe { &mut *&raw mut TRANSFER };
@@ -138,7 +182,7 @@ mod device {
         if had && m.workout.is_none() {
             save(api, m);
         }
-        if Screen::fonts(&mut b).and_then(|_| b.submit(&lv)).is_err() {
+        if Screen::fonts(b).and_then(|_| b.submit(&lv)).is_err() {
             return 1;
         }
         let go = |s: &mut Screen, b: &mut Batch, m: &Model, v: View, now: u32| -> Result<(), LvError> {
@@ -146,7 +190,7 @@ mod device {
             set(NEXT, m.next_day() as i32);
             s.show(b, &mut |b| b.submit(&lv), m, v, now)
         };
-        if Screen::theme(&mut b).and_then(|_| go(s, &mut b, m, resume_view(m, now), now)).is_err() {
+        if Screen::theme(b).and_then(|_| go(s, b, m, resume_view(m, now), now)).is_err() {
             return 2;
         }
         set(SETS, sets_done(m));
@@ -156,9 +200,14 @@ mod device {
         let mut awake: Option<u32> = None;
         // next history entry to send (Q): the outbox holds 4, the host collects them as it polls
         let mut hist: Option<u8> = None;
+        // X messages left: (next index, count, trace bytes)
+        let mut trace: Option<(u8, u8, usize)> = None;
+        let mut pulsed: Option<(u32, u8, u8, bool)> = None; // (ms, ex, done, resting) of the last P
+        let mut hr_on = false; // the measurement runs while a workout does (docs/abi-1.4.md, Heart rate)
         // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
         let mut locked = false;
         let mut shown_at = api.now();
+        let mut resumed_at = api.now().wrapping_sub(WAKE_KEY_MS);
         let mut button_at = api.now().wrapping_sub(GESTURE_MS);
         let mut pending: Option<(Hit, u32)> = None;
         loop {
@@ -184,10 +233,27 @@ mod device {
                 set(BUZZES, get(BUZZES) + 1);
                 awake = Some(ms.wrapping_add(AWAKE_MS));
                 let v = after_rest(api, m, now);
-                let _ = go(s, &mut b, m, v, now);
+                let _ = go(s, b, m, v, now);
                 shown_at = api.now();
             }
-            let _ = s.tick(&mut b, &mut |b| b.submit(&lv), m, now);
+            if m.workout.is_some() != hr_on {
+                hr_on = !hr_on;
+                api.heart_rate(hr_on); // -22 on an older loader: no heart rate, the rest works
+                m.bpm = 0;
+            }
+            // saved with the next set or the finish, not on its own: a 4 KB save can hold the loop past the loader's
+            // 1 s BUTTON deadline; a crash loses the samples since the last set
+            m.hr_sample(m.bpm, now);
+            if let Some(w) = m.workout {
+                let (ex, done) = (open_ex(s.view, m), sets_done(m) as u8);
+                let ex_done = w.done.get(usize::from(ex)).copied().unwrap_or(0);
+                let rest = if s.view == View::Rest { (w.rest_until.wrapping_sub(now) as i32).clamp(0, 0xFFFF) as u16 } else { 0 };
+                if pulsed.is_none_or(|(t, e, d, r)| ms.wrapping_sub(t) >= PULSE_MS || (e, d, r) != (ex, done, rest > 0)) {
+                    api.send(&pulse(w.started, w.day, m.bpm, ex, done, ex_done, rest));
+                    pulsed = Some((ms, ex, done, rest > 0));
+                }
+            }
+            let _ = s.tick(b, &mut |b| b.submit(&lv), m, now);
 
             while let Some(i) = hist {
                 let n = m.history().count() as u8;
@@ -198,11 +264,24 @@ mod device {
                 }
                 hist = (rc == 0 && i + 1 < n).then_some(i + 1);
             }
-            let busy = hist.is_some() || pending.is_some();
+            while let Some((i, n, len)) = trace {
+                let tb = unsafe { &*&raw const TRACE };
+                let chunk = &tb[(usize::from(i) * X_CHUNK).min(len)..((usize::from(i) + 1) * X_CHUNK).min(len)];
+                let mut out = [0u8; 9 + X_CHUNK];
+                let k = trace_msg(i, n, m.trace.start, chunk, &mut out);
+                let rc = api.send(&out[..k]);
+                if rc == -11 {
+                    break;
+                }
+                trace = (rc == 0 && i + 1 < n).then_some((i + 1, n, len));
+            }
+            let busy = hist.is_some() || trace.is_some() || pending.is_some();
             let wait = motor.wait().unwrap_or(TICK_MS).min(if busy { 50 } else { TICK_MS });
             let mut to: Option<View> = None;
             let mut hit = None;
             match api.event(wait) {
+                // the press that ends AOD can follow its RESUME: not a "back"
+                Some(e) if e.kind == BUTTON && api.now().wrapping_sub(resumed_at) < WAKE_KEY_MS => {}
                 Some(e) if e.kind == BUTTON => {
                     button_at = api.now();
                     pending = None;
@@ -215,11 +294,17 @@ mod device {
                 Some(e) if e.kind == PAUSE => {
                     motor.off();
                     while !api.event(u32::MAX).is_some_and(|e| e.kind == RESUME) {}
+                    resumed_at = api.now();
                     asked = None;
                     // a rest that ended meanwhile: the next set, no late buzz
                     to = Some(resume_view(m, now_s(api)));
                 }
-                Some(e) if e.kind == RESUME => to = Some(s.view),
+                Some(e) if e.kind == RESUME => {
+                    resumed_at = api.now();
+                    to = Some(s.view);
+                }
+                // x: worn; delta: bpm, 0 = no reading yet
+                Some(e) if e.kind == HEART => m.bpm = if e.x == 1 { e.delta.clamp(0, 255) as u8 } else { 0 },
                 Some(e) if e.kind == LV && e.y == CLICKED => {
                     let t = api.now();
                     let settled = t.wrapping_sub(shown_at) >= SETTLE_MS && t.wrapping_sub(button_at) >= GESTURE_MS;
@@ -259,7 +344,10 @@ mod device {
                         to = Some(after_rest(api, m, now));
                     }
                     Some(Hit::Finish) | Some(Hit::End) => to = Some(finish(api, m, now)),
-                    Some(Hit::Leave) => break,
+                    Some(Hit::Leave) => {
+                        save(api, m); // keeps the heart-rate samples since the last set
+                        break;
+                    }
                     Some(Hit::Cancel) => to = Some(View::Day),
                     None => {}
             }
@@ -268,17 +356,15 @@ mod device {
             while let Some(data) = api.recv(&mut msg) {
                 match t.apply(data) {
                     Got::Program(bytes) => {
-                        if let Some(p) = Program::parse(bytes) {
-                            let v = p.version();
-                            m.replace_program(p, now_s(api));
-                            save(api, m);
-                            api.send(&ack(v));
-                            set(ACKED, v as i32);
-                            set(SETS, 0);
+                        if take_program(api, m, bytes) {
                             to = Some(View::Start);
                         }
                     }
                     Got::History => hist = Some(0), // an empty history: one Y with count 0
+                    Got::Trace => {
+                        let len = m.trace.encode(unsafe { &mut *&raw mut TRACE });
+                        trace = Some((0, len.div_ceil(X_CHUNK) as u8, len));
+                    }
                     Got::Resync => {
                         api.send(&request(version(m), m.workout.is_some()));
                     }
@@ -286,7 +372,7 @@ mod device {
                 }
             }
             if let Some(v) = to {
-                let _ = go(s, &mut b, m, v, now_s(api));
+                let _ = go(s, b, m, v, now_s(api));
                 shown_at = api.now();
                 pending = None;
             }
