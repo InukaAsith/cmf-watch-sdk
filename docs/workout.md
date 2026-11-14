@@ -78,6 +78,7 @@ transfer from `B` (0) on.
 | `P` | app → host | `start: u32, day: u8, bpm: u8` (0 = no reading), `ex: u8` (the exercise on screen, 0xFF = none), `done: u8` (sets so far), `ex_done: u8` (sets of `ex`), `rest_left: u16` (seconds, 0 = not resting). During a workout every 5 s and on every change of `ex`, `done` or resting; not answered |
 | `D` | host → app | `start: u32, day: u8, version: u32, ex: u8, t: u16`: a set done on the phone (`ex` 0xFF: the workout only runs). Adopted with no workout open (unless stale or in the history), merged into the same one, ignored for another program version |
 | `U` | host → app | `start: u32, ex: u8, t: u16`: the phone took that set back |
+| `Z` | host → app | `low: u8 × 5`: the lowest bpm of heart-rate zones 1..5 (saved after the trace in the blob) |
 | `F` | host → app | `start: u32, end: u32`: the phone finished that workout |
 | `H` | host → app | the `Y` body: a workout done on the phone alone; added once per start, the rotation follows it when newest |
 
@@ -89,6 +90,14 @@ Plain data: exercise and day names, weights, rest times and the history (dates, 
 over a channel whose pairing secret any BLE client can read (`docs/app-guide.md`, section 4). The spec accepts this
 for workout data (`docs/specs/2026-11-13-workout-app-design.md`); nothing else personal goes over it. The owner's real
 program stays out of commits and logs: the tests use `tests/fixtures/workout/`.
+
+## Zones
+
+The phone keeps the age (and optionally the resting rate) and sends the watch only the zones' lower bounds (`Z`, at
+every sync): maximum 208 − 0.7 × age (Tanaka), zones from 50 % in steps of 10 %, of the reserve when the resting rate
+is set (Karvonen). The watch colours the heart dot by zone (grey, blue, green, orange, red) and shows a five-segment
+bar under the heart rate on the set and rest screens; the phone shows the bar in the player and the zones as bands
+and minutes in a workout's detail.
 
 ## Trace
 

@@ -42,3 +42,12 @@ import Testing
     #expect(w.union([SetMark(ex: 2, t: 30)]) { _ in 3 }.isEmpty, "the watch's copy does not bring it back")
     #expect(unsetMessage(w, SetMark(ex: 2, t: 30)) == Data("w1U".utf8) + Data([0, 0x0D, 0x0C, 0x0B, 0x0A, 2, 30, 0]))
 }
+
+@Test func zonesByAgeAndReserve() {
+    let z = HeartZones(age: 30)
+    #expect(z.max == 187)
+    #expect(z.lows == [94, 112, 131, 150, 168])
+    #expect([z.zone(0), z.zone(80), z.zone(94), z.zone(140), z.zone(200)] as [Int] == [0, 0, 1, 3, 5])
+    #expect(HeartZones(age: 30, resting: 60).lows == [124, 136, 149, 162, 174])
+    #expect(zonesMessage(z) == Data("w1Z".utf8) + Data([0, 94, 112, 131, 150, 168]))
+}

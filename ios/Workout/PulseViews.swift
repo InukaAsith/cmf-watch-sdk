@@ -194,6 +194,9 @@ struct ActiveWorkout: View {
                 Text("\(n.o.sets.count) из \(n.planned)")
             }
             .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(.secondary)
+            if let z = store.zones, let bpm = sync.bpm(for: n.o) {
+                ZoneBar(zone: z.zone(bpm)).padding(.top, 6)
+            }
         }
         .padding(.top, 22)
 
@@ -276,6 +279,12 @@ struct HistoryDetail: View {
             if let t = entry.trace, t.hr.contains(where: { $0 > 0 }) {
                 Section("Пульс") {
                     Chart {
+                        if let z = store.zones {
+                            ForEach(0..<5, id: \.self) { k in
+                                RectangleMark(yStart: .value("от", z.lows[k]), yEnd: .value("до", k < 4 ? z.lows[k + 1] : z.max + 10))
+                                    .foregroundStyle(zoneColors[k].opacity(0.12))
+                            }
+                        }
                         ForEach(Array(t.hr.enumerated()).filter { $0.1 > 0 }, id: \.0) { i, bpm in
                             LineMark(x: .value("Минута", Double(i * Trace.step) / 60), y: .value("Пульс", Int(bpm)))
                                 .foregroundStyle(.red)
@@ -286,6 +295,17 @@ struct HistoryDetail: View {
                     }
                     .chartXAxisLabel("мин").chartYScale(domain: .automatic(includesZero: false)).frame(height: 200)
                     .accessibilityLabel("Пульс за тренировку, линии — подходы")
+                    if let z = store.zones {
+                        let mins = zoneMinutes(t, z)
+                        ForEach(0..<5, id: \.self) { k in
+                            HStack {
+                                Circle().fill(zoneColors[k]).frame(width: 10, height: 10)
+                                Text(LocalizedStringKey(zoneNames[k]))
+                                Spacer()
+                                Text("\(Int(mins[k].rounded())) мин").monospacedDigit().foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
             }
             if let t = entry.trace, !t.sets.isEmpty {

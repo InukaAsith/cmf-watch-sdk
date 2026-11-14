@@ -273,6 +273,8 @@ pub struct Model {
     pub trace: Trace,
     /// The latest heart rate (0 = none); not saved.
     pub bpm: u8,
+    /// Heart-rate zones from the phone: the lowest bpm of zones 1..5, all 0 = none (docs/workout.md, Zones).
+    pub zones: [u8; 5],
     pub last_day: Option<u8>,
     pub workout: Option<Workout>,
     hist: [Entry; HISTORY_MAX],
@@ -296,7 +298,7 @@ impl Out<'_> {
 impl Model {
     pub const fn new() -> Model {
         let e = Entry { start: 0, dur_s: 0, day: 0, done: 0, planned: 0 };
-        Model { program: None, trace: Trace::new(0), bpm: 0, last_day: None, workout: None, hist: [e; HISTORY_MAX], hist_n: 0, hist_head: 0 }
+        Model { program: None, trace: Trace::new(0), bpm: 0, zones: [0; 5], last_day: None, workout: None, hist: [e; HISTORY_MAX], hist_n: 0, hist_head: 0 }
     }
 
     /// Anything that does not parse leaves an empty model.
@@ -311,6 +313,7 @@ impl Model {
     // field by field: `*self = Model::new()` would build a 4 KB Model on the 8 KiB stack
     fn clear(&mut self) {
         (self.program, self.last_day, self.workout, self.hist_n, self.hist_head, self.bpm) = (None, None, None, 0, 0, 0);
+        self.zones = [0; 5];
         self.trace.reset(0);
     }
 
@@ -351,6 +354,10 @@ impl Model {
             let start = c.u32()?;
             self.trace.parse(&mut c, start)?;
         }
+        // the zones came after it (an empty trace stands in when there is none)
+        if c.i < blob.len() {
+            self.zones.copy_from_slice(c.bytes(5)?);
+        }
         (c.i == blob.len()).then_some(())
     }
 
@@ -382,9 +389,13 @@ impl Model {
             o.put(&e.dur_s.to_le_bytes());
             o.put(&[e.day, e.done, e.planned]);
         }
-        if self.trace.start != 0 {
+        let zones = self.zones != [0; 5];
+        if self.trace.start != 0 || zones {
             o.put(&self.trace.start.to_le_bytes());
             o.i += self.trace.encode(&mut o.b[o.i..]);
+        }
+        if zones {
+            o.put(&self.zones);
         }
         o.i
     }
@@ -401,6 +412,14 @@ impl Model {
         t.hr[i] = bpm;
         t.n_hr = i as u16 + 1;
         true
+    }
+
+    /// The zone of `bpm`: 1..=5, 0 below zone 1, without zones or without a reading.
+    pub fn zone(&self, bpm: u8) -> u8 {
+        if bpm == 0 || self.zones == [0; 5] {
+            return 0;
+        }
+        self.zones.iter().filter(|&&lo| bpm >= lo).count() as u8
     }
 
     pub fn next_day(&self) -> usize {
@@ -974,5 +993,24 @@ pub mod tests {
         assert_eq!((m.workout.unwrap().done[2], m.rest_left(1021)), (0, 0));
         assert_eq!(m.trace.sets(), &[(0, 10)]);
         assert!(m.merge_set(1000, 0, 2, 20, 1030), "it can come back as a new press");
+    }
+
+    #[test]
+    fn zones_survive_the_blob_and_classify() {
+        let mut m = model(three_days());
+        assert_eq!(m.zone(150), 0, "no zones");
+        m.zones = [95, 114, 133, 152, 171]; // synthetic bounds
+        let mut buf = vec![0u8; 4096];
+        let n = m.save(&mut buf);
+        let mut back = Model::new();
+        back.load(&buf[..n]);
+        assert_eq!(back.zones, m.zones, "saved without a trace");
+        assert_eq!([back.zone(0), back.zone(90), back.zone(95), back.zone(140), back.zone(200)], [0, 0, 1, 3, 5]);
+        back.start(0, 1000);
+        back.done_set(0, 1010);
+        let n = back.save(&mut buf);
+        let mut again = Model::new();
+        again.load(&buf[..n]);
+        assert_eq!((again.zones, again.trace.sets().len()), (m.zones, 1), "and with one");
     }
 }

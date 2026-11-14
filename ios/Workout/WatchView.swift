@@ -33,6 +33,8 @@ struct WatchView: View {
                     Text("Откройте «Тренировка» на часах: история и программа синхронизируются сами, в том числе когда телефон в кармане.")
                 }
 
+                ZonesSection()
+
                 Section("Приложение на часах") {
                     LabeledContent("Установлено", value: sync.installed.map { String(localized: "версия \($0.version)") } ?? String(localized: "нет"))
                     if let b = sync.bundledHeader {
