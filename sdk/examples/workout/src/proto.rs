@@ -10,6 +10,12 @@ pub enum Got<'a> {
     Resync,
     History,
     Trace,
+    /// D: a set done on the phone (ex 0xFF: the workout only runs).
+    Set { start: u32, day: u8, version: u32, ex: u8, t: u16 },
+    /// F: the phone finished that workout.
+    Finish { start: u32, end: u32 },
+    /// H: a workout done on the phone alone.
+    Entry(Entry),
 }
 
 const MAGIC: &[u8; 2] = b"w1";
@@ -38,6 +44,23 @@ impl Transfer {
         match kind {
             b'Q' => Got::History,
             b'T' => Got::Trace,
+            b'D' => match body {
+                &[a, b, c, d, day, v0, v1, v2, v3, ex, t0, t1] => Got::Set {
+                    start: u32::from_le_bytes([a, b, c, d]), day, version: u32::from_le_bytes([v0, v1, v2, v3]), ex,
+                    t: u16::from_le_bytes([t0, t1]),
+                },
+                _ => Got::Nothing,
+            },
+            b'F' => match body {
+                &[a, b, c, d, e, f, g, h] => Got::Finish { start: u32::from_le_bytes([a, b, c, d]), end: u32::from_le_bytes([e, f, g, h]) },
+                _ => Got::Nothing,
+            },
+            b'H' => match body {
+                &[a, b, c, d, d0, d1, day, done, planned] => Got::Entry(Entry {
+                    start: u32::from_le_bytes([a, b, c, d]), dur_s: u16::from_le_bytes([d0, d1]), day, done, planned,
+                }),
+                _ => Got::Nothing,
+            },
             b'B' => match body {
                 [a, b] if (1..=PROGRAM_MAX).contains(&usize::from(u16::from_le_bytes([*a, *b]))) => {
                     (self.got, self.total, self.next_seq) = (0, Some(usize::from(u16::from_le_bytes([*a, *b]))), seq.wrapping_add(1));
@@ -213,6 +236,12 @@ mod tests {
         let mut t = Transfer::new();
         assert_eq!(t.apply(b"w1Q\x07"), Got::History);
         assert_eq!(t.apply(b"w1T\x00"), Got::Trace);
+        assert_eq!(t.apply(b"w1D\x00\x0D\x0C\x0B\x0A\x01\x04\x03\x02\x01\x02\x1E\x00"),
+                   Got::Set { start: 0x0A0B_0C0D, day: 1, version: 0x0102_0304, ex: 2, t: 30 });
+        assert_eq!(t.apply(b"w1F\x00\x0D\x0C\x0B\x0A\x01\x00\x00\x00"), Got::Finish { start: 0x0A0B_0C0D, end: 1 });
+        assert_eq!(t.apply(b"w1H\x00\x0D\x0C\x0B\x0A\x02\x01\x02\x07\x09"),
+                   Got::Entry(Entry { start: 0x0A0B_0C0D, dur_s: 0x0102, day: 2, done: 7, planned: 9 }));
+        assert_eq!(t.apply(b"w1D\x00\x01"), Got::Nothing, "short");
     }
 
     #[test]
