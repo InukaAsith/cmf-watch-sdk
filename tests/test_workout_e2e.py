@@ -119,6 +119,12 @@ class WorkoutTest(unittest.TestCase):
         self.emu.poke(HR_BPM, bytes([SYNTH_BPM]))
         self.emu.sleep(2.5)
         self.shot("1-day")
+        # the live state for the phone: P every 5 s during a workout
+        out, done = self.with_app(lambda ch: workout._expect(ch, b"P", 15))
+        self.wait(done, 30)
+        self.assertNotIsInstance(out[0], Exception, out)
+        p = out[0]
+        self.assertEqual((len(p), p[7], p[9]), (14, 0, 0xFF), p.hex())  # bpm: maybe sent before the first reading
         self.tap(ROW)  # its first exercise
         self.assertEqual(self.stats()[VIEW], SET)
         mark = len(self.emu.motor())

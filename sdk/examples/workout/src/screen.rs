@@ -300,9 +300,14 @@ impl Screen {
                         line(b, row, sub.as_str(), GREY, x, 22, ROW_W - i32::from(x) - 40)?;
                         self.hit(row, Hit::Exercise(i));
                     }
+                    // a button, not one more card: a see-through card keeps the list's scroll and snap
                     room(b)?;
-                    let row = self.row(b, "Завершить", ACCENT)?;
-                    self.hit(row, Hit::Finish);
+                    let row = stock::focus_card(b, self.page, stock::FOCUS_ROW_H)?;
+                    b.style(row, Prop::BgOpa, 0, 0)?;
+                    b.style(row, Prop::BgOpa, stock::PRESSED, 0)?;
+                    let end = pill(b, row, "Завершить", true, 0, 240)?;
+                    b.align(end, Align::Center, 0, 0)?;
+                    self.hit(end, Hit::Finish);
                 }
             }
             View::Set { ex } => {
