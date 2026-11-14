@@ -3,7 +3,7 @@ name: Workout
 options:
   developmentLanguage: ru
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "26.1"
 settings:
   base:
     WP2_BUNDLE: local.wp2apps.workout  # scripts/ios-install overrides it (WP2_BUNDLE_ID)

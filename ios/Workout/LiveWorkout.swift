@@ -58,7 +58,8 @@ import WireKit
     /// A workout this young is not finished by a bad first fix.
     private static let minAge: TimeInterval = 5 * 60
     private let manager = CLLocationManager()
-    private var monitor: CLMonitor?
+    // one CLMonitor per name per process: a second one with the same name throws (it crashed the app at launch)
+    private let made = Task { @MainActor in await CLMonitor(GymGuard.name) }
     private var armedFor: UInt32?
     private let onLeave: () -> Void
 
@@ -86,12 +87,7 @@ import WireKit
         }
     }
 
-    private func monitor() async -> CLMonitor {
-        if let monitor { return monitor }
-        let m = await CLMonitor(Self.name)
-        monitor = m
-        return m
-    }
+    private func monitor() async -> CLMonitor { await made.value }
 
     private func listen() async {
         let m = await monitor()
