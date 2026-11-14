@@ -9,5 +9,7 @@ cmf-wp2-app = { path = "../../cmf-wp2-app" }
 
 [[bin]]
 name = "api-demo"
-test = false
 bench = false
+
+[dev-dependencies]
+wp2-core = { path = "../../../fw/wp2-core" }
