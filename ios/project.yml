@@ -7,6 +7,7 @@ options:
 settings:
   base:
     WP2_BUNDLE: local.wp2apps.workout  # scripts/ios-install overrides it (WP2_BUNDLE_ID)
+    SWIFT_EMIT_LOC_STRINGS: YES  # scripts/ios-strings adds the extracted keys to Localizable.xcstrings
 packages:
   WireKit:
     path: WireKit
@@ -55,7 +56,7 @@ targets:
   WorkoutWidget:
     type: app-extension
     platform: iOS
-    sources: [WorkoutWidget, Shared]
+    sources: [WorkoutWidget, Shared, Workout/Localizable.xcstrings]
     info:
       path: WorkoutWidget/Info.plist
       properties:

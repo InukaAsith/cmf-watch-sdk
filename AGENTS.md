@@ -10,6 +10,13 @@ Building an app → read `docs/app-guide.md` first. LVGL apps always use the sys
 `cmf_wp2_app::stock` (`stock::font`, `stock::theme`, `page`/`title`/`row`): never LVGL's default font or an own
 palette unless the owner asks.
 
+iOS app (`ios/`): every user-visible string goes through localization, never hard-coded. Russian source keys in
+SwiftUI (`Text("…")`, `LocalizedStringKey`, `String(localized:)`, `LocalizedStringResource`), English in
+`ios/Workout/Localizable.xcstrings`. After adding or changing strings: build, run `scripts/ios-strings` (it adds the
+keys the compiler extracted and lists those without English) and give each one its English; a key built at run time
+(a name from an array) goes into the catalog by hand. Program data (day and exercise names) is the owner's text,
+not localized.
+
 ## Hard rules
 
 1. No writes to a physical watch without explicit approval from the owner. Read-only BLE

@@ -17,9 +17,6 @@ struct WorkoutApp: App {
         #endif
         _store = State(initialValue: store)
         let sync = SyncController(store: store)
-        #if DEBUG
-        sync.playerShown = CommandLine.arguments.contains("-player")
-        #endif
         _sync = State(initialValue: sync)
     }
 
@@ -50,6 +47,9 @@ struct WorkoutApp: App {
             .environment(store)
             .environment(sync)
             .onChange(of: phase) { sync.setForeground($1 == .active) }
+            #if DEBUG
+            .task { if CommandLine.arguments.contains("-player") { sync.playerShown = true } }
+            #endif
         }
     }
 }
