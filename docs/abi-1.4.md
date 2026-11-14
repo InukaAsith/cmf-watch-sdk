@@ -81,11 +81,13 @@ SDK: `Api::heart_rate(&self, on: bool) -> i32`, event kind `HEART` = 9.
   (`x` 0). Queued HEART events coalesce: the app sees the latest.
 - `on = false` stops it. Returns 0, or `-22` on an older loader (or `abi_minor < 2`): no heart rate there.
 - The loader stops the measurement on exit, crash (`exit(-1)` from the panic handler), force stop, view delete,
-  `PAUSE` and the panel going dark; it starts it again on `RESUME` and on wake, with the reading cleared. A stop while
+  and `PAUSE`; it starts it again on `RESUME`, with the reading cleared. It keeps measuring while the panel is dark
+  (AOD included): the readings keep coming, so a workout has heart rate through its rests; the watch stays out of deep
+  sleep meanwhile. A stop while
   the app runs queues one HEART with `delta` 0: no reading while it is off. A new launch starts with it off.
 - The panel keeps its own auto-sleep: the loader does not take the heart view's 25 s hold (`docs/recon.md`, "Heart
   view: screen"). A reading needs the panel lit for a few seconds; an app that wants one holds the screen itself
-  (`screen_on`). The stock never measures through this path with the panel dark. The app's request is a wish
+  (`screen_on`). The app's request is a wish
   (`fw/wp2-loader/src/hr.rs`); the UI tick does the stock calls, the rule is `wp2_core::heart::Heart::tick`.
 - Exactly one start per hold, one stop at its end: the stock counts requests (`docs/recon.md`), so a repeated
   start would keep the sensor on after the app left. The background measurement uses the same count.

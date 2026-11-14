@@ -100,8 +100,6 @@ mod view {
                 let m = st();
                 m.asleep = msg == SUSPEND;
                 m.woke_at = if msg == WAKE { app::millis() | 1 } else { 0 };
-                // here, not in the UI tick: the tick does not run while the panel is dark
-                crate::hr::tick(app::running(), app::paused(), m.asleep);
                 0
             }
             KEY => {
@@ -248,7 +246,7 @@ mod view {
         app::pause_tick();
         motor::watchdog();
         svc::tick(app::running(), app::paused());
-        crate::hr::tick(app::running(), app::paused(), m.asleep);
+        crate::hr::tick(app::running(), app::paused());
         hold_face(app::running());
         if app::running() {
             let exited = app::exited();
