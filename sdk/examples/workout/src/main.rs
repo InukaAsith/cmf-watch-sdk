@@ -382,6 +382,17 @@ mod device {
                             }
                         }
                     }
+                    Got::Unset { start, ex, t: at } => {
+                        if m.remove_set(start, ex, at) {
+                            save(api, m);
+                            set(SETS, sets_done(m));
+                            to = match s.view {
+                                View::Rest => Some(resume_view(m, now)),
+                                View::Ask => to,
+                                v => Some(v),
+                            };
+                        }
+                    }
                     Got::Finish { start, end } => {
                         let had = sets_done(m) > 0;
                         if m.finish_at(start, end) {

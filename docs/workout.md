@@ -76,6 +76,10 @@ transfer from `B` (0) on.
 | `T` | host → app | – (send the trace of the last workout); not part of a transfer |
 | `X` | app → host | `index: u8, count: u8, start: u32`, then up to 100 bytes of the trace (below); `start` 0 = no trace |
 | `P` | app → host | `start: u32, day: u8, bpm: u8` (0 = no reading), `ex: u8` (the exercise on screen, 0xFF = none), `done: u8` (sets so far), `ex_done: u8` (sets of `ex`), `rest_left: u16` (seconds, 0 = not resting). During a workout every 5 s and on every change of `ex`, `done` or resting; not answered |
+| `D` | host → app | `start: u32, day: u8, version: u32, ex: u8, t: u16`: a set done on the phone (`ex` 0xFF: the workout only runs). Adopted with no workout open (unless stale or in the history), merged into the same one, ignored for another program version |
+| `U` | host → app | `start: u32, ex: u8, t: u16`: the phone took that set back |
+| `F` | host → app | `start: u32, end: u32`: the phone finished that workout |
+| `H` | host → app | the `Y` body: a workout done on the phone alone; added once per start, the rotation follows it when newest |
 
 A gap in `seq`, a `C` at another offset than the bytes received so far, more bytes than `total`, or an `E` whose CRC
 or program does not check drops the transfer and the app sends `R` again. The program format is in
@@ -99,6 +103,11 @@ has none) and keeps it forever; a workout started before a sync loses only its p
 Heart-rate values are personal data: tests check counts, never values, and nothing logs them.
 
 ## iPhone app
+
+One workout on both (`docs/specs/2026-11-14-shared-workout-design.md`): the phone starts and walks a workout on its
+own (Программа → Начать), shares it with the open watch app (`D`/`U`/`F`/`H` out, `P`/`X` in, rules in WireKit
+`meet`), shows it as a Live Activity with "Сделал" and "Завершить", and finishes it when the phone leaves a 150 m
+circle around where it started (CLMonitor, "Always" location; not within the first 5 min).
 
 `ios/`: the program lives in the app (Программа), the history is kept forever (История), the watch link,
 `workout` install/update and the signing expiry are under Часы. Design: `docs/specs/2026-11-13-workout-ios-design.md`.

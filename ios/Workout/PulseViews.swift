@@ -77,6 +77,12 @@ struct ActiveWorkout: View {
                             }
                         }
                         exercises(o, day)
+                        if let last = o.sets.last, last.ex < day.exercises.count {
+                            Button("Отменить подход: \(day.exercises[last.ex].exercise.name)", systemImage: "arrow.uturn.backward") {
+                                sync.undoSet()
+                            }
+                            .font(.subheadline)
+                        }
                         Button(role: .destructive) { asking = true } label: {
                             Text("Завершить тренировку").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
@@ -100,10 +106,7 @@ struct ActiveWorkout: View {
     }
 
     /// The picked exercise if it has sets left, else the newest set's, else the first open one from the top.
-    private func current(_ o: OpenWorkout, _ day: DayItem) -> Int? {
-        let open = { (i: Int) in i < day.exercises.count && o.done(i) < day.exercises[i].exercise.sets }
-        return [picked, o.sets.last?.ex].compactMap { $0 }.first(where: open) ?? day.exercises.indices.first(where: open)
-    }
+    private func current(_ o: OpenWorkout, _ day: DayItem) -> Int? { store.currentExercise(picked: picked) }
 
     private func header(_ o: OpenWorkout) -> some View {
         HStack(alignment: .firstTextBaseline) {

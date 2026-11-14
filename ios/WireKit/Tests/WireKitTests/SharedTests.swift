@@ -35,3 +35,10 @@ import Testing
     #expect(meet(phone: p, watch: WatchWorkout(start: 50, day: 0, done: 2), watchVersion: 7) == .yieldToWatch)
     #expect(meet(phone: p, watch: WatchWorkout(start: 200, day: 0, done: 0), watchVersion: 8) == .independent)
 }
+
+@Test func undoKeepsItOut() {
+    var w = OpenWorkout(start: 0x0A0B_0C0D, day: 0, version: 1, sets: [SetMark(ex: 2, t: 30)])
+    #expect(w.undoLast() == SetMark(ex: 2, t: 30))
+    #expect(w.union([SetMark(ex: 2, t: 30)]) { _ in 3 }.isEmpty, "the watch's copy does not bring it back")
+    #expect(unsetMessage(w, SetMark(ex: 2, t: 30)) == Data("w1U".utf8) + Data([0, 0x0D, 0x0C, 0x0B, 0x0A, 2, 30, 0]))
+}

@@ -521,6 +521,24 @@ impl Model {
         true
     }
 
+    /// Takes back the set `(ex, t)` of the workout that started at `start` (undone on the phone); a rest it started
+    /// ends. True if it was there.
+    pub fn remove_set(&mut self, start: u32, ex: u8, t: u16) -> bool {
+        let (Some(w), tr) = (&mut self.workout, &mut self.trace) else { return false };
+        let Some(at) = tr.sets().iter().position(|&s| s == (ex, t)).filter(|_| w.started == start) else { return false };
+        let n = usize::from(tr.n_sets);
+        tr.sets.copy_within(at + 1..n, at);
+        tr.n_sets -= 1;
+        let i = usize::from(ex);
+        if i < EX_MAX {
+            w.done[i] = w.done[i].saturating_sub(1);
+        }
+        if at + 1 == n {
+            w.rest_until = w.started; // over
+        }
+        true
+    }
+
     /// Finishes the open workout if it started at `start` (the phone ended it). True if it did.
     pub fn finish_at(&mut self, start: u32, end: u32) -> bool {
         let open = self.workout.is_some_and(|w| w.started == start);
@@ -942,5 +960,19 @@ pub mod tests {
         assert_eq!((m.history().count(), m.next_day()), (2, 0)); // day 2 was the newest: day 0 next
         assert!(m.add_entry(Entry { start: 100, day: 0, ..e })); // older: kept, the rotation stays
         assert_eq!(m.next_day(), 0);
+    }
+
+    #[test]
+    fn remove_set_takes_back_and_ends_the_rest() {
+        let mut m = model(three_days());
+        m.start(0, 1000);
+        m.done_set(0, 1010);
+        m.done_set(2, 1020);
+        assert!(!m.remove_set(999, 2, 20), "another workout");
+        assert!(!m.remove_set(1000, 2, 21), "no such set");
+        assert!(m.remove_set(1000, 2, 20));
+        assert_eq!((m.workout.unwrap().done[2], m.rest_left(1021)), (0, 0));
+        assert_eq!(m.trace.sets(), &[(0, 10)]);
+        assert!(m.merge_set(1000, 0, 2, 20, 1030), "it can come back as a new press");
     }
 }
