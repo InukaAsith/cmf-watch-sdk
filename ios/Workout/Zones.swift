@@ -33,8 +33,6 @@ struct ZonesSection: View {
             } else {
                 Button("Задать возраст", systemImage: "heart.text.square") { store.zones = HeartZones(age: 30); push() }
             }
-        } header: {
-            Text("Пульсовые зоны")
         } footer: {
             Text("Максимум по формуле Танаки (208 − 0,7 × возраст), зоны по 10 % от 50 %; с пульсом покоя — от резерва (Карвонен). Часы показывают зону цветом.")
         }
