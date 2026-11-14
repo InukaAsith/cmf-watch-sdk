@@ -448,6 +448,26 @@ Ghidra and capstone on the launcher's message handler (`0x1005DE00…0x1005E290`
 | Not modelled | deep sleep (S2/S3BT) stops the emulator ("Guest hit a fatal or unsupported path"); forcing the AOD branch (`r4 = 1` at `0x1005E120`) does too. Both need a hardware check | — |
 | Earlier note | "the stock closes the app view on auto-sleep" (`docs/herdr-agents.md`, `docs/app-guide.md`, 2026-11-11) came from emulator runs; no stock path that deletes view 240 on blank was found | medium |
 
+## Return to watch face
+
+Capstone on `0x1005D968`, `0x100C27CC…0x100C28D0`, the launcher message handler (`0x1005DEDE`, `0x1005E128`,
+`0x1005E1B0`) and the settings view `return_watch_view` (`0x100BF66C`); emulator: `tests/test_back_e2e.py`,
+`ScreenOffTest.test_app_survives_return_to_face`.
+
+| Item | Value | Confidence |
+|---|---|---|
+| Setting | ux2sys **`0x9C`**, seconds: 30, 120 or 1800 (the three rows of `return_watch_view`) | high (static) |
+| State | `jx_return` struct **`0x38019B10`**: `+0` callback, `+4` mutex, `+0x18` timeout ms, `+0x1C` suspend time. Launcher init `0x100C27CC(0x1005D969)` sets the callback | high (static, emulator) |
+| Early-suspend | after `0x82` to the top view: `0x100C2808` logs `suspend`, stores the time (`0x100F96C0`, ms, the log clock) and `0x9C` × 1000 | high (emulator) |
+| Late-resume | first `0x100C286C` (`resume, <t> - <elapsed>`): elapsed ≥ timeout and callback ≠ 0 → callback; then AOD exit and `0x83` | high (emulator) |
+| Callback | `0x1005D968` (`jx_return_user_handle`): stays for 16 top views (table `0x101EAED8`: the sport views `0x64…0x69`, `0x6B`, and `3`, `0xF`, `0x63`, `0x88`, `0x1C`, `0x51`, `0x52`, `0x9F`, `0xA9`), for music `0x90` while it plays, or under a message box; else `return clock, stack_num:%u` and a jump to the clock (`0x101AD140(…, 0x10, 1)`), which deletes view 240 | high (emulator) |
+| Why only with heart rate | in deep sleep the time of `0x100F96C0` does not advance (assumed: a counter that stops with the main clock), so before heart rate the elapsed time stayed below 30 s and apps survived long waits (`docs/workout.md`, "Hardware"). The measurement takes a system wake lock (`wake_lock: 0 3`), the watch stays in light sleep, the elapsed time counts and the next wake closes the app. With the screen held on (rest) there is no suspend at all | medium (hardware symptom, not measured) |
+| Loader | while an app runs the loader writes 0 to the callback and `0x1005D969` back otherwise and on view delete; the menu (view 240 without an app) returns as before | high (emulator) |
+
+Emulator: with the panel dark under a BLE session (S1) the earlier 90 s probe did not return (the paired NOR's
+`0x9C` value was not read; 120 or 1800 s would explain it); with `+0x18` set to 1000 ms after the blank the old loader went `return clock, stack_num:3`,
+`jump 240 -> 16`; the new loader keeps view 240 and the app.
+
 ## Project 2: the stub's own channel key K
 
 - `AT GETSECRET` is handled by `0x100E9DD0`: `0x1010E215("APP_SECRET", buf, 32)` reads the pairing secret from NVRAM

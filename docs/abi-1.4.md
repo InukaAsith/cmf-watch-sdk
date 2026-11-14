@@ -100,3 +100,10 @@ block only.
 
 Heart-rate values are personal data: apps and tests never log them; the e2e test uses synthetic values. The PPG
 LED runs while an app holds the measurement: ask for it only while the value is shown or recorded.
+
+### Screen-off
+
+The measurement keeps the watch out of deep sleep, so with the panel dark the stock "return to watch face" (30 s,
+2 min or 30 min, ux2sys `0x9C`) is reached and late-resume would close the app view. The loader of 2026-11-14 holds
+that return off while an app runs, as the stock does for its own workout views (`docs/recon.md`, "Return to watch
+face"). No ABI change.
