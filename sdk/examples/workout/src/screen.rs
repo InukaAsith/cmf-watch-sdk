@@ -5,7 +5,7 @@
 
 use crate::model::{Model, Next};
 use cmf_wp2_app::lv::*;
-use cmf_wp2_app::stock::{self, ACCENT, BLACK, CIRCLE, GREY, LETTER_BG, ROW_BG, ROW_PRESSED, ROW_W, SCREEN, WHITE};
+use cmf_wp2_app::stock::{self, ACCENT, BLACK, CIRCLE, GREY, LETTER_BG, ROW_BG, ROW_H, ROW_PRESSED, ROW_W, SCREEN, WHITE};
 use core::fmt::Write;
 
 /// Font slot of the big numbers.
@@ -246,12 +246,14 @@ impl Screen {
                     self.clock = label(b, self.header, "", GREY, Align::TopMid, -60, 58, 0)?;
                     self.hr = heart(b, self.header, 60, 58)?;
                 }
-                let (page, _bar) = stock::focus_page(b, FOCUS_CARDS)?;
+                // a plain list like Custom Apps: rows keep their size while it scrolls
+                let (page, _bar) = stock::page(b)?;
                 b.size(page, SCREEN, PAGE_H)?;
                 b.align(page, Align::BottomMid, 0, 0)?;
-                b.style(page, Prop::PadTop, 0, (PAGE_H - stock::FOCUS_ROW_H) / 2)?;
-                b.style(page, Prop::PadBottom, 0, (PAGE_H - stock::FOCUS_ROW_H) / 2)?;
-                b.style(page, Prop::PadRow, 0, stock::ROW_GAP)?;
+                b.style(page, Prop::PadTop, 0, stock::ROW_GAP)?;
+                b.style(page, Prop::PadBottom, 0, PAGE_H - ROW_H)?; // the last row scrolls up to the top
+                b.style(page, Prop::PadLeft, 0, (SCREEN - ROW_W) / 2)?;
+                b.flex(page, Flow::Column, FlexAlign::Start, FlexAlign::Start, FlexAlign::Start)?;
                 self.page = page;
                 if view == View::Start {
                     // the next day first: the focus list opens on its first row
@@ -300,13 +302,8 @@ impl Screen {
                         line(b, row, sub.as_str(), GREY, x, 22, ROW_W - i32::from(x) - 40)?;
                         self.hit(row, Hit::Exercise(i));
                     }
-                    // a button, not one more card: a see-through card keeps the list's scroll and snap
                     room(b)?;
-                    let row = stock::focus_card(b, self.page, stock::FOCUS_ROW_H)?;
-                    b.style(row, Prop::BgOpa, 0, 0)?;
-                    b.style(row, Prop::BgOpa, stock::PRESSED, 0)?;
-                    let end = pill(b, row, "Завершить", true, 0, 240)?;
-                    b.align(end, Align::Center, 0, 0)?;
+                    let end = pill(b, self.page, "Завершить", true, 0, ROW_W)?;
                     self.hit(end, Hit::Finish);
                 }
             }
@@ -457,7 +454,7 @@ impl Screen {
     }
 
     fn row(&mut self, b: &mut Batch, name: &str, colour: i32) -> Result<Obj, LvError> {
-        let row = stock::focus_card(b, self.page, stock::FOCUS_ROW_H)?;
+        let row = stock::focus_card(b, self.page, ROW_H)?; // a clickable card; the page is not a focus page
         line(b, row, name, colour, TEXT_X, -18, TEXT_W)?;
         Ok(row)
     }

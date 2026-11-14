@@ -8,6 +8,9 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 nix-shell -p llvm --run "'$root/scripts/build-app' workout ${WP2_WORKOUT_VERSION:-1}" >/dev/null
 mkdir -p "$root/ios/Workout/Resources"
 cp "$root/target/workout.wp2app" "$root/ios/Workout/Resources/workout.wp2app"
+# WP2_LOADER=path/to/loader.wp2app: the Watch tab offers it; empty otherwise (the section stays hidden)
+if [ -n "${WP2_LOADER:-}" ]; then cp "$WP2_LOADER" "$root/ios/Workout/Resources/loader.wp2app"
+else : > "$root/ios/Workout/Resources/loader.wp2app"; fi
 (cd "$root/ios" && nix-shell -p xcodegen --run xcodegen >/dev/null)
 # Xcode's tools, not nix-shell's SDK
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
