@@ -483,9 +483,11 @@ fn pager_crown(h: u16, step: i32) {
         return; // the "crown still" event
     }
     let s = st();
+    let obj = s.objs[h as usize];
     let at = u32::from(s.options[h as usize]);
-    let page = child(s.objs[h as usize], at);
-    if page.is_null() {
+    let page = child(obj, at);
+    // still gliding to `at`: a fast turn's steps would each add a page and fly through them all
+    if page.is_null() || stock!(LV_TILEVIEW_GET_TILE_ACT, fn(Obj) -> Obj)(obj) != page {
         return;
     }
     let y = stock!(LV_OBJ_GET_SCROLL_Y, fn(Obj) -> i32)(page);

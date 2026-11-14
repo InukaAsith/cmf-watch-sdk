@@ -200,7 +200,7 @@ class ScreenOffTest(unittest.TestCase):
             self.assertEqual(emu.peek(START + 6, 1), b"\x00", "app stopped by the blank or the wake")
             self.assertEqual(harness.focused(emu), 240)
             self.assertEqual(OwnBackTest.presses(self, emu), 0, "the waking press reached the app")
-            emu.send("c 1", "c 0", pause=1.5)  # past the loader's WAKE_KEY_MS: a real press
+            emu.send("c 1", "c 0", pause=1.5)  # 3 s after the wake, past the loader's WAKE_KEY_MS: a real press
             self.assertEqual(OwnBackTest.presses(self, emu), 1, "the press after the wake was eaten")
 
     def test_app_survives_return_to_face(self):
