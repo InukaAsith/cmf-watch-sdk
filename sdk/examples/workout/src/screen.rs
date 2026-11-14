@@ -10,6 +10,10 @@ use core::fmt::Write;
 
 /// Font slot of the big numbers.
 pub const BIG: u8 = 1;
+/// Captions (F24M: full lowercase Cyrillic and digits, uppercase only in part: lowercase text only).
+const SMALL: u8 = 2;
+/// Weights and secondary numbers (F28M: as F24M, bigger).
+const MID: u8 = 3;
 pub const HEADER_H: i32 = 96;
 const PAGE_H: i32 = SCREEN - HEADER_H;
 /// The stock heart's red (RGB565).
@@ -144,19 +148,26 @@ fn label(b: &mut Batch, parent: Obj, text: &str, colour: i32, align: Align, x: i
     Ok(l)
 }
 
+/// A label in the font of `slot`.
+fn labelf(b: &mut Batch, slot: u8, parent: Obj, text: &str, colour: i32, align: Align, x: i16, y: i16, w: i32) -> Result<Obj, LvError> {
+    let l = label(b, parent, text, colour, align, x, y, w)?;
+    b.style(l, Prop::TextFont, 0, i32::from(slot))?;
+    Ok(l)
+}
+
 /// The heart rate as the stock workout shows it under the clock: a red mark (the font has no heart) and the bpm,
 /// centred on `x`; returns the bpm label.
 fn heart(b: &mut Batch, parent: Obj, x: i16, y: i16) -> Result<Obj, LvError> {
     let dot = b.create(Class::Obj, parent)?;
-    b.size(dot, 16, 16)?;
-    b.align(dot, Align::TopMid, x - 30, y + 12)?;
+    b.size(dot, 12, 12)?;
+    b.align(dot, Align::TopMid, x - 26, y + 10)?;
     b.style(dot, Prop::Radius, 0, CIRCLE)?;
     b.style(dot, Prop::BorderWidth, 0, 0)?;
     b.style(dot, Prop::BgColor, 0, HEART)?;
     b.style(dot, Prop::BgOpa, 0, 255)?;
     b.flags(dot, &[], &[Flag::Clickable])?;
-    let l = label(b, parent, "--", WHITE, Align::TopLeft, 0, y, 0)?;
-    b.align(l, Align::TopMid, x + 12, y)?;
+    let l = labelf(b, MID, parent, "--", WHITE, Align::TopLeft, 0, y, 0)?;
+    b.align(l, Align::TopMid, x + 10, y)?;
     Ok(l)
 }
 
@@ -193,7 +204,9 @@ impl Screen {
     /// The fonts, in a batch of their own.
     pub fn fonts(b: &mut Batch) -> Result<(), LvError> {
         stock::font(b)?;
-        b.font(BIG, StockFont::F48M)
+        b.font(BIG, StockFont::F48M)?;
+        b.font(SMALL, StockFont::F24M)?;
+        b.font(MID, StockFont::F28M)
     }
 
     /// Every label in the system font, white; once, before the first view.
@@ -311,20 +324,35 @@ impl Screen {
                 let Some(w) = w else { return flush(b) };
                 let e = p.exercise(usize::from(w.day), ex);
                 self.plain(b)?;
-                self.hr = heart(b, self.page, 0, 16)?;
-                label(b, self.page, e.name, GREY, Align::TopMid, 0, 62, 340)?;
+                self.hr = heart(b, self.page, 0, 22)?;
+                label(b, self.page, e.name, WHITE, Align::TopMid, 0, 64, 340)?;
                 let mut t = Txt::<64>::new();
-                let _ = write!(t, "Подход {} из {}", (w.done[ex] + 1).min(e.sets), e.sets);
-                label(b, self.page, t.as_str(), WHITE, Align::TopMid, 0, 110, 0)?;
+                let _ = write!(t, "подход {} из {}", (w.done[ex] + 1).min(e.sets), e.sets);
+                labelf(b, SMALL, self.page, t.as_str(), GREY, Align::TopMid, 0, 106, 0)?;
                 let mut r = Txt::<16>::new();
                 reps(e.reps.0, e.reps.1, "-", &mut r);
-                let big = label(b, self.page, r.as_str(), WHITE, Align::TopMid, 0, 160, 0)?;
-                b.style(big, Prop::TextFont, 0, i32::from(BIG))?;
+                labelf(b, BIG, self.page, r.as_str(), WHITE, Align::TopMid, 0, 134, 0)?;
+                labelf(b, SMALL, self.page, "повторений", GREY, Align::TopMid, 0, 194, 0)?;
                 if !e.weight.is_empty() {
-                    label(b, self.page, e.weight, GREY, Align::TopMid, 0, 232, 340)?;
+                    // the weight as the program has it (F28M lacks some capitals: a rare one shows as a gap)
+                    labelf(b, MID, self.page, e.weight, ACCENT, Align::TopMid, 0, 226, 340)?;
                 }
                 room(b)?;
-                let done = pill(b, self.page, "Сделал", true, 300, 240)?;
+                // the sets: done in the accent, this one white, the rest dim
+                let n = e.sets.min(DOTS_MAX);
+                for k in 0..n {
+                    let dot = b.create(Class::Obj, self.page)?;
+                    b.size(dot, DOT, DOT)?;
+                    b.align(dot, Align::TopMid, (24 * i32::from(k) - 12 * (i32::from(n) - 1)) as i16, 274)?;
+                    b.style(dot, Prop::Radius, 0, CIRCLE)?;
+                    b.style(dot, Prop::BorderWidth, 0, 0)?;
+                    let c = if k < w.done[ex] { ACCENT } else if k == w.done[ex] { WHITE } else { LETTER_BG };
+                    b.style(dot, Prop::BgColor, 0, c)?;
+                    b.style(dot, Prop::BgOpa, 0, 255)?;
+                    b.flags(dot, &[], &[Flag::Clickable, Flag::Scrollable])?;
+                }
+                room(b)?;
+                let done = pill(b, self.page, "Сделал", true, 312, 240)?;
                 self.hit(done, Hit::Done);
             }
             View::Rest => {
@@ -337,23 +365,23 @@ impl Screen {
                 stock::arc(b, self.arc, 14)?;
                 b.flags(self.arc, &[], &[Flag::Clickable])?;
                 self.hr = heart(b, self.page, 0, 44)?;
-                label(b, self.page, "Отдых", GREY, Align::TopMid, 0, 96, 0)?;
-                self.time = label(b, self.page, "", WHITE, Align::TopMid, 0, 150, 0)?;
-                b.style(self.time, Prop::TextFont, 0, i32::from(BIG))?;
+                labelf(b, SMALL, self.page, "отдых", GREY, Align::TopMid, 0, 100, 0)?;
+                self.time = labelf(b, BIG, self.page, "", WHITE, Align::TopMid, 0, 132, 0)?;
                 let mut t = Txt::<96>::new();
                 let d = usize::from(w.day);
-                match m.after_rest() {
+                let next = match m.after_rest() {
                     Next::Set { ex, set } if ex == usize::from(w.rest_ex) => {
-                        let _ = write!(t, "Дальше: подход {} из {}", set + 1, p.exercise(d, ex).sets);
+                        let _ = write!(t, "Подход {} из {}", set + 1, p.exercise(d, ex).sets);
+                        "дальше"
                     }
                     Next::Set { ex, .. } => {
-                        let _ = write!(t, "Дальше: {}", p.exercise(d, ex).name);
+                        let _ = t.write_str(p.exercise(d, ex).name);
+                        "дальше"
                     }
-                    Next::Finished => {
-                        let _ = t.write_str("Последний подход");
-                    }
-                }
-                label(b, self.page, t.as_str(), GREY, Align::TopMid, 0, 232, 400)?;
+                    Next::Finished => "это был последний подход",
+                };
+                labelf(b, SMALL, self.page, next, GREY, Align::TopMid, 0, 200, 0)?;
+                label(b, self.page, t.as_str(), WHITE, Align::TopMid, 0, 232, 360)?;
                 room(b)?;
                 let skip = pill(b, self.page, "Пропустить", false, 300, 240)?;
                 self.hit(skip, Hit::Skip);
@@ -381,7 +409,7 @@ impl Screen {
                     b.style(big, Prop::TextFont, 0, i32::from(BIG))?;
                     let mut s = Txt::<64>::new();
                     let _ = write!(s, "{} из {} {}", e.done, e.planned, sets_word(usize::from(e.planned)));
-                    label(b, self.page, s.as_str(), GREY, Align::TopMid, 0, 214, 0)?;
+                    labelf(b, MID, self.page, s.as_str(), GREY, Align::TopMid, 0, 214, 0)?;
                 }
                 room(b)?;
                 let leave = pill(b, self.page, "Выйти", false, 300, 220)?;
@@ -487,7 +515,7 @@ mod tests {
             if b.bytes().is_empty() {
                 return Ok(());
             }
-            assert_eq!(lvcmd::validate(b.bytes(), &self.t, 0b11), Ok(()));
+            assert_eq!(lvcmd::validate(b.bytes(), &self.t, 0b1111), Ok(()));
             for r in lvcmd::records(b.bytes()) {
                 lvcmd::apply(&mut self.t, &r.unwrap());
             }
