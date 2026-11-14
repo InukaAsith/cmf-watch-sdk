@@ -103,7 +103,7 @@ class HeartRateTest(unittest.TestCase):
             self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
 
     def test_dark_panel(self):
-        """As the stock heart view: off while the panel is dark (SUSPEND), a fresh start on WAKE, a HEART 0 between."""
+        """It keeps measuring while the panel is dark (AOD on hardware): readings still reach the app, no restart."""
         from tests.test_back_e2e import ScreenOffTest
         with harness.installed(["loader", "hr-probe"], name="hr-dark") as (emu, port):
             ScreenOffTest().open(emu, port)
@@ -113,12 +113,12 @@ class HeartRateTest(unittest.TestCase):
             emu.sleep(2)
             self.assertEqual(self.probe(emu)[DELTA], 67)
             dark = []
-            ScreenOffTest.blank_and_wake(emu, port, during=lambda: (emu.sleep(1), dark.append(
+            ScreenOffTest.blank_and_wake(emu, port, during=lambda: (emu.poke(BPM, bytes([71])), emu.sleep(2.5), dark.append(
                 (self.owner(emu), emu.peek(REQUESTS, 1)[0], self.probe(emu)[DELTA]))))
-            self.assertEqual(dark, [(0, 0, 0)], "off in the dark, the app told: no reading")
+            self.assertEqual(dark, [(1, 1, 71)], "on in the dark, the app gets the reading")
             emu.sleep(1)
-            self.assert_on(emu, True, "started again on wake")
-            self.assertEqual(emu.peek(BPM, 1), b"\x00", "a fresh measurement, no stale reading")
+            self.assert_on(emu, True, "still the one start after the wake")
+            self.assertEqual(self.probe(emu)[DELTA], 71, "no restart on wake")
             self.assertTrue(self.running(emu))
 
 
