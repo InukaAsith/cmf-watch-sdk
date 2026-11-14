@@ -209,7 +209,8 @@ pub const DOT_X: i16 = -14;
 /// `Event.y` of a pager's page event (`LV_EVENT_VALUE_CHANGED`).
 pub const PAGE_CHANGED: i16 = 28;
 
-/// A vertical pager over the whole screen ([`Class::Pager`]) with `N` pages and page dots at the right edge: a
+/// A vertical pager over the whole screen ([`Class::Pager`]) with `n` pages (at most `N`, the size of its arrays;
+/// the handles past `n` are `ROOT`) and page dots at the right edge: a
 /// white pill for the current page, grey dots for the others. Swipe up/down or turn the crown: one page per step;
 /// a page whose content is taller than the screen scrolls first and pages at its end. Feed every event to
 /// [`Pager::event`]. Build the pages' content into `pages` (plain objects, no padding, transparent). `del(root)`
@@ -223,9 +224,11 @@ pub struct Pager<const N: usize> {
     pub dots: [Obj; N],
     /// The page the dots show.
     pub at: usize,
+    pub n: usize,
 }
 
-pub fn pager<const N: usize>(b: &mut Batch) -> Result<Pager<N>, LvError> {
+pub fn pager<const N: usize>(b: &mut Batch, n: usize) -> Result<Pager<N>, LvError> {
+    let n = n.min(N);
     let root = b.create(Class::Obj, ROOT)?;
     b.size(root, SCREEN, SCREEN)?;
     for p in [Prop::PadTop, Prop::PadBottom, Prop::PadLeft, Prop::PadRight, Prop::BorderWidth, Prop::Radius, Prop::BgOpa] {
@@ -234,7 +237,7 @@ pub fn pager<const N: usize>(b: &mut Batch) -> Result<Pager<N>, LvError> {
     b.flags(root, &[], &[Flag::Scrollable])?;
     let obj = b.create(Class::Pager, root)?;
     let mut pages = [ROOT; N];
-    for p in pages.iter_mut() {
+    for p in pages.iter_mut().take(n) {
         *p = b.create(Class::Page, obj)?;
     }
     // after the pager, outside it: they stay put while the pages move; not clickable, so touches reach the pages
@@ -248,7 +251,7 @@ pub fn pager<const N: usize>(b: &mut Batch) -> Result<Pager<N>, LvError> {
     b.flags(col, &[], &[Flag::Clickable, Flag::Scrollable])?;
     b.align(col, Align::RightMid, DOT_X, 0)?;
     let mut dots = [ROOT; N];
-    for (i, d) in dots.iter_mut().enumerate() {
+    for (i, d) in dots.iter_mut().enumerate().take(n) {
         *d = b.create(Class::Obj, col)?;
         b.style(*d, Prop::Radius, 0, CIRCLE)?;
         b.style(*d, Prop::BgOpa, 0, 255)?;
@@ -256,7 +259,7 @@ pub fn pager<const N: usize>(b: &mut Batch) -> Result<Pager<N>, LvError> {
         b.flags(*d, &[], &[Flag::Clickable, Flag::Scrollable])?;
         dot(b, *d, i == 0)?;
     }
-    Ok(Pager { root, obj, pages, dots, at: 0 })
+    Ok(Pager { root, obj, pages, dots, at: 0, n })
 }
 
 fn dot(b: &mut Batch, d: Obj, on: bool) -> Result<(), LvError> {
@@ -279,7 +282,7 @@ impl<const N: usize> Pager<N> {
 
     /// Moves the dots to page `i`.
     pub fn show(&mut self, b: &mut Batch, i: usize) -> Result<(), LvError> {
-        if i >= N || i == self.at {
+        if i >= self.n || i == self.at {
             return Ok(());
         }
         dot(b, self.dots[self.at], false)?;
@@ -291,6 +294,12 @@ impl<const N: usize> Pager<N> {
     /// Glides to page `i`; the page event follows when it settles.
     pub fn go(&self, b: &mut Batch, i: usize) -> Result<(), LvError> {
         b.value(self.obj, i as i32, true)
+    }
+
+    /// Shows page `i` at once, dots included (to open a pager on a page other than the first).
+    pub fn jump(&mut self, b: &mut Batch, i: usize) -> Result<(), LvError> {
+        b.value(self.obj, i as i32, false)?;
+        self.show(b, i)
     }
 }
 

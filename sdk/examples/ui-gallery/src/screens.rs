@@ -351,7 +351,7 @@ fn pager_page(b: &mut Batch, page: Obj, pad: i32) -> Result<(), LvError> {
 /// The pager section: three pages with dots. Page 1 a big number, page 2 rows taller than the screen (they scroll
 /// first, then the pager pages on), page 3 "Back".
 fn pages(b: &mut Batch, flush: &mut impl FnMut(&mut Batch) -> Result<(), LvError>) -> Result<Screen, LvError> {
-    let p = stock::pager::<3>(b)?;
+    let p = stock::pager::<3>(b, 3)?;
     let mut s = Screen { page: p.root, section: Some(PAGES), pager: Some(p), ..EMPTY };
     let [one, two, three] = p.pages;
     pager_page(b, one, 0)?;
