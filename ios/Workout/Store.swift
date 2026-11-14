@@ -44,6 +44,8 @@ final class AppStore {
         var open: OpenWorkout?
         /// workouts finished on the phone the watch has not heard of yet (H or F at the next meeting)
         var unsent: [Entry]?
+        /// age and resting rate for the heart-rate zones; the watch gets only their bounds
+        var zones: HeartZones?
     }
 
     private(set) var saved: Saved
@@ -86,6 +88,11 @@ final class AppStore {
     }
 
     var open: OpenWorkout? { saved.open }
+
+    var zones: HeartZones? {
+        get { saved.zones }
+        set { saved.zones = newValue; save() }
+    }
     var unsent: [Entry] { saved.unsent ?? [] }
 
     /// The day the rotation offers: the one after the newest workout's (by name), else the first.

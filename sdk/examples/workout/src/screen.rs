@@ -69,6 +69,9 @@ pub struct Screen {
     shown: Option<u32>,
     // heart rate: the label and the bpm it shows (None: not drawn yet)
     hr: Obj,
+    hr_dot: Obj,
+    /// The zone bar's five segments (ROOT: none on this view).
+    zbar: [Obj; 5],
     hr_shown: Option<u8>,
 }
 
@@ -161,7 +164,26 @@ fn labelf(b: &mut Batch, slot: u8, parent: Obj, text: &str, colour: i32, align: 
 
 /// The heart rate as the stock workout shows it under the clock: a red mark (the font has no heart) and the bpm,
 /// centred on `x`; returns the bpm label.
-fn heart(b: &mut Batch, parent: Obj, x: i16, y: i16) -> Result<Obj, LvError> {
+/// Zone colours 1..5 (RGB565): grey, blue, green, orange, red; the heart's red without a zone.
+const ZONE: [i32; 6] = [HEART, 0x8C71, 0x3C1E, 0x262B, 0xF4E1, HEART];
+
+/// Five short segments centred under the heart rate; the current zone's lights up (`tick`).
+fn zone_bar(b: &mut Batch, parent: Obj, y: i16) -> Result<[Obj; 5], LvError> {
+    let mut bar = [ROOT; 5];
+    for (k, o) in bar.iter_mut().enumerate() {
+        *o = b.create(Class::Obj, parent)?;
+        b.size(*o, 20, 6)?;
+        b.align(*o, Align::TopMid, 24 * k as i16 - 48, y)?;
+        b.style(*o, Prop::Radius, 0, 3)?;
+        b.style(*o, Prop::BorderWidth, 0, 0)?;
+        b.style(*o, Prop::BgColor, 0, ZONE[k + 1])?;
+        b.style(*o, Prop::BgOpa, 0, 110)?;
+        b.flags(*o, &[], &[Flag::Clickable])?;
+    }
+    Ok(bar)
+}
+
+fn heart(b: &mut Batch, parent: Obj, x: i16, y: i16) -> Result<(Obj, Obj), LvError> {
     let dot = b.create(Class::Obj, parent)?;
     b.size(dot, 12, 12)?;
     b.align(dot, Align::TopMid, x - 26, y + 10)?;
@@ -172,7 +194,7 @@ fn heart(b: &mut Batch, parent: Obj, x: i16, y: i16) -> Result<Obj, LvError> {
     b.flags(dot, &[], &[Flag::Clickable])?;
     let l = label(b, parent, "--", WHITE, Align::TopLeft, 0, y, 0)?;
     b.align(l, Align::TopMid, x + 10, y)?;
-    Ok(l)
+    Ok((l, dot))
 }
 
 /// One left-aligned line in a row, "..." when it does not fit.
@@ -219,7 +241,7 @@ impl Screen {
     }
 
     pub const fn empty() -> Screen {
-        Screen { view: View::Start, page: ROOT, header: ROOT, hits: [(ROOT, Hit::Cancel); HITS], n_hits: 0, clock: ROOT, arc: ROOT, time: ROOT, shown: None, hr: ROOT, hr_shown: None }
+        Screen { view: View::Start, page: ROOT, header: ROOT, hits: [(ROOT, Hit::Cancel); HITS], n_hits: 0, clock: ROOT, arc: ROOT, time: ROOT, shown: None, hr: ROOT, hr_dot: ROOT, zbar: [ROOT; 5], hr_shown: None }
     }
 
     /// Deletes the current view and builds `view`; batches go out through `flush` (`Batch::submit` on the watch)
@@ -263,7 +285,7 @@ impl Screen {
                 label(b, self.header, title.as_str(), ACCENT, Align::TopMid, 0, 22, 0)?;
                 if view == View::Day {
                     self.clock = label(b, self.header, "", GREY, Align::TopMid, -60, 58, 0)?;
-                    self.hr = heart(b, self.header, 60, 58)?;
+                    (self.hr, self.hr_dot) = heart(b, self.header, 60, 58)?;
                 }
                 // a plain list like Custom Apps: rows keep their size while it scrolls
                 let (page, _bar) = stock::page(b)?;
@@ -348,7 +370,10 @@ impl Screen {
                 let Some(w) = w else { return flush(b) };
                 let e = p.exercise(usize::from(w.day), ex);
                 self.plain(b)?;
-                self.hr = heart(b, self.page, 0, 22)?;
+                (self.hr, self.hr_dot) = heart(b, self.page, 0, 14)?;
+                if m.zones != [0; 5] {
+                    self.zbar = zone_bar(b, self.page, 52)?;
+                }
                 label(b, self.page, e.name, WHITE, Align::TopMid, 0, 64, 340)?;
                 let mut t = Txt::<64>::new();
                 let _ = write!(t, "подход {} из {}", (w.done[ex] + 1).min(e.sets), e.sets);
@@ -388,7 +413,10 @@ impl Screen {
                 b.angles(self.arc, 0, 360, 270)?;
                 stock::arc(b, self.arc, 14)?;
                 b.flags(self.arc, &[], &[Flag::Clickable])?;
-                self.hr = heart(b, self.page, 0, 44)?;
+                (self.hr, self.hr_dot) = heart(b, self.page, 0, 40)?;
+                if m.zones != [0; 5] {
+                    self.zbar = zone_bar(b, self.page, 80)?;
+                }
                 labelf(b, SMALL, self.page, "отдых", GREY, Align::TopMid, 0, 100, 0)?;
                 self.time = labelf(b, BIG, self.page, "", WHITE, Align::TopMid, 0, 132, 0)?;
                 let mut t = Txt::<96>::new();
@@ -457,6 +485,11 @@ impl Screen {
                 let _ = write!(t, "{}", m.bpm);
             }
             b.text(self.hr, t.as_str())?;
+            let z = usize::from(m.zone(m.bpm));
+            b.style(self.hr_dot, Prop::BgColor, 0, ZONE[z])?;
+            for (k, &o) in self.zbar.iter().enumerate().filter(|(_, o)| **o != ROOT) {
+                b.style(o, Prop::BgOpa, 0, if k + 1 == z { 255 } else { 110 })?;
+            }
             self.hr_shown = Some(m.bpm);
             t = Txt::new();
             flush(b)?;

@@ -136,7 +136,10 @@ final class SyncController {
                     }
                     guard case let .request(_, running) = r else { continue }
                     if !running { live = nil }
-                    if r != lastRequest || Date.now.timeIntervalSince(lastSync) > 60 { await run(ch, r) }
+                    if r != lastRequest || Date.now.timeIntervalSince(lastSync) > 60 {
+                        await run(ch, r)
+                        await sendZones()
+                    }
                     if !running {
                         // the watch ended the shared workout (its entry came with the sync, or it had no sets)
                         if let o = store.open, let w = watch, w.start == o.start {
@@ -221,6 +224,12 @@ final class SyncController {
         }
         guard got == start, let t = parseTrace(parts.keys.sorted().reduce(Data()) { $0 + parts[$1]! }) else { return [] }
         return t.sets
+    }
+
+    /// The zones' bounds to the watch (it keeps them; a repeat changes nothing).
+    func sendZones() async {
+        guard let ch = channel, let z = store.zones else { return }
+        try? await ch.send(zonesMessage(z))
     }
 
     /// The full-screen player is up.

@@ -143,6 +143,11 @@ def entry_msg(e: Entry) -> bytes:
     return MAGIC + b"H\x00" + struct.pack("<IHBBB", e.start, e.dur_s, e.day, e.done, e.planned)
 
 
+def zones_msg(lows: list[int]) -> bytes:
+    """Z: the lowest bpm of heart-rate zones 1..5."""
+    return MAGIC + b"Z\x00" + bytes(lows)
+
+
 def decode_entry(msg: bytes) -> Entry | None:
     if len(msg) != 14 or msg[:3] != MAGIC + b"Y" or msg[4] == 0:
         return None

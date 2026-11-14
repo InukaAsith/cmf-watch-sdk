@@ -387,6 +387,13 @@ mod device {
                             }
                         }
                     }
+                    Got::Zones(z) => {
+                        if m.zones != z {
+                            m.zones = z;
+                            save(api, m);
+                            to = Some(s.view); // the heart takes its zone colour
+                        }
+                    }
                     Got::Unset { start, ex, t: at } => {
                         if m.remove_set(start, ex, at) {
                             save(api, m);

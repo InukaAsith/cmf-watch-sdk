@@ -39,6 +39,7 @@ def program() -> bytes:
 
 
 HR_WEAR, HR_BPM = 0x3804B30C, 0x3804B310  # wp2_core::stock HR_*, as tests/test_hr_e2e.py
+ZONES = [95, 110, 120, 140, 160]  # synthetic bounds: SYNTH_BPM is in zone 3 (green)
 SYNTH_BPM = 123  # synthetic: real heart-rate values are personal data and never appear in tests
 
 
@@ -105,7 +106,10 @@ class WorkoutTest(unittest.TestCase):
 
     def test_1_push_and_walk(self):
         p = program()
-        out, done = self.with_app(lambda ch: workout.push(ch, p, log=lambda *_: None))
+        async def push(ch):
+            await workout.push(ch, p, log=lambda *_: None)
+            await ch.send(workout.zones_msg(ZONES))
+        out, done = self.with_app(push)
         tap_row(self.emu, 0)
         self.wait(done)
         self.assertNotIsInstance(out[0], Exception, out)

@@ -16,6 +16,8 @@ pub enum Got<'a> {
     Finish { start: u32, end: u32 },
     /// H: a workout done on the phone alone.
     Entry(Entry),
+    /// Z: heart-rate zones, the lowest bpm of zones 1..5.
+    Zones([u8; 5]),
     /// U: the phone took a set back.
     Unset { start: u32, ex: u8, t: u16 },
 }
@@ -51,6 +53,10 @@ impl Transfer {
                     start: u32::from_le_bytes([a, b, c, d]), day, version: u32::from_le_bytes([v0, v1, v2, v3]), ex,
                     t: u16::from_le_bytes([t0, t1]),
                 },
+                _ => Got::Nothing,
+            },
+            b'Z' => match body {
+                &[a, b, c, d, e] => Got::Zones([a, b, c, d, e]),
                 _ => Got::Nothing,
             },
             b'U' => match body {
@@ -248,6 +254,7 @@ mod tests {
         assert_eq!(t.apply(b"w1H\x00\x0D\x0C\x0B\x0A\x02\x01\x02\x07\x09"),
                    Got::Entry(Entry { start: 0x0A0B_0C0D, dur_s: 0x0102, day: 2, done: 7, planned: 9 }));
         assert_eq!(t.apply(b"w1D\x00\x01"), Got::Nothing, "short");
+        assert_eq!(t.apply(b"w1Z\x00\x5F\x72\x85\x98\xAB"), Got::Zones([95, 114, 133, 152, 171]));
         assert_eq!(t.apply(b"w1U\x00\x0D\x0C\x0B\x0A\x02\x1E\x00"), Got::Unset { start: 0x0A0B_0C0D, ex: 2, t: 30 });
     }
 
