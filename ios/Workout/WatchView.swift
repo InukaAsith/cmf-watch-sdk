@@ -41,7 +41,14 @@ struct WatchView: View {
                     }
                 }
 
-                ZonesSection()
+                Section {
+                    NavigationLink {
+                        List { ZonesSection() }.navigationTitle("Пульсовые зоны")
+                    } label: {
+                        LabeledContent("Пульсовые зоны", value: store.zones.map { String(localized: "\($0.age) лет · макс. \($0.max)") }
+                                       ?? String(localized: "не заданы"))
+                    }
+                }
 
                 Section("Приложение на часах") {
                     LabeledContent("Установлено", value: sync.installed.map { String(localized: "версия \($0.version)") } ?? String(localized: "нет"))

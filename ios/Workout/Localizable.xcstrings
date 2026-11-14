@@ -61,6 +61,16 @@
         }
       }
     },
+    "%lld лет · макс. %lld": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$lld y · max %2$lld"
+          }
+        }
+      }
+    },
     "%lld мин": {
       "localizations": {
         "en": {
@@ -1449,6 +1459,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "this week"
+          }
+        }
+      }
+    },
+    "не заданы": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "not set"
           }
         }
       }
