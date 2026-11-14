@@ -355,6 +355,40 @@ mod device {
                         let len = m.trace.encode(unsafe { &mut *&raw mut TRACE });
                         trace = Some((0, len.div_ceil(X_CHUNK) as u8, len));
                     }
+                    Got::Set { start, day, version: v, ex, t: at } => {
+                        if v == version(m) && m.merge_set(start, day, ex, at, now) {
+                            save(api, m);
+                            set(SETS, sets_done(m));
+                            // the phone's set on this exercise (or during this rest) moves the watch on as its own would
+                            to = match s.view {
+                                View::Set { ex: e } if e == usize::from(ex) => Some(resume_view(m, now)),
+                                View::Rest => Some(resume_view(m, now)),
+                                View::Start | View::Done => Some(View::Day),
+                                View::Ask => to,
+                                v => Some(v),
+                            };
+                            if to == Some(View::Rest) {
+                                awake = None;
+                            }
+                        }
+                    }
+                    Got::Finish { start, end } => {
+                        let had = sets_done(m) > 0;
+                        if m.finish_at(start, end) {
+                            save(api, m);
+                            set(SETS, 0);
+                            api.send(&request(version(m), false));
+                            to = Some(if had { View::Done } else { View::Start });
+                        }
+                    }
+                    Got::Entry(e) => {
+                        if m.add_entry(e) {
+                            save(api, m);
+                            if s.view == View::Start {
+                                to = Some(View::Start); // the next day may have moved
+                            }
+                        }
+                    }
                     Got::Resync => {
                         api.send(&request(version(m), m.workout.is_some()));
                     }
