@@ -170,3 +170,7 @@ pub const HR_WEAR: u32 = 0x3804_B30C;
 pub const HR_OWNER: u32 = 0x3804_B30F;
 // u8 latest bpm, 0 = none; hr_callback type 5 (0x100E337A) writes it, the heart view clears it at start
 pub const HR_BPM: u32 = 0x3804_B310;
+// The launcher's "return to watch face" (docs/recon.md, "Return to watch face"): u32 callback at RETURN_CB, set to
+// RETURN_CLOCK at launch; late-resume calls it when the panel was dark for ux2sys 0x9C seconds, unless it is 0.
+pub const RETURN_CB: u32 = 0x3801_9B10;
+pub const RETURN_CLOCK: u32 = 0x1005_D969;
