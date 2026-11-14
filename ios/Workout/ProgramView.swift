@@ -4,6 +4,7 @@ import WireKit
 
 struct ProgramView: View {
     @Environment(AppStore.self) private var store
+    @Environment(SyncController.self) private var sync
     @State private var importing = false
     @State private var importError: String?
 
@@ -11,27 +12,24 @@ struct ProgramView: View {
         @Bindable var store = store
         NavigationStack {
             List {
+                if let live = sync.live { ActiveSection(live: live) }
                 if case let .failure(e) = store.encoded, !store.days.isEmpty {
                     Section { Label(e.text, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 }
                 Section("Дни") {
-                    ForEach($store.days) { $day in
-                        NavigationLink(value: day.id) {
-                            VStack(alignment: .leading) {
-                                Text(day.name.isEmpty ? "Без названия" : day.name)
-                                Text(plural(day.exercises.count, "упражнение", "упражнения", "упражнений")).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
+                    ForEach(Array(store.days.enumerated()), id: \.element.id) { i, day in
+                        NavigationLink(value: day.id) { DayRow(index: i + 1, day: day) }
                     }
                     .onDelete { store.days.remove(atOffsets: $0) }
                     .onMove { store.days.move(fromOffsets: $0, toOffset: $1) }
                     if store.days.count < daysMax {
                         Button("Добавить день", systemImage: "plus") {
-                            store.days.append(DayItem(name: "День \(store.days.count + 1)", exercises: []))
+                            store.days.append(DayItem(name: String(localized: "День \(store.days.count + 1)"), exercises: []))
                         }
                     }
                 }
             }
+            .listRowSpacing(10)
             .navigationTitle("Программа")
             .navigationDestination(for: UUID.self) { id in
                 if let i = store.days.firstIndex(where: { $0.id == id }) { DayView(day: $store.days[i]) }
@@ -61,6 +59,29 @@ struct ProgramView: View {
     }
 }
 
+/// A day of the program: its number in a filled badge, the name and the exercises in it.
+private struct DayRow: View {
+    let index: Int
+    let day: DayItem
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Text("\(index)")
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .foregroundStyle(Color(.secondarySystemGroupedBackground))
+                .frame(width: 44, height: 44)
+                .background(Color.accentColor, in: .rect(cornerRadius: 14, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(day.name.isEmpty ? String(localized: "Без названия") : day.name).font(.body.weight(.semibold))
+                Text(day.exercises.isEmpty ? String(localized: "Нет упражнений")
+                     : day.exercises.map(\.exercise.name).joined(separator: " · "))
+                    .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 struct DayView: View {
     @Binding var day: DayItem
 
@@ -74,10 +95,11 @@ struct DayView: View {
                     NavigationLink {
                         ExerciseView(exercise: $ex.exercise)
                     } label: {
-                        VStack(alignment: .leading) {
-                            Text(ex.exercise.name.isEmpty ? "Без названия" : ex.exercise.name)
-                            Text(ex.summary).font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ex.exercise.name.isEmpty ? String(localized: "Без названия") : ex.exercise.name).font(.body.weight(.semibold))
+                            Text(ex.summary).font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
                         }
+                        .padding(.vertical, 4)
                     }
                 }
                 .onDelete { day.exercises.remove(atOffsets: $0) }
@@ -90,6 +112,7 @@ struct DayView: View {
                 }
             }
         }
+        .listRowSpacing(10)
         .navigationTitle(day.name)
         .toolbar { EditButton() }
     }
@@ -115,13 +138,13 @@ struct ExerciseView: View {
             }
             Stepper("Отдых: \(restText(exercise.restS))", value: $exercise.restS, in: 0...600, step: 15)
         }
-        .navigationTitle(exercise.name.isEmpty ? "Упражнение" : exercise.name)
+        .navigationTitle(exercise.name.isEmpty ? String(localized: "Упражнение") : exercise.name)
     }
 }
 
 /// A text field that shows the bytes left before the watch cuts the text (32 B UTF-8).
 struct LimitedField: View {
-    let title: String
+    let title: LocalizedStringKey
     @Binding var text: String
 
     var body: some View {

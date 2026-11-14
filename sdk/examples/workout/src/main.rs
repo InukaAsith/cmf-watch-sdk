@@ -35,6 +35,7 @@ mod device {
     // swipe across a pill is also a tap on it
     const DEFER_MS: u32 = 150;
     const GESTURE_MS: u32 = 400;
+    const WAKE_KEY_MS: u32 = 500;
     /// A P to the phone at least this often during a workout (sooner when the exercise or the sets change).
     const PULSE_MS: u32 = 5000;
     const TRACE_MAX: usize = 1 + SETS_MAX * 3 + 2 + HR_MAX;
@@ -201,11 +202,12 @@ mod device {
         let mut hist: Option<u8> = None;
         // X messages left: (next index, count, trace bytes)
         let mut trace: Option<(u8, u8, usize)> = None;
-        let mut pulsed: Option<(u32, u8, u8)> = None; // (ms, ex, done) of the last P
+        let mut pulsed: Option<(u32, u8, u8, bool)> = None; // (ms, ex, done, resting) of the last P
         let mut hr_on = false; // the measurement runs while a workout does (docs/abi-1.4.md, Heart rate)
         // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
         let mut locked = false;
         let mut shown_at = api.now();
+        let mut resumed_at = api.now().wrapping_sub(WAKE_KEY_MS);
         let mut button_at = api.now().wrapping_sub(GESTURE_MS);
         let mut pending: Option<(Hit, u32)> = None;
         loop {
@@ -244,9 +246,11 @@ mod device {
             m.hr_sample(m.bpm, now);
             if let Some(w) = m.workout {
                 let (ex, done) = (open_ex(s.view, m), sets_done(m) as u8);
-                if pulsed.is_none_or(|(t, e, d)| ms.wrapping_sub(t) >= PULSE_MS || (e, d) != (ex, done)) {
-                    api.send(&pulse(w.started, w.day, m.bpm, ex, done));
-                    pulsed = Some((ms, ex, done));
+                let ex_done = w.done.get(usize::from(ex)).copied().unwrap_or(0);
+                let rest = if s.view == View::Rest { (w.rest_until.wrapping_sub(now) as i32).clamp(0, 0xFFFF) as u16 } else { 0 };
+                if pulsed.is_none_or(|(t, e, d, r)| ms.wrapping_sub(t) >= PULSE_MS || (e, d, r) != (ex, done, rest > 0)) {
+                    api.send(&pulse(w.started, w.day, m.bpm, ex, done, ex_done, rest));
+                    pulsed = Some((ms, ex, done, rest > 0));
                 }
             }
             let _ = s.tick(b, &mut |b| b.submit(&lv), m, now);
@@ -276,6 +280,8 @@ mod device {
             let mut to: Option<View> = None;
             let mut hit = None;
             match api.event(wait) {
+                // the press that ends AOD can follow its RESUME: not a "back"
+                Some(e) if e.kind == BUTTON && api.now().wrapping_sub(resumed_at) < WAKE_KEY_MS => {}
                 Some(e) if e.kind == BUTTON => {
                     button_at = api.now();
                     pending = None;
@@ -288,11 +294,15 @@ mod device {
                 Some(e) if e.kind == PAUSE => {
                     motor.off();
                     while !api.event(u32::MAX).is_some_and(|e| e.kind == RESUME) {}
+                    resumed_at = api.now();
                     asked = None;
                     // a rest that ended meanwhile: the next set, no late buzz
                     to = Some(resume_view(m, now_s(api)));
                 }
-                Some(e) if e.kind == RESUME => to = Some(s.view),
+                Some(e) if e.kind == RESUME => {
+                    resumed_at = api.now();
+                    to = Some(s.view);
+                }
                 // x: worn; delta: bpm, 0 = no reading yet
                 Some(e) if e.kind == HEART => m.bpm = if e.x == 1 { e.delta.clamp(0, 255) as u8 } else { 0 },
                 Some(e) if e.kind == LV && e.y == CLICKED => {

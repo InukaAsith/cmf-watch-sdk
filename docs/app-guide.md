@@ -310,6 +310,9 @@ have ~5 ms granularity (`next_event` in `fw/wp2-loader/src/app.rs`). Never spin 
   stack across auto-sleep, drops the key press that wakes the panel, and the app is shown again; an AOD overlay
   pauses it (`PAUSE`/`RESUME`). Proven in the emulator for light sleep (S1, `tests/test_back_e2e.py`
   `ScreenOffTest`); deep sleep (S2/S3BT) and AOD are not modelled there and are unverified on hardware.
+- **The press that ends AOD** reaches the view after the launcher's late-resume (`0x83`): the loader drops a key that
+  comes while asleep (`0x82`) or within 500 ms of `0x83`. An app on an older loader drops a `BUTTON` within 500 ms of
+  `RESUME` itself (workout does). The emulator does not model AOD: seen on hardware only.
 
 ### Time
 
