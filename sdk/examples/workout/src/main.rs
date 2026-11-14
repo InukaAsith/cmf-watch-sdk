@@ -310,8 +310,8 @@ mod device {
                     while !api.event(u32::MAX).is_some_and(|e| e.kind == RESUME) {}
                     resumed_at = api.now();
                     asked = None;
-                    // a rest that ended meanwhile: the next set, no late buzz
-                    to = Some(resume_view(m, now_s(api)));
+                    // a rest that ended meanwhile: the next set, no late buzz; any other view stays (AOD pauses too)
+                    to = Some(if s.view == View::Rest { resume_view(m, now_s(api)) } else { s.view });
                 }
                 Some(e) if e.kind == RESUME => {
                     resumed_at = api.now();

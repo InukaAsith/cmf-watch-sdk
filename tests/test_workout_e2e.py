@@ -12,7 +12,7 @@ from tests.e2e import harness
 from tests.test_api_e2e import KEY, session
 from tests import test_back_e2e
 from tests.test_back_e2e import back, tap_row
-from tests.test_api_e2e import WAKE_BIT, WAKE_WORD
+from tests.test_api_e2e import BTCALL_MSGBOX, MSGBOX_CLOSE, MSGBOX_POPUP, WAKE_BIT, WAKE_WORD
 from tests.test_demo_e2e import save_png
 from tests.test_e2e import START
 from wp2apps import channel, paths, workout
@@ -138,6 +138,8 @@ class WorkoutTest(unittest.TestCase):
         self.assertEqual(self.stats()[VIEW], SET)
         self.assertEqual(self.stats()[EX], 0)
         self.shot("1-set")
+        self.overlay()  # AOD on hardware: before the first set its close went to the day list
+        self.assertEqual(self.stats()[:1] + self.stats()[5:], (SET, 0), "the overlay's close left the set screen")
         # the set view is a pager of the day's open exercises: the crown and a vertical swipe go to the next one
         self.emu.send("r -80", pause=1.5)
         self.assertEqual(self.stats()[:1] + self.stats()[5:], (SET, 1), "the crown did not page to Тяга")
@@ -159,6 +161,15 @@ class WorkoutTest(unittest.TestCase):
         self.assertEqual((st[VIEW], st[BUZZES]), (SET, 1))
         self.assertTrue(any(duty > 0 for _, duty, _ in self.emu.motor()[mark:]), "no buzz at the end of the rest")
         self.shot("1-next-set")
+
+    def overlay(self):
+        """A stock overlay over the app (a message box here, AOD on hardware): PAUSE, then RESUME on its close."""
+        self.emu.call(MSGBOX_POPUP, BTCALL_MSGBOX, 0)
+        harness.wait_popup(self.emu, True)
+        self.emu.sleep(0.5)
+        self.emu.call(MSGBOX_CLOSE, BTCALL_MSGBOX, 0)
+        harness.wait_popup(self.emu, False)
+        self.emu.sleep(1)
 
     def wake_held(self):
         return bool(harness.u32(self.emu, WAKE_WORD) & WAKE_BIT)
