@@ -33,6 +33,6 @@ device=${WP2_DEVICE:-$(xcrun devicectl list devices 2>/dev/null | grep physical 
 [ -n "$device" ] || { echo "no iPhone connected (cable, unlocked, trusted, Developer Mode on)" >&2; exit 1; }
 xcodebuild -project Workout.xcodeproj -scheme Workout -configuration Release -destination "id=$device" \
     -derivedDataPath build -allowProvisioningUpdates -quiet \
-    DEVELOPMENT_TEAM="$WP2_TEAM" PRODUCT_BUNDLE_IDENTIFIER="$bundle" build
+    DEVELOPMENT_TEAM="$WP2_TEAM" WP2_BUNDLE="$bundle" build
 xcrun devicectl device install app --device "$device" build/Build/Products/Release-iphoneos/Workout.app
 echo "installed; first launch: Settings > General > VPN & Device Management > trust your developer profile"

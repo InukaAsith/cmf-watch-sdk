@@ -48,6 +48,8 @@ final class AppStore {
 
     private(set) var saved: Saved
     private let url: URL
+    /// Called after every save (the Live Activity and the gym circle follow the open workout).
+    var onSave: ((AppStore) -> Void)?
 
     init(url: URL = URL.applicationSupportDirectory.appending(path: "workout.json")) {
         self.url = url
@@ -114,6 +116,14 @@ final class AppStore {
         guard var o = saved.open, o.done(ex) < planned(ex) else { return nil }
         let m = SetMark(ex: ex, t: max(0, Int(watchSeconds()) - Int(o.start)))
         o.union([m], planned: planned)
+        saved.open = o
+        save()
+        return m
+    }
+
+    /// Takes the newest set back; returns it.
+    func undoSet() -> SetMark? {
+        guard var o = saved.open, let m = o.undoLast() else { return nil }
         saved.open = o
         save()
         return m
@@ -201,7 +211,16 @@ final class AppStore {
     }
     #endif
 
+    /// The exercise to do next: the newest set's while it has sets left, else the first open one from the top.
+    func currentExercise(picked: Int? = nil) -> Int? {
+        guard let o = open, o.day < days.count else { return nil }
+        let day = days[o.day]
+        let isOpen = { (i: Int) in i < day.exercises.count && o.done(i) < day.exercises[i].exercise.sets }
+        return [picked, o.sets.last?.ex].compactMap { $0 }.first(where: isOpen) ?? day.exercises.indices.first(where: isOpen)
+    }
+
     private func save() {
+        onSave?(self)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? JSONEncoder().encode(saved).write(to: url, options: .atomic)
     }

@@ -41,8 +41,27 @@ final class SyncController {
     private var lastSync = Date.distantPast
     private var foreground = true
 
+    private var gym: GymGuard?
+
     init(store: AppStore) {
         self.store = store
+        gym = GymGuard { [weak self] in
+            guard let self, let o = store.open, !GymGuard.tooYoung(o) else { return }
+            let had = !o.sets.isEmpty
+            finishWorkout()
+            if had { GymGuard.notifyFinished() }
+        }
+        store.onSave = { [weak self] s in
+            LiveWorkout.sync(s)
+            self?.gym?.sync(s.open)
+        }
+        WorkoutActions.done = { [weak self] in
+            guard let self, let ex = store.currentExercise() else { return }
+            doneSet(ex)
+        }
+        WorkoutActions.finish = { [weak self] in self?.finishWorkout() }
+        LiveWorkout.sync(store)
+        gym?.sync(store.open)
         #if DEBUG
         // iOS Simulator: `wp2apps bridge --hci-port P` in front of the emulator, app launched with `-tcp 7700`
         if let i = CommandLine.arguments.firstIndex(of: "-tcp"), i + 1 < CommandLine.arguments.count,
@@ -164,6 +183,7 @@ final class SyncController {
                 o.union(theirs, planned: store.planned)
                 store.setOpen(o)
                 for s in o.sets where !theirs.contains(s) { try await ch.send(setMessage(o, s)) }
+                for s in o.removed ?? [] where theirs.contains(s) { try await ch.send(unsetMessage(o, s)) }
             case .adoptWatch:
                 guard let w = watch else { return }
                 store.setOpen(OpenWorkout(start: w.start, day: w.day, version: version))
@@ -222,6 +242,12 @@ final class SyncController {
             Task { try? await ch.send(setMessage(o, m)) }
             if watch == nil { Task { await reconcile(ch) } } // the watch app idle: it adopts the workout
         }
+    }
+
+    func undoSet() {
+        guard let m = store.undoSet(), let o = store.open else { return }
+        Rest.cancel()
+        if let ch = channel, watch?.start == o.start { Task { try? await ch.send(unsetMessage(o, m)) } }
     }
 
     func finishWorkout() {

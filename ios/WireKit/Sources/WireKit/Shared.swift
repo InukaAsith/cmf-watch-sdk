@@ -17,6 +17,8 @@ public struct OpenWorkout: Codable, Hashable, Sendable {
     public var version: UInt32
     /// In time order, at most one per (ex, t).
     public var sets: [SetMark]
+    /// Sets taken back: a merge never brings them in again.
+    public var removed: [SetMark]?
 
     public init(start: UInt32, day: Int, version: UInt32, sets: [SetMark] = []) {
         (self.start, self.day, self.version, self.sets) = (start, day, version, sets)
@@ -28,12 +30,20 @@ public struct OpenWorkout: Codable, Hashable, Sendable {
     @discardableResult
     public mutating func union(_ other: [SetMark], planned: (Int) -> Int) -> [SetMark] {
         var added: [SetMark] = []
-        for s in other.sorted(by: { $0.t < $1.t }) where !sets.contains(s) && done(s.ex) < planned(s.ex) {
+        for s in other.sorted(by: { $0.t < $1.t })
+        where !sets.contains(s) && !(removed ?? []).contains(s) && done(s.ex) < planned(s.ex) {
             sets.append(s)
             added.append(s)
         }
         sets.sort { $0.t < $1.t }
         return added
+    }
+
+    /// Takes the newest set back; returns it.
+    public mutating func undoLast() -> SetMark? {
+        guard let s = sets.popLast() else { return nil }
+        removed = (removed ?? []) + [s]
+        return s
     }
 }
 
@@ -45,6 +55,15 @@ public func setMessage(_ w: OpenWorkout, _ s: SetMark?) -> Data {
     d.le(w.version)
     d.append(s.map { UInt8($0.ex) } ?? 0xFF)
     d.le(UInt16(clamping: s?.t ?? 0))
+    return d
+}
+
+/// U: take a set back.
+public func unsetMessage(_ w: OpenWorkout, _ s: SetMark) -> Data {
+    var d = magic + Data("U".utf8) + Data([0])
+    d.le(w.start)
+    d.append(UInt8(s.ex))
+    d.le(UInt16(clamping: s.t))
     return d
 }
 
