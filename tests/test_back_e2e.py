@@ -165,7 +165,7 @@ class ScreenOffTest(unittest.TestCase):
             emu.sleep(2)
             mark = len(emu.uart())
             emu.gdb(f"set *(unsigned *)*(unsigned *){harness.AWAKE_PTR:#x} = 1500")
-            for _ in range(40):
+            for _ in range(80):  # 40 s: a heart-rate measurement holds the stock 25 s auto-sleep (docs/abi-1.4.md)
                 emu.sleep(0.5)
                 if "display blanking on" in emu.uart()[mark:]:
                     break
