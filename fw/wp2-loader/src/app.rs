@@ -1,4 +1,4 @@
-use crate::{lv, motor, svc, ui};
+use crate::{hr, lv, motor, svc, ui};
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use wp2_core::gfx;
@@ -108,6 +108,7 @@ pub fn stop_app() {
     // abort first: the app thread cannot start the motor again
     stock!(K_THREAD_ABORT, fn(*mut u8))(addr_of_mut!(THREAD_BUF) as *mut u8);
     motor::off();
+    hr::stop();
     svc::stop();
     // LVGL keeps no object, callback or font of the app once its block is gone
     lv::teardown();

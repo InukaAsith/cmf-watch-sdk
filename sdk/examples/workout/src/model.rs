@@ -10,6 +10,11 @@ pub const NAME_MAX: usize = 32;
 pub const WEIGHT_MAX: usize = 32;
 pub const HISTORY_MAX: usize = 64;
 pub const STALE_S: u32 = 3 * 3600;
+/// The last workout's trace (docs/workout.md, Trace): its sets and its heart rate, one sample per HR_STEP_S. Sized
+/// so the biggest program, the full history and a full trace stay under STORE_MAX (4096).
+pub const SETS_MAX: usize = 96;
+pub const HR_STEP_S: u32 = 10;
+pub const HR_MAX: usize = 1000;
 #[allow(dead_code)] // the default the Mac side writes; the tests check it
 pub const REST_DEFAULT_S: u16 = 90;
 const MAGIC: &[u8; 2] = b"W1";
@@ -98,8 +103,20 @@ pub struct Program {
 }
 
 impl Program {
+    const EMPTY: Program = Program { bytes: [0; PROGRAM_MAX], len: 0 };
+
     /// Checks every length and limit; anything else is `None`.
+    #[cfg(test)]
     pub fn parse(bytes: &[u8]) -> Option<Program> {
+        Program::check(bytes)?;
+        let mut p = Program::EMPTY;
+        p.bytes[..bytes.len()].copy_from_slice(bytes);
+        p.len = bytes.len();
+        Some(p)
+    }
+
+    /// What `parse` checks, without building a Program (2 KB: the app stack is 8 KiB).
+    pub fn check(bytes: &[u8]) -> Option<()> {
         if bytes.len() > PROGRAM_MAX {
             return None;
         }
@@ -114,12 +131,7 @@ impl Program {
                 c.exercise()?;
             }
         }
-        if c.i != bytes.len() {
-            return None;
-        }
-        let mut p = Program { bytes: [0; PROGRAM_MAX], len: bytes.len() };
-        p.bytes[..bytes.len()].copy_from_slice(bytes);
-        Some(p)
+        (c.i == bytes.len()).then_some(())
     }
 
     pub fn version(&self) -> u32 {
@@ -193,8 +205,74 @@ pub enum Next {
     Finished,
 }
 
+/// The sets (exercise, seconds from the start to "Сделал") and heart rate (bpm, 0 = no reading) of the workout that
+/// started at `start`, kept until the next one starts. 0 = none.
+pub struct Trace {
+    pub start: u32,
+    pub sets: [(u8, u16); SETS_MAX],
+    pub n_sets: u8,
+    pub hr: [u8; HR_MAX],
+    pub n_hr: u16,
+}
+
+impl Trace {
+    const fn new(start: u32) -> Trace {
+        Trace { start, sets: [(0, 0); SETS_MAX], n_sets: 0, hr: [0; HR_MAX], n_hr: 0 }
+    }
+
+    pub fn sets(&self) -> &[(u8, u16)] {
+        &self.sets[..usize::from(self.n_sets)]
+    }
+
+    pub fn hr(&self) -> &[u8] {
+        &self.hr[..usize::from(self.n_hr)]
+    }
+
+    /// `n_sets u8, (ex u8, t u16) × n, n_hr u16, bpm × n`: the blob tail and the X payload.
+    pub fn encode(&self, out: &mut [u8]) -> usize {
+        let mut o = Out { b: out, i: 0 };
+        o.put(&[self.n_sets]);
+        for &(ex, t) in self.sets() {
+            o.put(&[ex]);
+            o.put(&t.to_le_bytes());
+        }
+        o.put(&self.n_hr.to_le_bytes());
+        o.put(self.hr());
+        o.i
+    }
+
+    /// Empty, for the workout that started at `start`; in place (the app stack is 8 KiB, no copies of this).
+    fn reset(&mut self, start: u32) {
+        (self.start, self.n_sets, self.n_hr) = (start, 0, 0);
+    }
+
+    /// In place; any failure leaves it empty.
+    fn parse(&mut self, c: &mut Cur, start: u32) -> Option<()> {
+        self.reset(0);
+        let t = self;
+        t.n_sets = c.u8()?;
+        if usize::from(t.n_sets) > SETS_MAX {
+            return None;
+        }
+        for i in 0..usize::from(t.n_sets) {
+            t.sets[i] = (c.u8()?, c.u16()?);
+        }
+        t.n_hr = c.u16()?;
+        let n = usize::from(t.n_hr);
+        if n > HR_MAX {
+            return None;
+        }
+        t.hr[..n].copy_from_slice(c.bytes(n)?);
+        t.start = start;
+        Some(())
+    }
+}
+
 pub struct Model {
     pub program: Option<Program>,
+    pub trace: Trace,
+    /// The latest heart rate (0 = none); not saved.
+    pub bpm: u8,
     pub last_day: Option<u8>,
     pub workout: Option<Workout>,
     hist: [Entry; HISTORY_MAX],
@@ -218,18 +296,26 @@ impl Out<'_> {
 impl Model {
     pub const fn new() -> Model {
         let e = Entry { start: 0, dur_s: 0, day: 0, done: 0, planned: 0 };
-        Model { program: None, last_day: None, workout: None, hist: [e; HISTORY_MAX], hist_n: 0, hist_head: 0 }
+        Model { program: None, trace: Trace::new(0), bpm: 0, last_day: None, workout: None, hist: [e; HISTORY_MAX], hist_n: 0, hist_head: 0 }
     }
 
     /// Anything that does not parse leaves an empty model.
+    // not inlined: Program::parse's 2 KB temporary stays out of the app's main frame (8 KiB stack)
+    #[inline(never)]
     pub fn load(&mut self, blob: &[u8]) {
         if self.parse(blob).is_none() {
-            *self = Model::new();
+            self.clear();
         }
     }
 
+    // field by field: `*self = Model::new()` would build a 4 KB Model on the 8 KiB stack
+    fn clear(&mut self) {
+        (self.program, self.last_day, self.workout, self.hist_n, self.hist_head, self.bpm) = (None, None, None, 0, 0, 0);
+        self.trace.reset(0);
+    }
+
     fn parse(&mut self, blob: &[u8]) -> Option<()> {
-        *self = Model::new();
+        self.clear();
         let mut c = Cur { b: blob, i: 0 };
         if c.bytes(2)? != MAGIC {
             return None;
@@ -237,11 +323,12 @@ impl Model {
         let version = c.u32()?;
         let len = usize::from(c.u16()?);
         if len > 0 {
-            let p = Program::parse(c.bytes(len)?)?;
-            if p.version() != version {
+            let bytes = c.bytes(len)?;
+            Program::check(bytes)?;
+            if crc32(bytes) != version {
                 return None;
             }
-            self.program = Some(p);
+            self.put_program(bytes);
         }
         let days = self.program.as_ref().map_or(0, Program::days);
         self.last_day = Some(c.u8()?).filter(|&d| usize::from(d) < days);
@@ -259,10 +346,16 @@ impl Model {
             let e = Entry { start: c.u32()?, dur_s: c.u16()?, day: c.u8()?, done: c.u8()?, planned: c.u8()? };
             self.push(e);
         }
+        // the trace came later: a blob without it is still whole
+        if c.i < blob.len() {
+            let start = c.u32()?;
+            self.trace.parse(&mut c, start)?;
+        }
         (c.i == blob.len()).then_some(())
     }
 
     /// The blob for `api.save`; `buf` holds at least STORE_MAX (4096) bytes.
+    #[inline(never)]
     pub fn save(&self, buf: &mut [u8]) -> usize {
         let mut o = Out { b: buf, i: 0 };
         let (version, bytes) = self.program.as_ref().map_or((0, &[][..]), |p| (p.version(), p.bytes()));
@@ -289,7 +382,25 @@ impl Model {
             o.put(&e.dur_s.to_le_bytes());
             o.put(&[e.day, e.done, e.planned]);
         }
+        if self.trace.start != 0 {
+            o.put(&self.trace.start.to_le_bytes());
+            o.i += self.trace.encode(&mut o.b[o.i..]);
+        }
         o.i
+    }
+
+    /// A heart-rate reading at `now` (0 = none) into the running workout's trace, one sample per HR_STEP_S; a gap
+    /// stays 0. True when it took a new sample (time to save).
+    pub fn hr_sample(&mut self, bpm: u8, now: u32) -> bool {
+        let Some(w) = self.workout else { return false };
+        let t = &mut self.trace;
+        let i = (now.wrapping_sub(w.started) / HR_STEP_S) as usize;
+        if t.start != w.started || i >= HR_MAX || i < usize::from(t.n_hr) {
+            return false;
+        }
+        t.hr[i] = bpm;
+        t.n_hr = i as u16 + 1;
+        true
     }
 
     pub fn next_day(&self) -> usize {
@@ -302,6 +413,7 @@ impl Model {
     pub fn start(&mut self, day: usize, now: u32) {
         if self.program.as_ref().is_some_and(|p| day < p.days()) {
             self.workout = Some(Workout { day: day as u8, started: now, touched: now, rest_until: now, rest_ex: NONE, done: [0; EX_MAX] });
+            self.trace.reset(now);
         }
     }
 
@@ -318,6 +430,11 @@ impl Model {
             w.rest_until = now.wrapping_add(u32::from(e.rest_s));
             w.rest_ex = ex as u8;
             w.touched = now;
+            let t = &mut self.trace;
+            if t.start == w.started && usize::from(t.n_sets) < SETS_MAX {
+                t.sets[usize::from(t.n_sets)] = (ex as u8, now.wrapping_sub(w.started).min(u32::from(u16::MAX)) as u16);
+                t.n_sets += 1;
+            }
         }
     }
 
@@ -365,10 +482,30 @@ impl Model {
         }
     }
 
+    #[cfg(test)]
     pub fn replace_program(&mut self, p: Program, now: u32) {
+        self.take_program(p.bytes(), now);
+    }
+
+    /// A new program from the phone, if it checks: finishes a running workout first. Its version, or None.
+    #[inline(never)]
+    pub fn take_program(&mut self, bytes: &[u8], now: u32) -> Option<u32> {
+        Program::check(bytes)?;
         self.finish(now);
-        self.last_day = self.last_day.filter(|&d| usize::from(d) < p.days());
-        self.program = Some(p);
+        self.last_day = self.last_day.filter(|&d| d < bytes[0]);
+        self.put_program(bytes);
+        Some(crc32(bytes))
+    }
+
+    // in place: no 2 KB Program temporary on the 8 KiB app stack; `bytes` passed Program::check
+    fn put_program(&mut self, bytes: &[u8]) {
+        if self.program.is_none() {
+            self.program = Some(Program::EMPTY);
+        }
+        if let Some(p) = &mut self.program {
+            p.bytes[..bytes.len()].copy_from_slice(bytes);
+            p.len = bytes.len();
+        }
     }
 
     /// Newest first.
@@ -582,9 +719,48 @@ pub mod tests {
         let fit = enc(&days[..2]); // 2 × 12 exercises with 32 B names and 16 B weights: 1389 B
         assert!(fit.len() <= PROGRAM_MAX);
         let mut m = model(Program::parse(&fit).unwrap());
-        m.start(0, 1);
-        m.done_set(0, 2);
+        for i in 0..HISTORY_MAX as u32 {
+            m.start(0, 1 + i * 10);
+            m.done_set(0, 2 + i * 10);
+            m.finish(3 + i * 10);
+        }
+        m.start(0, 1_000_000);
+        m.trace.n_sets = SETS_MAX as u8;
+        m.trace.n_hr = HR_MAX as u16;
         assert!(m.save(&mut buf) <= 4096);
+        // the biggest program the editor can make (PROGRAM_MAX) with a full history and trace
+        assert!(PROGRAM_MAX + 36 + 1 + HISTORY_MAX * 9 + 4 + 1 + SETS_MAX * 3 + 2 + HR_MAX <= 4096);
+    }
+
+    #[test]
+    fn trace() {
+        let mut m = model(three_days());
+        assert!(!m.hr_sample(70, 5), "no workout");
+        m.start(1, 1000);
+        assert!(m.hr_sample(70, 1000));
+        assert!(!m.hr_sample(71, 1005), "same step");
+        assert!(m.hr_sample(90, 1031)); // step 3: steps 1 and 2 stay 0
+        m.done_set(0, 1040);
+        m.done_set(0, 1100);
+        assert_eq!(m.trace.hr(), &[70, 0, 0, 90]);
+        assert_eq!(m.trace.sets(), &[(0, 40), (0, 100)]);
+        m.finish(1200);
+        assert!(!m.hr_sample(80, 1210), "finished");
+        let mut buf = [0u8; 4096];
+        let n = m.save(&mut buf);
+        let mut back = Model::new();
+        back.load(&buf[..n]);
+        assert_eq!((back.trace.start, back.trace.sets(), back.trace.hr()), (1000, m.trace.sets(), m.trace.hr()));
+        // an older blob without a trace still loads
+        let mut old = model(three_days());
+        old.start(0, 1);
+        old.trace.reset(0);
+        let n = old.save(&mut buf);
+        back.load(&buf[..n]);
+        assert!(back.program.is_some() && back.trace.start == 0);
+        // the next workout starts a new trace
+        m.start(2, 5000);
+        assert_eq!((m.trace.start, m.trace.n_sets, m.trace.n_hr), (5000, 0, 0));
     }
 
     #[test]

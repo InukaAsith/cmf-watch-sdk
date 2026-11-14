@@ -48,13 +48,19 @@ public func installed(_ s: Requester) async throws -> [Int: PackageHeader] {
     return out
 }
 
-/// Installs an app package into the slot of the same name, else the first free one; returns the slot. `busy`
-/// while that app runs on the watch.
+/// Installs an app package into the slot of the same name, else the first free one, and a loader package
+/// (kind 1) into slot L; returns the slot. `busy` while that app (or the loader's menu) runs on the watch.
 public func install(_ s: Requester, package: Data, progress: @Sendable (Double) -> Void) async throws -> Int {
-    guard let pkg = parseHeader(package), pkg.kind == 0 else { throw InstallError.notAPackage }
-    let used = try await installed(s)
-    guard let slot = used.first(where: { $0.key < slots && $0.value.name == pkg.name })?.key
-        ?? (0..<slots).first(where: { used[$0] == nil }) else { throw InstallError.noFreeSlot }
+    guard let pkg = parseHeader(package), pkg.kind == 0 || pkg.kind == 1 else { throw InstallError.notAPackage }
+    let slot: Int
+    if pkg.kind == 1 {
+        slot = loaderSlot
+    } else {
+        let used = try await installed(s)
+        guard let free = used.first(where: { $0.key < slots && $0.value.name == pkg.name })?.key
+            ?? (0..<slots).first(where: { used[$0] == nil }) else { throw InstallError.noFreeSlot }
+        slot = free
+    }
     var begin = Data([UInt8(slot)])
     begin.le(UInt32(package.count))
     begin.le(crc32(package))

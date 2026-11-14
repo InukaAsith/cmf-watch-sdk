@@ -463,3 +463,41 @@ Ghidra and capstone on the launcher's message handler (`0x1005DE00…0x1005E290`
   zero session word and app messages to a `K` host fail with `-107` (any watch paired with Nothing X is bound).
 - On a shared link every host sees every notification: a host must skip frames and `EVENT`s its key cannot open
   (`link.Session.request`, `channel.recv`).
+
+## Heart rate
+
+Ghidra (`scripts/recon/decomp`) and capstone on the functions below, the ux2sys table `0x101F4274` and the view
+table; emulator probe `scripts/recon/hr_probe.py` (frames in `runs/hr/`, not tracked). The emulator has no PPG
+model, so every reading here is a synthetic value written with gdb. API built on this: `docs/abi-1.4.md`, "Heart
+rate". Heart-rate values are personal data: never log, commit or report a real one.
+
+| Item | Value | Confidence |
+|---|---|---|
+| Reading | **u8 `0x3804B310`**, bpm, 0 = none. Getter `0x100E2364`, setter `0x100E2358`. The only non-zero writer is `hr_callback` `0x100E2EE8` (pointer at `0x100E233C`), type 5 at `0x100E3308`: `bpm = *(u32 *)(data + 4)`, a zero is skipped, else `strb` at `0x100E337A`; the same branch updates the day statistics (`0x380077F8 + 0x43B8…`, per-30-min array) and the HR alarm check. Zero writers: heart view layout `0x100704D4`, breath view `0x1008AC54`, `0x1006F20C` ("heart senor mode set") | high (emulator) |
+| On the wrist | **u8 `0x3804B30C`**, non-zero = worn (ux2sys `0x13`, getter `0x100E2C30` logs on every call). 1 in the emulator. Not worn: the heart view's 2 s timer `0x10070984` opens `heart_warn_view` (`0x15`), the workout screen shows `--` | high (code), not-worn path not run |
+| Owner | **u8 `0x3804B30F`**: 1 = property 2 (heart view, now apps), 2 = a stock workout (`0x100E2340(2)` in `0x100C9434`), 0 = none. `hr_callback` branches on 2 (`0x100E331C`) | high (emulator) |
+| On / off | ux2sys property **`0x02`** "change_hr_mode" (u32), setter `0x100E2370`; the stock heart view calls it through the synchronous `0x100E07B8(prop, *in)`. 1: owner 1, `0x101964C8(5, 0)` (log `jxen_algo_req id:5`) → `0x10196460(4, 5, 0, 0)` posts message `0x23`; 0: owner 0, `0x10196510(5, 0)` → `(5, 5, …)`. It also sets the u16s `0x3800263A`, `0x3800263C` to `0xFFFF` (purpose unknown) | high (emulator) |
+| Request count | the message handler counts requests per algorithm: enable `0x100CB160`, disable `0x100CB2A8`, **i8 `0x38048D16 + id`** (id 5 = HEARTRATE) plus per-consumer counters (table `0x101F33B4`, 19 × 28 B, entry 8 for id 5). The sensor runs while the count is above 0. Every start needs exactly one stop: a first loader draft that asked again every 10 s left the count at 1 after the app's exit and the driver kept measuring (UART `jxdis_algo_ret 5) 1 -> 0`, no `VC9202 Stop`) | high (emulator) |
+| Driver | VC9202: start `0x10104E66`, stop `0x10104F5C`, one flag per work mode, printed `m<mode> h s a t`. HR is mode 0 (flag `h`); the stop of a mode drops its flag and picks the next one still set. Mode 3 (`a`) is on from boot in the paired NOR (purpose not checked) | high (emulator) |
+| Background measurement | `heart_period_enable` `0x100E6078`, manager tick `0x100E61BC` starts mode 5 under its own flag (`0x3801B1B8 + 1`) and stops it through `hr_manager_disable` `0x100E6120` after 60 or 120 tries. It goes through the same request count, so a balanced app and the background do not cut each other | medium (code; the background run was not caught in the emulator) |
+| Heart view | `heart_view` id **`0x14`** (handler `0x100701AD`): layout clears the reading, sets property 2 to 1 (log `heart senor mode set 1`), repaints every second (`0x101AE99A` → paint `0x100702BC`, reads `0x100E2364`; 0 shows "Measuring"); delete `0x101AE876` sets it to 0 if the view had set it. `app_heart_view` is `0xB2`, `heart_warn_view` `0x15` | high (emulator) |
+| Strength training: prepare | `sportlist_view` `0x6A` → `sport_prepartion_view` `0x6B`, the GO screen with "❤ bpm" under the clock: property 2 = 1 (owner 1), shows the **raw reading** | high (emulator) |
+| Strength training: run | GO: the GO screen sets property 2 to 0, sport start `0x100C9434(1, type)` sets owner 2, `0x101964C8(5, 0)` and a 1 s sport timer; sport end: owner 0, `0x10196510(5, 0)`. `sport1_view` `0x64` (paint `0x10078B2C`) shows the HR from the sport snapshot `0x380197FC + 0xC` (ux2sys `0x34`, a copy of `0x3800CAB0`; byte `0x3800CABC`), written at `0x100C86C8` from the sport algorithm's float output, not from the raw reading. `--` while the wrist byte or the value is 0 | high (code), emulator in part |
+| Screen | property 2 does not hold the screen: with an app's measurement on, auto-sleep (1.5 s) blanks the panel and no wake-lock id is set (`0x38007748…`, emulator). The HR enable takes only a system lock, `wake_lock: 0 3` from `0x100CB0C5` (type 0; type 1 is the screen lock that `0x101B59A8(id)` takes). The stock Strength training run screen also went dark during the workout (emulator) | high (emulator) |
+| CPU | with the measurement on and no PPG model, 28 of 30 gdb samples of the current thread were `idle 00`, kernel uptime kept pace with guest time | high (emulator) |
+| Emulator RTC | the RTC (`0x100C1488`, `api.time()`) advances about **0.43 s per guest second**, the same with the measurement on or off (4 windows of 60 s: 25–27 RTC s); kernel uptime matches guest time. The model does not tick the calendar registers (`0xC014…0xC01C`), the stock driver keeps them. Anything timed in RTC seconds runs about 2× long in emulator tests (workout now reads the RTC once per launch and counts on with `now()`); a real RTC runs on its crystal | high (emulator) |
+| Battery | the PPG LED runs while the count is above 0. The stock holds it only while its heart or GO screen is open or a workout runs. An app's measurement also feeds the day statistics, as the heart view's does | medium |
+
+Emulator proof (`scripts/recon/hr_probe.py heart`, stock unpaired NOR with the stub): opening `0x14` logs
+`change_hr_mode :1`, `VC9202 Start Later---m0 h1`, owner 1, reading 0 ("Measuring"). A poke of `0x3804B310 = 67`
+draws "67 BPM" (`runs/hr/2-heart-67.png`); calling `hr_callback(5, {0, 72})` (on `ui_service`) draws "72 BPM" and min/max 72
+(`3-heart-72.png`). The button closes the view: `change_hr_mode :0`, `VC9202 Stop Later---m0 h0`, owner 0.
+`scripts/recon/hr_probe.py strength`: the GO screen of Strength training draws the poked 67 under the clock
+(`runs/hr/s3-4.png`); after GO owner is 2, the run screen shows `--` with the raw reading at 68, and a poke of
+`0x3800CABC` is overwritten within a tick.
+
+Not proven: real PPG readings and their rate (the stock heart view repaints once a second), the not-worn path
+and whether the reading drops to 0 off the wrist, the sport algorithm's input (`hr_callback` calls `0x100CA284`
+with the bpm), the stock workout's pause, the battery cost. Calling `hr_callback` on whatever thread enters
+`os_mutex_lock` first stopped the emulator twice ("Guest hit a fatal or unsupported path"); the probe calls it on
+`ui_service`.

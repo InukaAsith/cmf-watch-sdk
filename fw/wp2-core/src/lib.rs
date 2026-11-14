@@ -7,6 +7,7 @@ pub mod font8x8;
 #[cfg(target_os = "none")]
 pub mod fs;
 pub mod gfx;
+pub mod heart;
 pub mod heap;
 pub mod layout;
 pub mod lvcmd;
