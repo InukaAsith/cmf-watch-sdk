@@ -47,6 +47,17 @@ struct WatchView: View {
                     }
                 }
 
+                if let l = sync.bundledLoader.flatMap(parseHeader) {
+                    Section("Загрузчик") {
+                        LabeledContent("В телефоне", value: String(localized: "версия \(l.version)"))
+                        if sync.loaderInstalled {
+                            Label("Установлен", systemImage: "checkmark.circle.fill")
+                        } else if sync.installProgress == nil, sync.canInstall {
+                            Button("Установить загрузчик") { Task { await sync.installLoader() } }
+                        }
+                    }
+                }
+
                 if let error = sync.lastError {
                     Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 }
