@@ -5,6 +5,7 @@ struct WorkoutApp: App {
     @State private var store: AppStore
     @State private var sync: SyncController
     @Environment(\.scenePhase) private var phase
+    @Namespace private var ns
     // DEBUG screenshots: `-tab 1` opens История
     @State private var tab = CommandLine.arguments.firstIndex(of: "-tab")
         .flatMap { Int(CommandLine.arguments[$0 + 1]) } ?? 0
@@ -15,7 +16,11 @@ struct WorkoutApp: App {
         if CommandLine.arguments.contains("-demo") { store.loadDemo() }
         #endif
         _store = State(initialValue: store)
-        _sync = State(initialValue: SyncController(store: store))
+        let sync = SyncController(store: store)
+        #if DEBUG
+        sync.playerShown = CommandLine.arguments.contains("-player")
+        #endif
+        _sync = State(initialValue: sync)
     }
 
     var body: some Scene {
@@ -32,6 +37,15 @@ struct WorkoutApp: App {
                     .tabItem { Label("Часы", systemImage: "applewatch") }
                     .tag(2)
                     .badge(Signing.expiry.map { $0.timeIntervalSinceNow < 86_400 } == true ? "!" : nil)
+            }
+            .tabViewBottomAccessory(isEnabled: store.open != nil) {
+                MiniPlayer()
+                    .contentShape(.rect)
+                    .onTapGesture { sync.playerShown = true }
+                    .matchedTransitionSource(id: "player", in: ns)
+            }
+            .fullScreenCover(isPresented: $sync.playerShown) {
+                ActiveWorkout().navigationTransition(.zoom(sourceID: "player", in: ns))
             }
             .environment(store)
             .environment(sync)

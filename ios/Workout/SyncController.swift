@@ -223,6 +223,11 @@ final class SyncController {
         return t.sets
     }
 
+    /// The full-screen player is up.
+    var playerShown = false
+    /// The rest after this many sets was skipped (the player and the mini player show the next set).
+    var skippedRest: Int?
+
     /// The watch's heart rate for this workout, while it sends one.
     func bpm(for o: OpenWorkout) -> Int? { live.flatMap { $0.start == o.start && $0.bpm > 0 ? $0.bpm : nil } }
 

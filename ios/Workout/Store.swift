@@ -207,6 +207,11 @@ final class AppStore {
                          dayName: saved.days[i % 3].name, done: 11 - i % 2, planned: 11)
         }
         saved.lastSync = .now.addingTimeInterval(-300)
+        if CommandLine.arguments.contains("-open"), case let .success(p) = encoded {
+            let now = Int(watchSeconds())
+            saved.open = OpenWorkout(start: UInt32(now - 900), day: 0, version: programVersion(p),
+                                     sets: [SetMark(ex: 0, t: 300), SetMark(ex: 0, t: 880)])
+        }
         save()
     }
     #endif
