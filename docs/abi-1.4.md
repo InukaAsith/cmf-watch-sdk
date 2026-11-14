@@ -80,8 +80,11 @@ SDK: `Api::heart_rate(&self, on: bool) -> i32`, event kind `HEART` = 9.
   (`wp2_core::heart::EMIT_MS`) while the app runs in the foreground. `delta` 0 = no reading yet, or off the wrist
   (`x` 0). Queued HEART events coalesce: the app sees the latest.
 - `on = false` stops it. Returns 0, or `-22` on an older loader (or `abi_minor < 2`): no heart rate there.
-- The loader stops the measurement on exit, crash (`exit(-1)` from the panic handler), force stop, view delete and
-  `PAUSE`; it starts it again on `RESUME`. A new launch starts with it off. The app's request is a wish
+- The loader stops the measurement on exit, crash (`exit(-1)` from the panic handler), force stop, view delete,
+  `PAUSE` and the panel going dark; it starts it again on `RESUME` and on wake, with the reading cleared. A stop while
+  the app runs queues one HEART with `delta` 0: no reading while it is off. A new launch starts with it off.
+- As the stock heart view: while it measures the panel's auto-sleep is 25 s (the stock heart view's hold, id `0x14`),
+  the default comes back at the stop. The stock never measures through this path with the panel dark. The app's request is a wish
   (`fw/wp2-loader/src/hr.rs`); the UI tick does the stock calls, the rule is `wp2_core::heart::Heart::tick`.
 - Exactly one start per hold, one stop at its end: the stock counts requests (`docs/recon.md`), so a repeated
   start would keep the sensor on after the app left. The background measurement uses the same count.
@@ -106,7 +109,8 @@ LED runs while an app holds the measurement: ask for it only while the value is 
 The measurement keeps the watch out of deep sleep, so with the panel dark the stock "return to watch face" (30 s,
 2 min or 30 min, ux2sys `0x9C`) is reached and late-resume would close the app view. The loader of 2026-11-14 holds
 that return off while an app runs, as the stock does for its own workout views (`docs/recon.md`, "Return to watch
-face"). No ABI change.
+face"). No ABI change. Since the stop on a dark panel the measurement no longer holds the watch out of deep sleep;
+the return stays held anyway.
 
 ## Stub version (stub 2, no ABI bump)
 
