@@ -186,14 +186,16 @@ struct ActiveWorkout: View {
             } else if let ex = n.ex, let e = n.exercise {
                 Text("Текущее упражнение").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Text(e.name).font(.title.bold()).lineLimit(2)
+                // reps on a line of their own: a long weight beside them wrapped "8–10"
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(e.repsMin == e.repsMax ? "\(e.repsMin)" : "\(e.repsMin)–\(e.repsMax)")
                         .font(.system(size: 64, weight: .bold, design: .rounded)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.5)
                     Text("повт.").font(.title3).foregroundStyle(.secondary)
-                    Spacer()
-                    if !e.weight.isEmpty {
-                        Text(e.weight).font(.system(size: 28, weight: .bold, design: .rounded)).foregroundStyle(brand)
-                    }
+                }
+                if !e.weight.isEmpty {
+                    Label(e.weight, systemImage: "scalemass.fill")
+                        .font(.title3.bold()).foregroundStyle(brand).lineLimit(1)
                 }
                 HStack {
                     Text(n.setText).foregroundStyle(.secondary)
