@@ -1,5 +1,5 @@
 use crate::chan::MSG_MAX;
-use crate::layout::{LOADER_SLOT, SLOTS};
+use crate::layout::{LOADER_SLOT, SLOTS, STUB_SLOT};
 
 pub const MAX_DATA: usize = 128;
 pub const INFO: u16 = 0x90A0;
@@ -32,6 +32,7 @@ pub enum Status {
 #[derive(Debug, PartialEq)]
 pub enum Request<'a> {
     Info(u8),
+    StubVersion,
     Begin { slot: u8, size: u32, crc: u32 },
     Data { offset: u32, bytes: &'a [u8] },
     End,
@@ -50,6 +51,7 @@ fn word(raw: &[u8], off: usize) -> u32 {
 
 pub fn parse(c2: u16, payload: &[u8]) -> Result<Request<'_>, Status> {
     match (c2, payload.len()) {
+        (INFO, 1) if payload[0] == STUB_SLOT => Ok(Request::StubVersion),
         (INFO, 1) => Ok(Request::Info(slot(payload[0])?)),
         (BEGIN, 9) => Ok(Request::Begin { slot: slot(payload[0])?, size: word(payload, 1), crc: word(payload, 5) }),
         (DATA, 5..=0x84) => Ok(Request::Data { offset: word(payload, 0), bytes: &payload[4..] }),
@@ -94,6 +96,8 @@ mod tests {
         assert_eq!(parse(0x90A2, &[4, 0, 0, 0, 7]), Ok(Request::Data { offset: 4, bytes: &[7] }));
         assert!(matches!(parse(0x90A2, &[0; 4 + MAX_DATA]), Ok(Request::Data { .. })));
         assert_eq!(parse(0x90A0, &[7]), Ok(Request::Info(7)));
+        assert_eq!(parse(0x90A0, &[0xFE]), Ok(Request::StubVersion));
+        assert_eq!(parse(0x90A0, &[0xFD]), Err(Status::BadRequest));
     }
 
     #[test]

@@ -3,7 +3,10 @@ use core::mem::transmute;
 use core::sync::atomic::Ordering;
 use wp2_core::fs::{self, File};
 use wp2_core::chan::{listening, session_word, MSG_MAX};
-use wp2_core::layout::{data_path, slot_path, stub_ram, StubRam, APP_PAUSED, APP_SIZE, APP_V11, DIR, LOADER_SIZE, LOADER_SLOT};
+use wp2_core::layout::{
+    data_path, slot_path, stub_ram, StubRam, APP_PAUSED, APP_SIZE, APP_V11, DIR, LOADER_ABI_MINOR, LOADER_SIZE,
+    LOADER_SLOT, STUB_VERSION,
+};
 use wp2_core::pkg::{check_slot, crc32, parse_header, HEADER_SIZE};
 use wp2_core::proto::{parse, Request, Status, ANY_SLOT, DELETE, EVENT, INFO, MAX_DATA, PING};
 use wp2_core::aes;
@@ -168,6 +171,13 @@ fn handle(ram: &mut StubRam, c2: u16, payload: &[u8], out: &mut [u8; MAX_REPLY])
     match parse(c2, payload) {
         Err(s) => status(out, s),
         Ok(Request::Info(slot)) => info(slot, out),
+        // status, the stub's release (u32 LE), the highest package abi_minor it accepts
+        Ok(Request::StubVersion) => {
+            out[0] = Status::Ok as u8;
+            out[1..5].copy_from_slice(&STUB_VERSION.to_le_bytes());
+            out[5] = LOADER_ABI_MINOR as u8;
+            6
+        }
         Ok(Request::Begin { slot, size, crc }) => {
             let s = begin(ram, slot, size, crc);
             status(out, s)
