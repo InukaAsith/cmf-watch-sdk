@@ -191,6 +191,16 @@
         }
       }
     },
+    "Включение": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start result"
+          }
+        }
+      }
+    },
     "Вне зон": {
       "localizations": {
         "en": {
@@ -287,6 +297,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Day %lld"
+          }
+        }
+      }
+    },
+    "Диагностика пульса": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Heart-rate diagnostics"
           }
         }
       }
@@ -547,6 +567,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Minute"
+          }
+        }
+      }
+    },
+    "На руке / владелец / ячейка": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Worn / owner / cell"
           }
         }
       }
@@ -1129,6 +1159,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Next set: %@"
+          }
+        }
+      }
+    },
+    "Событий пульса": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Heart-rate events"
           }
         }
       }

@@ -119,6 +119,14 @@ mod device {
         m.program.as_ref().map_or(0, Program::version)
     }
 
+    /// P's heart-rate diagnostics for the phone (the measurement is unproven on hardware): heart_rate()'s result,
+    /// HEART events seen, and the stock cells the loader reads (wp2_core::stock HR_WEAR, HR_OWNER, HR_BPM; JX402
+    /// 1.0.0.73). Read only.
+    fn hr_diag(rc: i8, events: u8) -> [u8; 5] {
+        let cell = |a: u32| unsafe { (a as *const u8).read_volatile() };
+        [rc as u8, events, cell(0x3804_B30C), cell(0x3804_B30F), cell(0x3804_B310)]
+    }
+
     fn sets_done(m: &Model) -> i32 {
         m.workout.map_or(0, |w| w.done.iter().map(|&d| i32::from(d)).sum())
     }
@@ -204,7 +212,8 @@ mod device {
         // X messages left: (next index, count, trace bytes)
         let mut trace: Option<(u8, u8, usize)> = None;
         let mut pulsed: Option<(u32, u8, u8, bool)> = None; // (ms, ex, done, resting) of the last P
-        let mut hr_on = false; // the measurement runs while a workout does (docs/abi-1.4.md, Heart rate)
+        let mut hr_on = false;
+        let (mut hr_rc, mut hr_events) = (0i8, 0u8); // for P's diagnostics // the measurement runs while a workout does (docs/abi-1.4.md, Heart rate)
         // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
         let mut locked = false;
         let mut shown_at = api.now();
@@ -239,7 +248,7 @@ mod device {
             }
             if m.workout.is_some() != hr_on {
                 hr_on = !hr_on;
-                api.heart_rate(hr_on); // -22 on an older loader: no heart rate, the rest works
+                hr_rc = api.heart_rate(hr_on) as i8; // -22 on an older loader: no heart rate, the rest works
                 m.bpm = 0;
             }
             // saved with the next set or the finish, not on its own: a 4 KB save can hold the loop past the loader's
@@ -250,7 +259,7 @@ mod device {
                 let ex_done = w.done.get(usize::from(ex)).copied().unwrap_or(0);
                 let rest = if s.view == View::Rest { (w.rest_until.wrapping_sub(now) as i32).clamp(0, 0xFFFF) as u16 } else { 0 };
                 if pulsed.is_none_or(|(t, e, d, r)| ms.wrapping_sub(t) >= PULSE_MS || (e, d, r) != (ex, done, rest > 0)) {
-                    api.send(&pulse(w.started, w.day, m.bpm, ex, done, ex_done, rest));
+                    api.send(&pulse(w.started, w.day, m.bpm, ex, done, ex_done, rest, hr_diag(hr_rc, hr_events)));
                     pulsed = Some((ms, ex, done, rest > 0));
                 }
             }
@@ -306,7 +315,10 @@ mod device {
                     to = Some(s.view);
                 }
                 // x: worn; delta: bpm, 0 = no reading yet
-                Some(e) if e.kind == HEART => m.bpm = if e.x == 1 { e.delta.clamp(0, 255) as u8 } else { 0 },
+                Some(e) if e.kind == HEART => {
+                    hr_events = hr_events.wrapping_add(1);
+                    m.bpm = if e.x == 1 { e.delta.clamp(0, 255) as u8 } else { 0 };
+                }
                 Some(e) if e.kind == LV && e.y == CLICKED => {
                     let t = api.now();
                     let settled = t.wrapping_sub(shown_at) >= SETTLE_MS && t.wrapping_sub(button_at) >= GESTURE_MS;

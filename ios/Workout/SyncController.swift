@@ -119,7 +119,9 @@ final class SyncController {
         Task {
             while let ch = channel {
                 do {
-                    let r = parseIncoming(try await ch.recv(timeout: .seconds(15)))
+                    let raw = try await ch.recv(timeout: .seconds(15))
+                    let r = parseIncoming(raw)
+                    if raw.count == 19, raw.dropFirst(2).first == UInt8(ascii: "P") { hrDiag = Array(raw.suffix(5)) }
                     if case let .pulse(start, day, bpm, ex, done, exDone, restLeft) = r {
                         var l = live?.start == start ? live! : Live(start: start, day: day, bpm: 0, ex: nil, done: 0,
                                                                      restEnd: nil, at: .now, samples: [])
@@ -231,6 +233,10 @@ final class SyncController {
         guard let ch = channel, let z = store.zones else { return }
         try? await ch.send(zonesMessage(z))
     }
+
+    /// The watch's heart-rate diagnostics from its last P: heart_rate() result, HEART events, the stock cells
+    /// worn / owner / bpm (docs/workout.md, Protocol).
+    private(set) var hrDiag: [UInt8]?
 
     /// The full-screen player is up.
     var playerShown = false

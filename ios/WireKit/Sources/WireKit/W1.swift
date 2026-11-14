@@ -99,8 +99,8 @@ public func parseIncoming(_ d: Data) -> Incoming? {
         return .entry(index: index, count: count, Entry(
             start: d.le(UInt32.self, at: 5), durS: Int(d.le(UInt16.self, at: 9)), day: Int(d[d.startIndex + 11]),
             done: Int(d[d.startIndex + 12]), planned: Int(d[d.startIndex + 13])))
-    case UInt8(ascii: "P") where d.count == 11 || d.count == 14: // 11: workout v3
-        let ex = Int(d[d.startIndex + 9]), long = d.count == 14
+    case UInt8(ascii: "P") where d.count == 11 || d.count >= 14: // 11: workout v3; 19: + heart-rate diagnostics
+        let ex = Int(d[d.startIndex + 9]), long = d.count >= 14
         return .pulse(start: d.le(UInt32.self, at: 3), day: Int(d[d.startIndex + 7]), bpm: Int(d[d.startIndex + 8]),
                       ex: ex == 0xFF ? nil : ex, done: Int(d[d.startIndex + 10]),
                       exDone: long ? Int(d[d.startIndex + 11]) : 0, restLeft: long ? Int(d.le(UInt16.self, at: 12)) : 0)
