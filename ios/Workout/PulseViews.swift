@@ -2,29 +2,6 @@ import Charts
 import SwiftUI
 import WireKit
 
-/// Without an open workout: start the next day (or another). An open one lives in the mini player.
-struct ActiveSection: View {
-    @Environment(AppStore.self) private var store
-    @Environment(SyncController.self) private var sync
-
-    var body: some View {
-        if store.open == nil, !store.days.isEmpty {
-            Section("Тренировка") {
-                Button { sync.startWorkout(day: store.nextDay); sync.playerShown = true } label: {
-                    Label("Начать: \(dayName(store.nextDay))", systemImage: "play.fill").font(.body.weight(.semibold))
-                }
-                Menu("Другой день") {
-                    ForEach(Array(store.days.enumerated()), id: \.element.id) { i, d in
-                        Button(d.name) { sync.startWorkout(day: i); sync.playerShown = true }
-                    }
-                }
-            }
-        }
-    }
-
-    private func dayName(_ i: Int) -> String { i < store.days.count ? store.days[i].name : String(localized: "День \(i + 1)") }
-}
-
 func startDate(_ o: OpenWorkout) -> Date { Entry(start: o.start, durS: 0, day: 0, done: 0, planned: 0).date }
 
 /// What the player shows now: the exercise, its set, the rest.
@@ -246,9 +223,17 @@ struct ActiveWorkout: View {
                 HStack {
                     Text("\(n.o.sets.count) из \(n.planned) подходов")
                     Spacer()
-                    if let z = store.zones, let bpm = sync.bpm(for: n.o), z.zone(bpm) > 0 {
-                        Text("Зона \(z.zone(bpm)) · \(Text(LocalizedStringKey(zoneNames[z.zone(bpm) - 1])))")
-                            .foregroundStyle(zoneColors[z.zone(bpm) - 1])
+                    if let bpm = sync.bpm(for: n.o) {
+                        if let z = store.zones {
+                            if z.zone(bpm) > 0 {
+                                Text("Зона \(z.zone(bpm)) · \(Text(LocalizedStringKey(zoneNames[z.zone(bpm) - 1])))")
+                                    .foregroundStyle(zoneColors[z.zone(bpm) - 1])
+                            } else {
+                                Text("Ниже зон")
+                            }
+                        } else {
+                            Text("Зоны: задайте возраст в «Часах»")
+                        }
                     }
                 }
                 .font(.caption.weight(.medium)).monospacedDigit().foregroundStyle(.secondary)

@@ -12,13 +12,12 @@ struct ProgramView: View {
         @Bindable var store = store
         NavigationStack {
             List {
-                ActiveSection()
                 if case let .failure(e) = store.encoded, !store.days.isEmpty {
                     Section { Label(e.text, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 }
                 Section("Дни") {
                     ForEach(Array(store.days.enumerated()), id: \.element.id) { i, day in
-                        NavigationLink(value: day.id) { DayRow(index: i + 1, day: day) }
+                        NavigationLink(value: day.id) { DayRow(index: i + 1, day: day, status: status(i)) }
                     }
                     .onDelete { store.days.remove(atOffsets: $0) }
                     .onMove { store.days.move(fromOffsets: $0, toOffset: $1) }
@@ -32,7 +31,7 @@ struct ProgramView: View {
             .listRowSpacing(10)
             .navigationTitle("Программа")
             .navigationDestination(for: UUID.self) { id in
-                if let i = store.days.firstIndex(where: { $0.id == id }) { DayView(day: $store.days[i]) }
+                if let i = store.days.firstIndex(where: { $0.id == id }) { DayView(day: $store.days[i], index: i) }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -57,12 +56,18 @@ struct ProgramView: View {
             }
         }
     }
+
+    private func status(_ i: Int) -> String? {
+        if let o = store.open { return o.day == i ? String(localized: "Идёт") : nil }
+        return i == store.nextDay ? String(localized: "Следующий") : nil
+    }
 }
 
 /// A day of the program: its number in a filled badge, the name and the exercises in it.
 private struct DayRow: View {
     let index: Int
     let day: DayItem
+    let status: String?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -77,13 +82,22 @@ private struct DayRow: View {
                      : day.exercises.map(\.exercise.name).joined(separator: " · "))
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }
+            Spacer(minLength: 0)
+            if let status {
+                Text(status).font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Color.accentColor.opacity(0.15), in: .capsule)
+            }
         }
         .padding(.vertical, 4)
     }
 }
 
 struct DayView: View {
+    @Environment(AppStore.self) private var store
+    @Environment(SyncController.self) private var sync
     @Binding var day: DayItem
+    let index: Int
 
     var body: some View {
         List {
@@ -115,6 +129,20 @@ struct DayView: View {
         .listRowSpacing(10)
         .navigationTitle(day.name)
         .toolbar { EditButton() }
+        .safeAreaInset(edge: .bottom) {
+            // another day's workout is open: it finishes first (from the player)
+            if !day.exercises.isEmpty, store.open == nil || store.open?.day == index {
+                Button {
+                    if store.open == nil { sync.startWorkout(day: index) }
+                    sync.playerShown = true
+                } label: {
+                    Label(store.open == nil ? "Начать" : "Продолжить", systemImage: "play.fill")
+                        .font(.headline).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.large)
+                .padding(.horizontal).padding(.bottom, 8)
+            }
+        }
     }
 }
 
