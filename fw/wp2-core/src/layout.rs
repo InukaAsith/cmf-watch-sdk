@@ -4,6 +4,13 @@ pub const VIEW_ID: u16 = 0xF0;
 pub const SLOTS: u8 = 8;
 pub const LOADER_SLOT: u8 = 0xFF;
 pub const LOADER_ABI_MINOR: u16 = 3;
+// the stub's own release, bumped with every stub change that goes out by OTA. A host reads it with INFO for
+// STUB_SLOT (docs/abi-1.4.md, "Stub version"): the watch reports 1.0.0.73 whatever app.bin it runs, so this is the
+// only way to tell one patched firmware from another. 1 = every stub before the field was readable. Not the stub
+// header's `version`: that one is the header format, which `wp2apps firmware` checks is 1.
+pub const STUB_VERSION: u32 = 2;
+// INFO for this slot answers the stub's version instead of a package header; an older stub answers BadRequest
+pub const STUB_SLOT: u8 = 0xFE;
 pub const STUB_RAM: u32 = 0x3871_EEC0;
 pub const STUB_RAM_SIZE: u32 = 0x1000;
 pub const LOADER_SIZE: u32 = 0x1_0000;

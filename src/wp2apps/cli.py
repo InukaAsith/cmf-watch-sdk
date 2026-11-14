@@ -169,8 +169,11 @@ def cmd_remove(args):
 
 
 def cmd_list(args):
-    found = asyncio.run(with_watch(args, install.listing))
-    print(json.dumps({"slots": {slot_name(n): {"name": h.name, "version": h.version, "kind": h.kind,
+    async def both(s):
+        return await install.stub(s), await install.listing(s)
+
+    stub, found = asyncio.run(with_watch(args, both))
+    print(json.dumps({"stub": {"version": stub.version, "abi_minor": stub.abi_minor}, "slots": {slot_name(n): {"name": h.name, "version": h.version, "kind": h.kind,
                                                "abi_minor": h.abi_minor, "icon": h.icon}
                                 for n, h in found.items()}}))
 

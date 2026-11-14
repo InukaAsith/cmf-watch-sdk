@@ -64,6 +64,23 @@ class InstallFlowTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "BUSY"):
             await install.remove(Busy(), 0)
 
+    async def test_stub_version(self):
+        class Stub(FakeSession):
+            def __init__(self, reply):
+                super().__init__()
+                self.reply = reply
+
+            async def request(self, c1, c2, payload, expect, timeout=6.0):
+                self.calls.append((c2, payload))
+                return self.reply
+        new = Stub(b"\0" + struct.pack("<I", 2) + b"\3")
+        self.assertEqual(await install.stub(new), install.Stub(2, 3))
+        self.assertEqual(new.calls, [(install.INFO, bytes([install.STUB_SLOT]))])
+        # a stub from before the version was readable refuses slot 0xFE like any unknown slot
+        self.assertEqual(await install.stub(Stub(bytes([install.Status.BAD_REQUEST]))), install.Stub(1, None))
+        with self.assertRaisesRegex(ValueError, "unexpected"):
+            await install.stub(Stub(b"\0\1"))
+
     async def test_info_empty_and_full(self):
         s = FakeSession({2: sample()[:64]})
         self.assertIsNone(await install.info(s, 0))

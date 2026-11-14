@@ -107,3 +107,16 @@ The measurement keeps the watch out of deep sleep, so with the panel dark the st
 2 min or 30 min, ux2sys `0x9C`) is reached and late-resume would close the app view. The loader of 2026-11-14 holds
 that return off while an app runs, as the stock does for its own workout views (`docs/recon.md`, "Return to watch
 face"). No ABI change.
+
+## Stub version (stub 2, no ABI bump)
+
+The watch reports `1.0.0.73` (`AT GETVERSION`, `0x8006`) whatever `app.bin` it runs, and the OTA `version_code`
+can't be read back. So the stub answers its own release:
+
+- Request: `INFO` (`0x90A0`) with slot `STUB_SLOT` = `0xFE`, under the stock session or `K` like every stub frame.
+- Reply (`0xB0A0`): `status` (0) ‖ `STUB_VERSION` (u32 LE) ‖ `LOADER_ABI_MINOR` (u8), 6 bytes. `STUB_VERSION` lives
+  in `fw/wp2-core/src/layout.rs`; bump it with every stub change that goes out by OTA. It is not the stub header's
+  `version` (the header format, which `wp2apps firmware` requires to be 1).
+- An older stub parses `0xFE` as a bad slot and answers `BadRequest` (1): version 1. Stock firmware has no stub and
+  doesn't answer at all. One request tells the three apart: no reply, `01`, `00 …`.
+- Host: `install.stub` (`wp2apps list` prints it as `stub`).
