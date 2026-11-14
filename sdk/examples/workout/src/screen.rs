@@ -380,21 +380,27 @@ impl Screen {
                 let e = p.exercise(usize::from(w.day), ex);
                 // a crown-scrolled column like Custom Apps, not everything pinned into one screen; the dots say
                 // which set this is
+                // "Сделал" stays put at the bottom (its own page); the column above scrolls (deleted as the header)
                 let (page, _bar) = stock::page(b)?;
+                b.size(page, SCREEN, 300)?;
+                b.align(page, Align::TopMid, 0, 0)?;
                 b.style(page, Prop::PadTop, 0, 20)?;
-                b.style(page, Prop::PadBottom, 0, 120)?;
-                b.style(page, Prop::PadRow, 0, 8)?;
-                self.page = page;
+                b.style(page, Prop::PadBottom, 0, 20)?;
+                b.style(page, Prop::PadRow, 0, 10)?;
+                b.flex(page, Flow::Column, FlexAlign::Center, FlexAlign::Center, FlexAlign::Center)?; // short: centred
+                self.header = page;
                 let top = slot(b, page, 60)?;
                 (self.hr, self.hr_dot) = heart(b, top, 0, 0)?;
                 if m.zones != [0; 5] {
                     self.zbar = zone_bar(b, top, 42)?;
                 }
                 label(b, page, e.name, WHITE, Align::TopMid, 0, 0, 340)?;
+                // the reps are a detail: one small line, not the big number
                 let mut r = Txt::<16>::new();
                 reps(e.reps.0, e.reps.1, "-", &mut r);
-                labelf(b, BIG, page, r.as_str(), WHITE, Align::TopMid, 0, 0, 0)?;
-                labelf(b, SMALL, page, "повторений", GREY, Align::TopMid, 0, 0, 0)?;
+                let mut t = Txt::<32>::new();
+                let _ = write!(t, "{} повторений", r.as_str());
+                labelf(b, SMALL, page, t.as_str(), GREY, Align::TopMid, 0, 0, 0)?;
                 if !e.weight.is_empty() {
                     // the weight as the program has it (F28M lacks some capitals: a rare one shows as a gap)
                     labelf(b, MID, page, e.weight, ACCENT, Align::TopMid, 0, 0, 340)?;
@@ -414,15 +420,19 @@ impl Screen {
                     b.style(dot, Prop::BgOpa, 0, 255)?;
                     b.flags(dot, &[], &[Flag::Clickable, Flag::Scrollable])?;
                 }
-                room(b)?;
-                let done = pill(b, page, "Сделал", true, 0, 240)?;
-                self.hit(done, Hit::Done);
-                let mut t = Txt::<32>::new();
+                let mut t = Txt::<32>::new(); // shadows the reps line
                 let _ = t.write_str("потом отдых ");
                 let mut c = Txt::<16>::new();
                 clock(u32::from(e.rest_s), &mut c);
                 let _ = t.write_str(c.as_str());
                 labelf(b, SMALL, page, t.as_str(), GREY, Align::TopMid, 0, 0, 0)?;
+                room(b)?;
+                self.page = b.create(Class::Obj, ROOT)?;
+                b.size(self.page, SCREEN, SCREEN - 300)?;
+                b.align(self.page, Align::BottomMid, 0, 0)?;
+                bare(b, self.page)?;
+                let done = pill(b, self.page, "Сделал", true, 12, 240)?;
+                self.hit(done, Hit::Done);
             }
             View::Rest => {
                 let Some(w) = w else { return flush(b) };
