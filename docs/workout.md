@@ -30,6 +30,16 @@ Choices:
   may use `–`.
 - Set dots are drawn as small LVGL circles, not glyphs.
 
+## Set screen
+
+The set screen is a vertical pager (`stock::pager`, `docs/app-guide.md`, "Pages") of the day's open exercises, one
+page each, opened on the tapped one; complete exercises are left out. A vertical swipe or a crown step goes to the
+next or previous exercise, which becomes the open one ("Сделал" counts its set, `P` reports it). The heart rate
+stays put above the pages; page dots on the right. The right swipe and the button still go back to the day list. A
+day whose pages would pass the 192-object budget (12 exercises of 8+ sets) shows a window of them around the tapped
+one (`screen.rs`, `SET_BUDGET`). Needs the loader of 2026-11-14 (an older one answers `-22` and the set screen stays
+empty). Frames: `runs/workout-e2e/1-set.png`, `1-set-paged.png`.
+
 ## Usage
 
 The program lives in Markdown notes, one file per day, sorted by name (`Day 01.md`, `Day 02.md`, …):
