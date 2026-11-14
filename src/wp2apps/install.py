@@ -10,6 +10,7 @@ from .link import SYSTEM
 MAX_DATA = 128
 SLOTS = 8
 LOADER_SLOT = 0xFF
+STUB_SLOT = 0xFE  # INFO for it: the stub's version (docs/abi-1.4.md, "Stub version")
 INFO, BEGIN, DATA, END, DELETE = 0x90A0, 0x90A1, 0x90A2, 0x90A3, 0x90A4
 
 
@@ -63,6 +64,22 @@ async def info(s, slot: int) -> Header | None:
     _, _, kind, abi_minor, name, version, _, entry, *_ = package.HEADER.unpack(raw)
     return Header(name.rstrip(b"\0").decode("utf-8", "replace"), version, kind, abi_minor,
                   kind == package.KIND_APP and entry != 0)
+
+
+@dataclass(frozen=True)
+class Stub:
+    version: int  # 1: a stub from before the version was readable
+    abi_minor: int | None  # the highest package abi_minor it takes, None when it doesn't say
+
+
+async def stub(s) -> Stub:
+    """Which stub the watch runs. Stock firmware has none and doesn't answer at all (the request times out)."""
+    reply = await s.request(SYSTEM, INFO, bytes([STUB_SLOT]), INFO | 0xA000)
+    if reply[:1] == bytes([Status.BAD_REQUEST]):
+        return Stub(1, None)
+    if len(reply) != 6 or reply[0] != Status.OK:
+        raise ValueError(f"unexpected stub version reply {reply.hex()}")
+    return Stub(struct.unpack_from("<I", reply, 1)[0], reply[5])
 
 
 async def listing(s) -> dict[int, Header]:
