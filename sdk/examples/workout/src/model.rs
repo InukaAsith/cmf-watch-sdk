@@ -482,6 +482,68 @@ impl Model {
         }
     }
 
+    /// A set done elsewhere (the phone, docs/specs/2026-11-14-shared-workout-design.md): `(ex, t)` of the workout that
+    /// started at `start` on `day`; `ex` NONE only says it runs. With no workout open it is adopted unless stale or
+    /// already in the history. A known event, another workout or a complete exercise change nothing. True if changed.
+    pub fn merge_set(&mut self, start: u32, day: u8, ex: u8, t: u16, now: u32) -> bool {
+        let Some(p) = &self.program else { return false };
+        let mut changed = false;
+        if self.workout.is_none() {
+            let stale = now.wrapping_sub(start) > STALE_S && now > start;
+            if stale || usize::from(day) >= p.days() || self.history().any(|e| e.start == start) {
+                return false;
+            }
+            self.workout = Some(Workout { day, started: start, touched: now, rest_until: start, rest_ex: NONE, done: [0; EX_MAX] });
+            self.trace.reset(start);
+            changed = true;
+        }
+        let Some(w) = &mut self.workout else { return changed };
+        let (d, i) = (usize::from(w.day), usize::from(ex));
+        if w.started != start || i >= p.exercises(d) {
+            return changed;
+        }
+        let e = p.exercise(d, i);
+        let tr = &mut self.trace;
+        if w.done[i] >= e.sets || tr.sets().contains(&(ex, t)) || usize::from(tr.n_sets) >= SETS_MAX {
+            return changed;
+        }
+        // kept in time order; only the newest event starts a rest
+        let at = tr.sets().iter().position(|&(_, u)| u > t).unwrap_or(usize::from(tr.n_sets));
+        tr.sets.copy_within(at..usize::from(tr.n_sets), at + 1);
+        tr.sets[at] = (ex, t);
+        tr.n_sets += 1;
+        w.done[i] += 1;
+        w.touched = now;
+        if at + 1 == usize::from(tr.n_sets) {
+            w.rest_until = start.wrapping_add(u32::from(t)).wrapping_add(u32::from(e.rest_s));
+            w.rest_ex = ex;
+        }
+        true
+    }
+
+    /// Finishes the open workout if it started at `start` (the phone ended it). True if it did.
+    pub fn finish_at(&mut self, start: u32, end: u32) -> bool {
+        let open = self.workout.is_some_and(|w| w.started == start);
+        if open {
+            self.finish(end);
+        }
+        open
+    }
+
+    /// A workout done on the phone alone, once per start; the rotation follows it when it is the newest.
+    // ponytail: an older entry still goes in at the head; the phone merges by start, so only the order is off
+    pub fn add_entry(&mut self, e: Entry) -> bool {
+        let days = self.program.as_ref().map_or(0, Program::days);
+        if self.history().any(|h| h.start == e.start) || self.workout.is_some_and(|w| w.started == e.start) {
+            return false;
+        }
+        if self.history().all(|h| h.start < e.start) && usize::from(e.day) < days {
+            self.last_day = Some(e.day);
+        }
+        self.push(e);
+        true
+    }
+
     #[cfg(test)]
     pub fn replace_program(&mut self, p: Program, now: u32) {
         self.take_program(p.bytes(), now);
@@ -826,5 +888,59 @@ pub mod tests {
         assert_eq!(epoch_s(&t), 847_879_200);
         assert_eq!(epoch_s(&Time { year: 2000, month: 1, day: 1, ..Time::default() }), 0);
         assert_eq!(epoch_s(&Time { year: 2024, month: 3, day: 1, ..Time::default() }) - epoch_s(&Time { year: 2024, month: 2, day: 28, ..Time::default() }), 2 * 86400);
+    }
+
+    #[test]
+    fn merge_set_adopts_and_dedupes() {
+        let mut m = model(three_days());
+        assert!(m.merge_set(1000, 0, NONE, 0, 1005)); // only "it runs": adopted, no sets
+        let w = m.workout.unwrap();
+        assert_eq!((w.day, w.started, w.done[0]), (0, 1000, 0));
+        assert!(m.merge_set(1000, 0, 0, 30, 1031));
+        assert!(!m.merge_set(1000, 0, 0, 30, 1032), "the same event twice");
+        assert_eq!(m.workout.unwrap().done[0], 1);
+        assert_eq!((m.workout.unwrap().rest_until, m.workout.unwrap().rest_ex), (1090, 0)); // 1000 + 30 + 60
+        assert_eq!(m.trace.sets(), &[(0, 30)]);
+    }
+
+    #[test]
+    fn merge_set_older_event_keeps_rest_and_order() {
+        let mut m = model(three_days());
+        m.start(0, 1000);
+        m.done_set(2, 1100); // t 100, rest until 1160
+        assert!(m.merge_set(1000, 0, 0, 40, 1101));
+        assert_eq!((m.workout.unwrap().rest_until, m.workout.unwrap().rest_ex), (1160, 2));
+        assert_eq!(m.trace.sets(), &[(0, 40), (2, 100)]);
+    }
+
+    #[test]
+    fn merge_set_refuses() {
+        let mut m = model(three_days());
+        assert!(!m.merge_set(1000, 0, 0, 10, 1000 + STALE_S + 1), "stale");
+        assert!(!m.merge_set(1000, 5, 0, 10, 1010), "no such day");
+        m.start(0, 2000);
+        assert!(!m.merge_set(1000, 0, 0, 10, 2010), "another workout");
+        assert!(!m.merge_set(2000, 0, 9, 10, 2010), "no such exercise");
+        assert!(m.merge_set(2000, 0, 1, 10, 2010));
+        assert!(!m.merge_set(2000, 0, 1, 20, 2020), "a1 has one set");
+        m.finish(2030);
+        assert!(!m.merge_set(2000, 0, 0, 40, 2040), "already in the history");
+        assert!(m.workout.is_none());
+    }
+
+    #[test]
+    fn finish_at_and_add_entry() {
+        let mut m = model(three_days());
+        m.start(1, 1000);
+        m.done_set(0, 1010);
+        assert!(!m.finish_at(999, 1100));
+        assert!(m.finish_at(1000, 1100));
+        assert_eq!(m.history().next().unwrap().dur_s, 100);
+        let e = Entry { start: 5000, dur_s: 600, day: 2, done: 3, planned: 3 };
+        assert!(m.add_entry(e));
+        assert!(!m.add_entry(e), "once per start");
+        assert_eq!((m.history().count(), m.next_day()), (2, 0)); // day 2 was the newest: day 0 next
+        assert!(m.add_entry(Entry { start: 100, day: 0, ..e })); // older: kept, the rotation stays
+        assert_eq!(m.next_day(), 0);
     }
 }
