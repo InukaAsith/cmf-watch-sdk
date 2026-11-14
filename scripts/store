@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""The FMC store listings of sdk/examples/<name>/store.toml apps, see docs/store.md.
+
+  scripts/store changed [BASE]    store apps touched since BASE (all of them without BASE)
+  scripts/store check NAME...     validate the listings
+  scripts/store build NAME...     check, then scripts/build-app with the listing's build number;
+                                  icon.svg -> target/<name>-icon.png, the store's icon
+  scripts/store publish NAME...   send target/<name>.wp2app, -icon.png + the listing to the store
+                                  (STORE_URL, STORE_PUBLISH_TOKEN; --dry-run: the store
+                                  validates and answers what would change, saves nothing)
+"""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tomllib
+
+ROOT = Path(__file__).resolve().parent.parent
+EXAMPLES = ROOT / "sdk/examples"
+# a change here can change every package
+SHARED = ("sdk/cmf-wp2-app/", "sdk/cmf-wp2-ui/", "sdk/Cargo.toml", "sdk/Cargo.lock", "sdk/.cargo/",
+          "src/wp2apps/", "pyproject.toml", "uv.lock", "scripts/build-app", "scripts/store",
+          ".github/workflows/store.yml")
+# key: (type, max length); the store's limits, see fmc_pocketbase 1754000000_store.js
+KEYS = {"name": (str, 60), "summary": (str, 140), "version": (str, 24), "author": (str, 60),
+        "build": (int, None), "published": (bool, None), "screenshots": (list, 8)}
+IMAGES = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
+
+
+def apps():
+    return sorted(p.parent.name for p in EXAMPLES.glob("*/store.toml"))
+
+
+def changed(base=None):
+    if not base or set(base) == {"0"}:  # a new branch pushes 0000…
+        return apps()
+    diff = subprocess.run(["git", "diff", "--name-only", base, "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    if diff.returncode:  # BASE isn't in the history, e.g. after a force push
+        return apps()
+    files = diff.stdout.split()
+    if any(f.startswith(SHARED) for f in files):
+        return apps()
+    return [a for a in apps() if any(f.startswith(f"sdk/examples/{a}/") for f in files)]
+
+
+def listing(name):
+    """The store.toml of `name`, checked; raises ValueError."""
+    folder = EXAMPLES / name
+    meta = tomllib.loads((folder / "store.toml").read_text())
+    for key, value in meta.items():
+        if key not in KEYS:
+            raise ValueError(f"{name}/store.toml: unknown key {key!r}")
+        kind, limit = KEYS[key]
+        if type(value) is not kind:
+            raise ValueError(f"{name}/store.toml: {key} must be a {kind.__name__}")
+        if limit and len(value) > limit:
+            raise ValueError(f"{name}/store.toml: {key} is longer than {limit}")
+    for key in ("name", "build"):
+        if key not in meta:
+            raise ValueError(f"{name}/store.toml: {key} is required")
+    if not 0 < meta["build"] < 2**32:
+        raise ValueError(f"{name}/store.toml: build must be a positive 32-bit number")
+    if len(name.encode()) > 23:
+        raise ValueError(f"{name}: a package name holds at most 23 bytes")
+    description = (folder / "store.md").read_text() if (folder / "store.md").exists() else ""
+    if len(description) > 8000:
+        raise ValueError(f"{name}/store.md is longer than 8000 characters")
+    shots = [folder / s for s in meta.get("screenshots", [])]
+    for shot in shots:
+        if shot.suffix.lower() not in IMAGES or not shot.is_file() or shot.stat().st_size > 2 << 20:
+            raise ValueError(f"{name}: screenshot {shot.name} must be a png/jpeg/webp/svg file of at most 2 MB")
+    return meta, description, shots
+
+
+def publish(name, dry_run):
+    meta, description, shots = listing(name)
+    folder = EXAMPLES / name
+    repo = os.environ.get("GITHUB_REPOSITORY", "cmf-tech-community/wp2-apps")
+    fields = {
+        "slug": name, "name": meta["name"], "summary": meta.get("summary", ""), "description": description,
+        "version": meta.get("version", ""), "author": meta.get("author", ""),
+        "source": f"https://github.com/{repo}/tree/main/sdk/examples/{name}",
+        "published": str(meta.get("published", False)).lower(), "dry": "1" if dry_run else "",
+    }
+    args = ["curl", "--silent", "--show-error", "--fail-with-body", "--retry", "2",
+            "--header", "@-", f"{os.environ['STORE_URL'].rstrip('/')}/api/store/publish",
+            "--form", f"package=@{ROOT / 'target' / f'{name}.wp2app'}"]
+    for key, value in fields.items():
+        args += ["--form-string", f"{key}={value}"]
+    icon = ROOT / "target" / f"{name}-icon.png"
+    if icon.exists():
+        args += ["--form", f"icon=@{icon}"]
+    for shot in shots:
+        args += ["--form", f"screenshots=@{shot}"]
+    # the token goes in on stdin, so it never shows up in the process list
+    auth = f"Authorization: Bearer {os.environ['STORE_PUBLISH_TOKEN']}\n"
+    out = subprocess.run(args, input=auth, capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit(f"{name}: publish failed: {out.stdout or out.stderr}")
+    print(json.dumps(json.loads(out.stdout)))
+
+
+def main(argv):
+    if not argv or argv[0] not in ("changed", "check", "build", "publish"):
+        raise SystemExit(__doc__)
+    command, rest = argv[0], argv[1:]
+    try:
+        run(command, rest)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"error: {error}")
+
+
+def run(command, rest):
+    if command == "changed":
+        print(" ".join(changed(rest[0] if rest else None)))
+    elif command == "check":
+        for name in rest:
+            listing(name)
+    elif command == "build":
+        for name in rest:
+            subprocess.run([ROOT / "scripts/build-app", name, str(listing(name)[0]["build"])], check=True)
+            subprocess.run(["uv", "run", "--locked", "wp2apps", "info", f"target/{name}.wp2app"], cwd=ROOT, check=True)
+            svg = EXAMPLES / name / "icon.svg"
+            if svg.exists():  # a PNG: an icon.svg may pull in images by relative path
+                subprocess.run(["resvg", "-w", "288", "-h", "288", svg, ROOT / f"target/{name}-icon.png"], check=True)
+    else:
+        dry_run = "--dry-run" in rest
+        for name in (a for a in rest if a != "--dry-run"):
+            publish(name, dry_run)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

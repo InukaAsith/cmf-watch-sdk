@@ -1,0 +1,7 @@
+# The app's listing in the FMC store, see docs/store.md. The page's body is store.md.
+name = "Vibration Lab"
+summary = "Tune the motor: strength, frequency, patterns"
+version = "0.1.0"
+build = 1
+author = "CMF Tech Community"
+published = true
