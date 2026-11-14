@@ -197,6 +197,15 @@ fn heart(b: &mut Batch, parent: Obj, x: i16, y: i16) -> Result<(Obj, Obj), LvErr
     Ok((l, dot))
 }
 
+/// A see-through box of the page's width `h` high, for children placed by `align` inside a flex column.
+fn slot(b: &mut Batch, parent: Obj, h: i32) -> Result<Obj, LvError> {
+    let o = b.create(Class::Obj, parent)?;
+    b.size(o, ROW_W, h)?;
+    bare(b, o)?;
+    b.flags(o, &[], &[Flag::Clickable])?;
+    Ok(o)
+}
+
 /// One left-aligned line in a row, "..." when it does not fit.
 fn line(b: &mut Batch, row: Obj, text: &str, colour: i32, x: i16, y: i16, w: i32) -> Result<Obj, LvError> {
     let l = b.create(Class::Label, row)?;
@@ -369,30 +378,35 @@ impl Screen {
             View::Set { ex } => {
                 let Some(w) = w else { return flush(b) };
                 let e = p.exercise(usize::from(w.day), ex);
-                self.plain(b)?;
-                (self.hr, self.hr_dot) = heart(b, self.page, 0, 14)?;
+                // a crown-scrolled column like Custom Apps, not everything pinned into one screen; the dots say
+                // which set this is
+                let (page, _bar) = stock::page(b)?;
+                b.style(page, Prop::PadTop, 0, 20)?;
+                b.style(page, Prop::PadBottom, 0, 120)?;
+                b.style(page, Prop::PadRow, 0, 8)?;
+                self.page = page;
+                let top = slot(b, page, 60)?;
+                (self.hr, self.hr_dot) = heart(b, top, 0, 0)?;
                 if m.zones != [0; 5] {
-                    self.zbar = zone_bar(b, self.page, 52)?;
+                    self.zbar = zone_bar(b, top, 42)?;
                 }
-                label(b, self.page, e.name, WHITE, Align::TopMid, 0, 64, 340)?;
-                let mut t = Txt::<64>::new();
-                let _ = write!(t, "подход {} из {}", (w.done[ex] + 1).min(e.sets), e.sets);
-                labelf(b, SMALL, self.page, t.as_str(), GREY, Align::TopMid, 0, 106, 0)?;
+                label(b, page, e.name, WHITE, Align::TopMid, 0, 0, 340)?;
                 let mut r = Txt::<16>::new();
                 reps(e.reps.0, e.reps.1, "-", &mut r);
-                labelf(b, BIG, self.page, r.as_str(), WHITE, Align::TopMid, 0, 134, 0)?;
-                labelf(b, SMALL, self.page, "повторений", GREY, Align::TopMid, 0, 194, 0)?;
+                labelf(b, BIG, page, r.as_str(), WHITE, Align::TopMid, 0, 0, 0)?;
+                labelf(b, SMALL, page, "повторений", GREY, Align::TopMid, 0, 0, 0)?;
                 if !e.weight.is_empty() {
                     // the weight as the program has it (F28M lacks some capitals: a rare one shows as a gap)
-                    labelf(b, MID, self.page, e.weight, ACCENT, Align::TopMid, 0, 226, 340)?;
+                    labelf(b, MID, page, e.weight, ACCENT, Align::TopMid, 0, 0, 340)?;
                 }
                 room(b)?;
                 // the sets: done in the accent, this one white, the rest dim
+                let dots = slot(b, page, 20)?;
                 let n = e.sets.min(DOTS_MAX);
                 for k in 0..n {
-                    let dot = b.create(Class::Obj, self.page)?;
+                    let dot = b.create(Class::Obj, dots)?;
                     b.size(dot, DOT, DOT)?;
-                    b.align(dot, Align::TopMid, (24 * i32::from(k) - 12 * (i32::from(n) - 1)) as i16, 274)?;
+                    b.align(dot, Align::Center, (24 * i32::from(k) - 12 * (i32::from(n) - 1)) as i16, 0)?;
                     b.style(dot, Prop::Radius, 0, CIRCLE)?;
                     b.style(dot, Prop::BorderWidth, 0, 0)?;
                     let c = if k < w.done[ex] { ACCENT } else if k == w.done[ex] { WHITE } else { LETTER_BG };
@@ -401,8 +415,14 @@ impl Screen {
                     b.flags(dot, &[], &[Flag::Clickable, Flag::Scrollable])?;
                 }
                 room(b)?;
-                let done = pill(b, self.page, "Сделал", true, 312, 240)?;
+                let done = pill(b, page, "Сделал", true, 0, 240)?;
                 self.hit(done, Hit::Done);
+                let mut t = Txt::<32>::new();
+                let _ = t.write_str("потом отдых ");
+                let mut c = Txt::<16>::new();
+                clock(u32::from(e.rest_s), &mut c);
+                let _ = t.write_str(c.as_str());
+                labelf(b, SMALL, page, t.as_str(), GREY, Align::TopMid, 0, 0, 0)?;
             }
             View::Rest => {
                 let Some(w) = w else { return flush(b) };
