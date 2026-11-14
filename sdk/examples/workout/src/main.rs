@@ -131,6 +131,7 @@ mod device {
             View::Rest => 3,
             View::Ask => 4,
             View::Done => 5,
+            View::Preview { .. } => 6,
         }
     }
 
@@ -288,6 +289,7 @@ mod device {
                     match s.view {
                         View::Set { .. } | View::Rest | View::Ask => to = Some(View::Day),
                         View::Day => to = Some(View::Ask),
+                        View::Preview { .. } => to = Some(View::Start),
                         View::Start | View::Done => break,
                     }
                 }
@@ -318,10 +320,13 @@ mod device {
                 hit = pending.take().map(|(h, _)| h);
             }
             match hit {
-                    Some(Hit::Day(d)) => {
-                        m.start(d, now);
-                        save(api, m);
-                        to = Some(View::Day);
+                    Some(Hit::Day(d)) => to = Some(View::Preview { day: d }),
+                    Some(Hit::Begin) => {
+                        if let View::Preview { day } = s.view {
+                            m.start(day, now);
+                            save(api, m);
+                            to = Some(View::Day);
+                        }
                     }
                     Some(Hit::Exercise(i)) => {
                         let open = matches!((&m.program, m.workout),
@@ -373,7 +378,7 @@ mod device {
                             to = match s.view {
                                 View::Set { ex: e } if e == usize::from(ex) => Some(resume_view(m, now)),
                                 View::Rest => Some(resume_view(m, now)),
-                                View::Start | View::Done => Some(View::Day),
+                                View::Start | View::Done | View::Preview { .. } => Some(View::Day),
                                 View::Ask => to,
                                 v => Some(v),
                             };
