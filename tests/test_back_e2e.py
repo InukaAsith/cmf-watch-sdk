@@ -11,6 +11,7 @@ from wp2apps import paths
 OUT = paths.ROOT / "runs" / "back"
 CUSTOM_APPS = (170, 108, 200, 40)  # "Custom Apps" label, list scrolled to the top
 CLOCK_VIEW = 16
+RETURN_CB, RETURN_CLOCK = 0x38019B10, 0x1005D969  # wp2_core::stock RETURN_CB, RETURN_CLOCK
 
 
 def back(emu):
@@ -201,6 +202,24 @@ class ScreenOffTest(unittest.TestCase):
             self.assertEqual(OwnBackTest.presses(self, emu), 0, "the waking press reached the app")
             emu.send("c 1", "c 0", pause=1.5)  # past the loader's WAKE_KEY_MS: a real press
             self.assertEqual(OwnBackTest.presses(self, emu), 1, "the press after the wake was eaten")
+
+    def test_app_survives_return_to_face(self):
+        """Late-resume goes back to the clock when the panel was dark for the "return to watch face" time (ux2sys
+        0x9C, 30 s at least); on hardware only light sleep counts, so it struck once heart rate kept deep sleep off."""
+        with harness.installed(["loader", "back-owner"], name="screen-off-return") as (emu, port):
+            self.open(emu, port)
+            self.assertEqual(harness.u32(emu, RETURN_CB), 0, "the loader holds the return off while an app runs")
+            mark = len(emu.uart())
+            # early-suspend wrote the setting in ms at +0x18: 1 s here, 3 s dark
+            self.blank_and_wake(emu, port, during=lambda: (emu.poke(RETURN_CB + 0x18, struct.pack("<I", 1000)),
+                                                           emu.sleep(3)))
+            self.assertNotIn("return clock", emu.uart()[mark:])
+            self.assertTrue(OwnBackTest.running(self, emu), "app stopped by the return to the clock")
+            self.assertEqual(harness.focused(emu), 240)
+            for _ in range(3):  # back-owner returns on its third press
+                emu.send("c 1", "c 0", pause=2)
+            self.assertFalse(OwnBackTest.running(self, emu))
+            self.assertEqual(harness.u32(emu, RETURN_CB), RETURN_CLOCK, "the stock return is back for the menu")
 
     def test_buzz_while_dark(self):
         with harness.installed(["loader", "back-owner"], name="screen-off-buzz") as (emu, port):
