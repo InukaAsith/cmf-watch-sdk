@@ -194,7 +194,7 @@ mod device {
         let mut hist: Option<u8> = None;
         // X messages left: (next index, count, trace bytes)
         let mut trace: Option<(u8, u8, usize)> = None;
-        let mut pulsed: Option<(u32, u8, u8)> = None; // (ms, ex, done) of the last P
+        let mut pulsed: Option<(u32, u8, u8, bool)> = None; // (ms, ex, done, resting) of the last P
         let mut hr_on = false; // the measurement runs while a workout does (docs/abi-1.4.md, Heart rate)
         // the wake lock: on during a rest and AWAKE_MS after it, off anywhere else
         let mut locked = false;
@@ -237,9 +237,11 @@ mod device {
             m.hr_sample(m.bpm, now);
             if let Some(w) = m.workout {
                 let (ex, done) = (open_ex(s.view, m), sets_done(m) as u8);
-                if pulsed.is_none_or(|(t, e, d)| ms.wrapping_sub(t) >= PULSE_MS || (e, d) != (ex, done)) {
-                    api.send(&pulse(w.started, w.day, m.bpm, ex, done));
-                    pulsed = Some((ms, ex, done));
+                let ex_done = w.done.get(usize::from(ex)).copied().unwrap_or(0);
+                let rest = if s.view == View::Rest { (w.rest_until.wrapping_sub(now) as i32).clamp(0, 0xFFFF) as u16 } else { 0 };
+                if pulsed.is_none_or(|(t, e, d, r)| ms.wrapping_sub(t) >= PULSE_MS || (e, d, r) != (ex, done, rest > 0)) {
+                    api.send(&pulse(w.started, w.day, m.bpm, ex, done, ex_done, rest));
+                    pulsed = Some((ms, ex, done, rest > 0));
                 }
             }
             let _ = s.tick(b, &mut |b| b.submit(&lv), m, now);

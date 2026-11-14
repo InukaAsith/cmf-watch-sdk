@@ -4,6 +4,7 @@ import WireKit
 
 struct ProgramView: View {
     @Environment(AppStore.self) private var store
+    @Environment(SyncController.self) private var sync
     @State private var importing = false
     @State private var importError: String?
 
@@ -11,6 +12,7 @@ struct ProgramView: View {
         @Bindable var store = store
         NavigationStack {
             List {
+                if let live = sync.live { ActiveSection(live: live) }
                 if case let .failure(e) = store.encoded, !store.days.isEmpty {
                     Section { Label(e.text, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 }

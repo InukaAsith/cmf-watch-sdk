@@ -19,7 +19,7 @@ final class SyncController {
     /// The workout running on the watch, from its P messages; nil when none came for a while.
     private(set) var live: Live?
     struct Live {
-        var start: UInt32, day: Int, bpm: Int, ex: Int?, done: Int, at: Date
+        var start: UInt32, day: Int, bpm: Int, ex: Int?, done: Int, exDone = 0, restEnd: Date?, at: Date
         /// heart rate since the phone saw this workout (phone time, bpm > 0)
         var samples: [(Date, Int)]
     }
@@ -97,10 +97,11 @@ final class SyncController {
             while let ch = channel {
                 do {
                     let r = parseIncoming(try await ch.recv(timeout: .seconds(15)))
-                    if case let .pulse(start, day, bpm, ex, done) = r {
+                    if case let .pulse(start, day, bpm, ex, done, exDone, restLeft) = r {
                         var l = live?.start == start ? live! : Live(start: start, day: day, bpm: 0, ex: nil, done: 0,
-                                                                     at: .now, samples: [])
-                        (l.bpm, l.ex, l.done, l.at) = (bpm, ex, done, .now)
+                                                                     restEnd: nil, at: .now, samples: [])
+                        (l.bpm, l.ex, l.done, l.exDone, l.at) = (bpm, ex, done, exDone, .now)
+                        l.restEnd = restLeft > 0 ? .now.addingTimeInterval(TimeInterval(restLeft)) : nil
                         if bpm > 0 { l.samples.append((.now, bpm)) }
                         live = l
                         continue
