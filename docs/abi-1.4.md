@@ -108,6 +108,29 @@ The measurement keeps the watch out of deep sleep, so with the panel dark the st
 that return off while an app runs, as the stock does for its own workout views (`docs/recon.md`, "Return to watch
 face"). No ABI change.
 
+## Pager (loader of 2026-11-14, no ABI bump)
+
+A vertical pager of full-screen pages, the stock `lv_tileview` (entries: `docs/recon-lvgl.md`, `lv_tileview`).
+SDK: `stock::pager` (`docs/app-guide.md`, "Pages"). Emulator proof: `tests/test_pager_e2e.py` (ui-gallery's
+"Pages"), frames `runs/pager/`.
+
+- `CREATE` class **8 Pager**: `lv_tileview_create(parent)`. Children: class **9 Page** only, and a page only in a
+  pager. A page is `lv_tileview_add_tile(pager, 0, row, LV_DIR_TOP | LV_DIR_BOTTOM)` with `row` = the pager's child
+  count, so pages stack in creation order. `DEL` of a page is `BadClass` (the rows after it would leave a gap); it
+  goes with its pager.
+- `VALUE` on a pager: `lv_obj_set_tile_id(pager, 0, v, anim)` (`v` 0..=192, past the last page: the last).
+- At `CREATE` the loader registers the crown filter (`0x2D`) on the pager, which makes it the knob object, and its
+  own `VALUE_CHANGED` callback. `KNOB(pager)` takes the crown back. A crown event scrolls the current page by its
+  step (`lv_obj_scroll_to_y`, no animation) while it has room in that direction (`lv_obj_get_scroll_bottom`,
+  `lv_obj_get_scroll_y`); at the end it glides to the next or previous page. A drag does the same through LVGL's
+  scroll chain (the tile is scrollable, the tileview snaps with `SCROLL_ONE`).
+- Event: when the tileview settles (`VALUE_CHANGED`, sent by its own `SCROLL_END` handler) the app gets
+  `Event { kind: LV, x: pager, y: 28, delta: index of lv_tileview_get_tile_act }`, coalesced, with no `EVENTS`
+  needed. `EVENTS` `VALUE_CHANGED` on a pager adds nothing.
+- The tileview scrolls vertically only, so the back swipe (`0x71`, a right swipe) reaches the loader as before.
+- `ABI_MINOR` stays 3 (an OTA would be needed otherwise). An older loader answers `-22` to class 8 and 9: install the
+  loader first. The golden fixture is unchanged; `lvcmd::tests::pager_holds_pages` pins the rules.
+
 ## Stub version (stub 2, no ABI bump)
 
 The watch reports `1.0.0.73` (`AT GETVERSION`, `0x8006`) whatever `app.bin` it runs, and the OTA `version_code`
