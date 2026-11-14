@@ -167,9 +167,6 @@ pub const POWER_DC5V: u32 = 0x101CE70F;
 // (sys_wake_unlock stores the time); AT SETWAKELOCK 0 also calls 0x100C1739, which blanks at once if it ran out.
 pub const WAKE_LOCK: u32 = 0x101B59A9;
 pub const WAKE_UNLOCK: u32 = 0x100C1859;
-// (seconds, 1, id): auto-sleep timeout `seconds` while `id` holds it (same per-id bits as WAKE_LOCK, released by
-// WAKE_UNLOCK(id), which restores the default). The stock heart view takes (25, 1, 0x14) on focus.
-pub const SCREEN_HOLD: u32 = 0x100C16F1;
 // NVRAM read (name, buf, len) -> bytes read or < 0; takes the NVRAM lock, safe from any thread. The AT GETSECRET
 // handler 0x100E9DD0 reads the pairing secret with it (docs/recon.md, "Pairing secret").
 pub const KV_GET: u32 = 0x1010_E215;
@@ -184,9 +181,6 @@ pub const HR_WEAR: u32 = 0x3804_B30C;
 pub const HR_OWNER: u32 = 0x3804_B30F;
 // u8 latest bpm, 0 = none; hr_callback type 5 (0x100E337A) writes it, the heart view clears it at start
 pub const HR_BPM: u32 = 0x3804_B310;
-// the heart view's id: the loader's measurement holds the 25 s auto-sleep under it, as the heart view does
-pub const HR_HOLD_ID: u32 = 0x14;
-pub const HR_HOLD_S: u32 = 25;
 // The launcher's "return to watch face" (docs/recon.md, "Return to watch face"): u32 callback at RETURN_CB, set to
 // RETURN_CLOCK at launch; late-resume calls it when the panel was dark for ux2sys 0x9C seconds, unless it is 0.
 pub const RETURN_CB: u32 = 0x3801_9B10;

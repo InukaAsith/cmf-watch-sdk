@@ -52,7 +52,7 @@ class HeartRateTest(unittest.TestCase):
             self.assert_on(emu, True, "measurement on (property 2)")
             self.assertIn("ux2sys change_hr_mode :1", emu.uart()[mark:])
             self.assertIn("VC9202 Start Later---m0 h1", emu.uart()[mark:])
-            self.assertIn("set_autosleep_time:25000", emu.uart()[mark:], "the heart view's 25 s panel hold")
+            self.assertNotIn("set_autosleep_time:25000", emu.uart()[mark:], "no screen hold: the panel keeps its timeout")
             self.assertEqual(emu.peek(BPM, 1), b"\x00", "no reading before the sensor gives one")
 
             emu.poke(BPM, bytes([67]))
@@ -98,8 +98,6 @@ class HeartRateTest(unittest.TestCase):
             self.assertIn("jxdis_algo_ret 5) 0 -> 1", emu.uart()[mark:], "the sensor's last user left")
             emu.sleep(2)
             self.assertIn("VC9202 Stop Later---m0 h0", emu.uart()[mark:], "the driver stopped")
-            self.assertNotIn("set_autosleep_time:25000", emu.uart()[mark:].split("change_hr_mode :0")[-1],
-                             "the 25 s hold released")
             uart = emu.uart()
             self.assertNotIn("ZEPHYR FATAL ERROR", uart)
             self.assertEqual(uart.count("*** Booting Zephyr"), 1, "guest rebooted")
