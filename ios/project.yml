@@ -13,9 +13,13 @@ targets:
     platform: iOS
     sources:
       - path: Workout
-        excludes: [Resources/workout.wp2app]
+        excludes: [Resources/workout.wp2app, Resources/loader.wp2app]
       # built by scripts/ios-install (scripts/build-app workout), never committed
       - path: Workout/Resources/workout.wp2app
+        buildPhase: resources
+        optional: true
+      # a one-off loader update from the phone: copied in by hand, never committed
+      - path: Workout/Resources/loader.wp2app
         buildPhase: resources
         optional: true
     dependencies:

@@ -26,6 +26,10 @@ final class SyncController {
     let bundled: Data? = Bundle.main.url(forResource: "workout", withExtension: "wp2app")
         .flatMap { try? Data(contentsOf: $0) }
     var bundledHeader: PackageHeader? { bundled.flatMap(parseHeader) }
+    /// A loader package copied into Resources by hand for a one-off update from the phone; never committed.
+    let bundledLoader: Data? = Bundle.main.url(forResource: "loader", withExtension: "wp2app")
+        .flatMap { try? Data(contentsOf: $0) }
+    private(set) var loaderInstalled = false
     /// Install needs the K session (BLE), not the TCP bridge.
     var canInstall: Bool { session != nil }
 
@@ -137,6 +141,21 @@ final class SyncController {
             lastError = nil
         } catch {
             lastError = String(localized: "Синхронизация не удалась: \(String(describing: error))")
+        }
+    }
+
+    func installLoader() async {
+        guard let session, let bundledLoader else { return }
+        installProgress = 0
+        defer { installProgress = nil }
+        do {
+            _ = try await install(session, package: bundledLoader) { p in Task { @MainActor in self.installProgress = p } }
+            loaderInstalled = true
+            lastError = nil
+        } catch InstallError.busy {
+            lastError = String(localized: "Закройте Custom Apps на часах и повторите.")
+        } catch {
+            lastError = String(localized: "Установка не удалась: \(String(describing: error))")
         }
     }
 

@@ -201,6 +201,26 @@
         }
       }
     },
+    "Загрузчик": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loader"
+          }
+        }
+      }
+    },
+    "Закройте Custom Apps на часах и повторите.": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Close Custom Apps on the watch and try again."
+          }
+        }
+      }
+    },
     "Закройте приложение «Тренировка» на часах и повторите.": {
       "localizations": {
         "en": {
@@ -733,12 +753,32 @@
         }
       }
     },
+    "Установить загрузчик": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Install the loader"
+          }
+        }
+      }
+    },
     "Установка не удалась: %@": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
             "value": "Install failed: %@"
+          }
+        }
+      }
+    },
+    "Установлен": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed"
           }
         }
       }
