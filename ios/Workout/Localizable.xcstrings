@@ -511,6 +511,26 @@
         }
       }
     },
+    "Зоны: задайте возраст в «Часах»": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Zones: set your age in Watch"
+          }
+        }
+      }
+    },
+    "Идёт": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "In progress"
+          }
+        }
+      }
+    },
     "Импорт": {
       "localizations": {
         "en": {
@@ -621,6 +641,16 @@
         }
       }
     },
+    "Начать": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Start"
+          }
+        }
+      }
+    },
     "Начать: %@": {
       "localizations": {
         "en": {
@@ -677,6 +707,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "No exercises"
+          }
+        }
+      }
+    },
+    "Ниже зон": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Below zones"
           }
         }
       }
@@ -1013,6 +1053,16 @@
         }
       }
     },
+    "Продолжить": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Continue"
+          }
+        }
+      }
+    },
     "Пропустить отдых": {
       "localizations": {
         "en": {
@@ -1179,6 +1229,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Syncing…"
+          }
+        }
+      }
+    },
+    "Следующий": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next"
           }
         }
       }
