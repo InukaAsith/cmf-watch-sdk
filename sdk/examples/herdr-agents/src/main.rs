@@ -15,9 +15,11 @@ mod device {
     use cmf_wp2_app::lv::{Batch, LvError, FOCUSED};
     use cmf_wp2_app::{Api, BUTTON, LV, MSG_MAX, PAUSE, RESUME, STORE_MAX};
     use cmf_wp2_ui::haptic::Motor;
+    use core::fmt::Write;
 
     cmf_wp2_app::entry!(main);
     cmf_wp2_app::app_icon!();
+    cmf_wp2_app::app_features!(cmf_wp2_app::WIDGET | cmf_wp2_app::PAGE);
 
     const ASK_MS: u32 = 3000;
     const AWAKE_MS: u32 = 20_000;
@@ -60,6 +62,27 @@ mod device {
         let buf = unsafe { &mut *&raw mut STORE };
         let n = model.save(buf);
         api.save(&buf[..n]);
+    }
+
+    // the card widget (docs/app-guide.md, "Widget"): agent counts at exit
+    fn widget(api: &Api, model: &Model) {
+        let (working, _, _) = model.counts();
+        let mut buf = [0u8; 40];
+        let mut w = Buf(&mut buf, 0);
+        let _ = write!(w, "{} agents\n{} working", model.len(), working);
+        let n = w.1;
+        api.widget("herdr", core::str::from_utf8(&buf[..n]).unwrap_or(""));
+    }
+
+    struct Buf<'a>(&'a mut [u8], usize);
+
+    impl core::fmt::Write for Buf<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let n = s.len().min(self.0.len() - self.1);
+            self.0[self.1..self.1 + n].copy_from_slice(&s.as_bytes()[..n]);
+            self.1 += n;
+            Ok(())
+        }
     }
 
     // true on RESUME, false on BUTTON
@@ -174,6 +197,7 @@ mod device {
         if unsaved {
             save(api, model);
         }
+        widget(api, model);
         0
     }
 }

@@ -192,6 +192,33 @@ impl Api {
         (self.lv_submit)(r.as_ptr(), r.len())
     }
 
+    /// The app's widget on the cards left of the watch face (`wp2apps cards set widgets:0x40/<slot + 1>`): a
+    /// `title` (one line, up to 23 bytes) and a `value` (up to 39 bytes, `\n` starts a second line), cut at a char
+    /// boundary. Kept on NAND until the next call or the app's removal; the card shows it from its next layout
+    /// (the face shown again). Each call writes NAND: call it when the value changes, not every frame. `0`, `-5` on
+    /// a write error, `-22` on a loader without widgets.
+    pub fn widget(&self, title: &str, value: &str) -> i32 {
+        if self.abi_minor < 2 {
+            return -22;
+        }
+        // lv_submit takes only buffers inside the app block: a static, not the stack
+        static mut BUF: [u8; WIDGET_BATCH] = [0; WIDGET_BATCH];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        *buf = widget_record(title, value);
+        (self.lv_submit)(buf.as_ptr(), buf.len())
+    }
+
+    /// `true` when the app runs as its page next to the watch face (`app_features!(PAGE)`, docs/app-guide.md "Page"),
+    /// `false` in the Apps menu and on a loader without pages. On a page the crown and the button stay with the
+    /// watch (no BUTTON), and swiping away gives PAUSE, back RESUME.
+    pub fn on_page(&self) -> bool {
+        if self.abi_minor < 2 {
+            return false;
+        }
+        static mut BUF: [u8; 4] = [0x15, 0, 0, 0];
+        (self.lv_submit)(unsafe { core::ptr::addr_of!(BUF) } as *const u8, 4) == 1
+    }
+
     /// ABI 1.3: `true` = this app handles BUTTON ("back") itself and exits by returning; the loader then stops it
     /// only if it leaves a BUTTON unread for 1 s (hung). A no-op on an older loader.
     pub fn own_back(&self, on: bool) {
@@ -199,6 +226,25 @@ impl Api {
             (self.own_back)(on);
         }
     }
+}
+
+const WIDGET_BATCH: usize = 4 + 64;
+
+/// WIDGET record for `lv_submit` (op 0x14, handle 0): title NUL-padded to 24 bytes, then the value NUL-padded to 40.
+#[doc(hidden)]
+pub fn widget_record(title: &str, value: &str) -> [u8; WIDGET_BATCH] {
+    let mut out = [0u8; WIDGET_BATCH];
+    out[..4].copy_from_slice(&[0x14, 64, 0, 0]);
+    let put = |out: &mut [u8], s: &str| {
+        let mut n = s.len().min(out.len() - 1);
+        while !s.is_char_boundary(n) {
+            n -= 1;
+        }
+        out[..n].copy_from_slice(&s.as_bytes()[..n]);
+    };
+    put(&mut out[4..28], title);
+    put(&mut out[28..], value);
+    out
 }
 
 static API: AtomicPtr<Api> = AtomicPtr::new(core::ptr::null_mut());
@@ -285,6 +331,31 @@ macro_rules! app_icon {
     () => {};
 }
 
+/// `app_features!` flag: the app has a widget for the cards left of the watch face (`Api::widget`); the Apps menu
+/// offers "Add widget" on a long press.
+pub const WIDGET: u8 = 1;
+/// `app_features!` flag: the app can run as its own page next to the watch face (`Api::on_page`); the Apps menu
+/// offers "Add page".
+pub const PAGE: u8 = 2;
+
+/// Declares what the app offers beyond its menu row: `app_features!(cmf_wp2_app::WIDGET | cmf_wp2_app::PAGE);`
+/// (docs/app-guide.md, "Widget" and "Page"). Placed after the icon.
+#[cfg(not(wp2_sim))]
+#[macro_export]
+macro_rules! app_features {
+    ($flags:expr) => {
+        #[used]
+        #[unsafe(link_section = ".wp2info.features")]
+        static WP2_FEATURES: [u8; 8] = [b'W', b'P', b'2', b'F', $flags, 0, 0, 0];
+    };
+}
+
+#[cfg(wp2_sim)]
+#[macro_export]
+macro_rules! app_features {
+    ($flags:expr) => {};
+}
+
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -300,6 +371,17 @@ mod tests {
     extern crate std;
     use super::*;
     use std::boxed::Box;
+
+    #[test]
+    fn widget_record_truncates_at_char_boundary() {
+        let r = widget_record("Пульс и ещё длинный заголовок", "72 bpm");
+        assert_eq!(&r[..4], &[0x14, 64, 0, 0]);
+        let title = &r[4..28];
+        let end = title.iter().position(|&b| b == 0).unwrap();
+        assert!(end <= 23 && core::str::from_utf8(&title[..end]).is_ok());
+        assert_eq!(&r[28..35], b"72 bpm\0");
+        assert_eq!(widget_record("", &"x".repeat(80))[28 + 39], 0, "value keeps its NUL");
+    }
 
     extern "C" fn rect(_: i16, _: i16, _: u16, _: u16, _: u16) {}
     extern "C" fn text(_: i16, _: i16, _: *const u8, _: usize, _: u16) {}

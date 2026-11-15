@@ -8,7 +8,10 @@ pub const LOADER_ABI_MINOR: u16 = 3;
 // STUB_SLOT (docs/abi-1.4.md, "Stub version"): the watch reports 1.0.0.73 whatever app.bin it runs, so this is the
 // only way to tell one patched firmware from another. 1 = every stub before the field was readable. Not the stub
 // header's `version`: that one is the header format, which `wp2apps firmware` checks is 1.
-pub const STUB_VERSION: u32 = 2;
+// 3 = the Apps widget in wgt_reg slot 0x40 (docs/recon.md, "Widget cards")
+// 4 = app widgets: 0x40 with param_id slot + 1 shows the app's record and launches it on a tap
+// 5 = app pages: views 0xF8 + slot run the loader too, which starts that app (cards.rs)
+pub const STUB_VERSION: u32 = 5;
 // INFO for this slot answers the stub's version instead of a package header; an older stub answers BadRequest
 pub const STUB_SLOT: u8 = 0xFE;
 pub const STUB_RAM: u32 = 0x3871_EEC0;
@@ -30,6 +33,14 @@ pub fn slot_path(slot: u8, tmp: bool) -> [u8; 24] {
 pub fn data_path(slot: u8, new: bool) -> [u8; 24] {
     file_path(slot, if new { b"new" } else { b"dat" })
 }
+
+// the app's widget record (docs/app-guide.md, "Widget"): WIDGET_REC bytes, title at 0, value at WIDGET_TITLE, each
+// NUL-terminated; written by the loader for the app, read by the stub when a card with widget 0x40/(slot + 1) is laid out
+pub fn widget_path(slot: u8) -> [u8; 24] {
+    file_path(slot, b"wgt")
+}
+pub const WIDGET_REC: usize = 64;
+pub const WIDGET_TITLE: usize = 24;
 
 fn file_path(slot: u8, ext: &[u8; 3]) -> [u8; 24] {
     let mut path = [0u8; 24];
@@ -56,7 +67,9 @@ pub struct StubRam {
     pub api: u8,
     // written by the loader: APP_V11, APP_PAUSED
     pub app_flags: u8,
-    pub _pad: u8,
+    // tap on an app widget: slot + 1 to launch when the loader view opens, 0 = just the menu (docs/recon.md,
+    // "Widget cards"); set by the stub, taken by the loader at LAYOUT. Was padding: an older loader ignores it
+    pub launch: u8,
     pub xfer_size: u32,
     pub xfer_crc: u32,
     pub xfer_written: u32,
@@ -91,6 +104,9 @@ pub struct StubRam {
     pub kick: u32,
     // 1 while a thread runs the stub's frame path (reply buffer, outbox consumer)
     pub busy: core::sync::atomic::AtomicU8,
+    // the view the loaded loader belongs to: 0xF0 (menu) or 0xF8 + slot (an app's page, cards.rs). Messages of another
+    // view while it is loaded are ignored, so a page left behind cannot delete the instance a later view took over
+    pub loader_view: u16,
 }
 
 pub const KICK_MAGIC: u32 = 0x4B43_494B; // "KICK"
@@ -119,6 +135,7 @@ mod tests {
         assert_eq!(offset_of!(StubRam, load_file), 0x500);
         assert_eq!(offset_of!(StubRam, load_scratch), 0x52C);
         assert_eq!(offset_of!(StubRam, api), 9);
+        assert_eq!(offset_of!(StubRam, launch), 0xB);
         assert_eq!(offset_of!(StubRam, host_key), 0x72C);
         assert!(size_of::<StubRam>() <= 0xE00);
     }
@@ -131,5 +148,6 @@ mod tests {
         assert_eq!(&DIR[..], b"/NAND:/wp2apps\0");
         assert_eq!(&data_path(2, false)[..21], b"/NAND:/wp2apps/2.dat\0");
         assert_eq!(&data_path(2, true)[..21], b"/NAND:/wp2apps/2.new\0");
+        assert_eq!(&widget_path(7)[..21], b"/NAND:/wp2apps/7.wgt\0");
     }
 }
