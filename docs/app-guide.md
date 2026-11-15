@@ -374,6 +374,59 @@ One blob of at most `STORE_MAX = 4096` bytes per slot, in `/NAND:/wp2apps/<slot>
 | `heart_rate(on: bool) -> i32` | `0`, `-22` on an older loader | Starts or stops the stock heart-rate measurement for `HEART` events. Held only while the app runs and is not paused; stopped on pause, exit, crash, force stop and view delete; started again on resume. Costs battery (the PPG LED). Works in canvas and LVGL apps; `docs/abi-1.4.md`, "Heart rate" |
 | `keep_screen_on(on: bool)` | – | Records the wish; the next UI tick takes or drops the stock wake lock. Held only while the app runs and is not paused; dropped on pause, exit, crash, force stop and view delete; taken again on resume. Costs display power: hold it with a deadline (herdr-agents: 20 s after a buzz) |
 
+### Widget (card left of the watch face)
+
+An app can have a widget on the cards left of the watch face: a wide (344×166) stock-looking tile with a grey title
+and a white value, on the stock card grey in the system font. The app only stores the text; the stub draws it.
+
+| Call | Returns |
+|---|---|
+| `widget(title: &str, value: &str) -> i32` | `0`, `-5` I/O error, `-22` on a loader without widgets (before 2026-11-15) |
+
+- `title`: one line, up to 23 bytes. `value`: up to 39 bytes, `\n` starts a second line. Longer text is cut at a
+  char boundary; a line wider than the tile ends in `…`.
+- Stored in `/NAND:/wp2apps/<slot>.wgt` (64 bytes) until the next call or the app's removal. Each call writes NAND
+  synchronously: call it when the value changes or at exit, never per frame.
+- The card reads the record when it is laid out, and that happens every time the watch face shows. The app runs only
+  under the loader view, so its update is on the card the next time the user goes back to the face and swipes left.
+- Before the first call the tile shows the package name; an empty slot shows "Apps".
+- Declare it: `cmf_wp2_app::app_features!(cmf_wp2_app::WIDGET);` next to `entry!`. The user then adds it on the
+  watch: a long press on the app's row in Apps → "Add widget" (again: "Remove widget"). It goes next to other app
+  widgets, two per card, or onto a new card at the end; the stock cards stay as they are.
+- On one card it also mixes with stock widgets (from the host or, later, FMC): a card has two rows in list order, a wide
+  widget takes a row, two small ones (class 1 + class 0) share one; a third row is not shown.
+- From the host it is widget `0x40` with param `slot + 1` (`wp2apps list` shows the slot):
+  `wp2apps cards set widgets:0x40/1,0x40/2 widgets:0x40/3 --hci-port P` (replaces the whole list). Param `0` is the
+  "Apps" tile that opens the menu.
+- A tap on the tile starts the app through the loader, as a tap on its menu row does; leaving the app goes to the menu.
+- Examples: `hello` (colour), `vibration-lab` (the last preset), `hr-probe` (the last reading), `herdr-agents`
+  (agent counts); `tests/test_app_widgets_e2e.py`.
+
+```rust
+api.widget("Vibration Lab", "Strength 35%\nPattern Tick");
+```
+
+### Page (next to the watch face)
+
+An app can also be a whole page of its own next to the watch face, a swipe away from it, instead of the menu.
+
+- Declare it: `cmf_wp2_app::app_features!(cmf_wp2_app::WIDGET | cmf_wp2_app::PAGE);` (any mix of the two). Then a long
+  press on its row in Apps → "Add page" puts it first left of the face ("Remove page" takes it away). One app at a
+  time: adding another app's page replaces it (the loader runs one app).
+- The page is the stub view `0xF8 + slot`; from the host `wp2apps cards set view:0xF9 …` for slot 1.
+- The app starts when the face (and with it the page) is laid out and stays running behind it. A swipe away gives
+  `PAUSE`, back `RESUME` (as a stock popup does): draw nothing and run no motor in between.
+- `api.on_page() -> bool` tells the two apart, e.g. a compact screen on the page. On the page the crown press and the
+  button stay with the watch (no `BUTTON`): the app does not exit itself. If it returns anyway, it starts again when
+  the page comes back.
+- A tap on an app widget or the Apps menu takes the loader over: the page's app stops, and the page starts it again the
+  next time the face shows.
+- Examples: `hello` (says "hello page"), `herdr-agents`; `tests/test_app_pages_e2e.py`.
+
+`wp2apps info app.wp2app` lists what a package declares (`"features": ["widget", "page"]`). The record is 8 bytes in
+`.wp2info` after the icon (`"WP2F"`, flags), so a package with it installs on any loader; an older loader just offers no
+"Add widget" / "Add page".
+
 ### Host messages (1.1)
 
 | Call | Returns |

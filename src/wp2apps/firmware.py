@@ -16,12 +16,14 @@ APP_VBASE = 0x10000000
 NOR_APP_OFFSET = 0x24000
 NOR_APP_SIZE = 0x34B000
 STUB_MAX = 0x4000
-STUB_HEADER = struct.Struct("<4sIIIIII4s")
+STUB_HEADER = struct.Struct("<4sIIIIIII")
 VIEW_TABLE, VIEW_TABLE_END = 0x100004B8, 0x100013E8
 # 0x101461AC and 0x10055458 hold the same values but bound neighbouring tables (docs/recon.md)
 VIEW_START_LITERALS = (0x1018BC24, 0x1018DF3C)
 VIEW_END_LITERALS = (0x1018BC28, 0x1018DF40)
 VIEW_ID = 0xF0
+# an app's own page next to the face: the same view proc, the loader starts slot `id - 0xF8` (wp2-core cards.rs)
+PAGE_VIEWS = range(0xF8, 0x100)
 BOOT_CALL = 0x101884FA
 STOCK_HEAP_INIT = 0x10146AA4
 BLE_CALL = 0x100D34F0
@@ -29,6 +31,11 @@ STOCK_BLE_READ = 0x100CC284
 # list style descriptor +0xC: its layout; waterfall (0x101EB184) is not covered
 APPLIST_LAYOUT = 0x101EB160
 STOCK_APPLIST_LAYOUT = 0x1005EEE5
+# widget registry of the cards left of the watch face: 99 pointers, NULL at 0x40 (docs/recon.md, "Widget cards");
+# the stub's entry: {u8 id, u8 size class, u16 state size, u32 scene, u32 tap action, 5 Thumb callbacks}
+WGT_REG = 0x101EFC88
+WGT_ID = 0x40
+WGT_ENTRY = struct.Struct("<BBHII5I")
 # the only stock call that switches the motor on (docs/recon.md); 0x100FB168 and 0x100FB2A8 pass pulse 0
 MOTOR_CALL = 0x100FB398
 STOCK_MOTOR = 0x100FB4B4
@@ -216,19 +223,27 @@ def patch(app: bytes, stub: bytes | None = None, *, motor: int | None = None, re
 
 
 def add_stub(out: bytearray, stub: bytes) -> None:
-    magic, version, boot, ble, view_proc, view_name, applist, _ = STUB_HEADER.unpack_from(stub)
+    magic, version, boot, ble, view_proc, view_name, applist, widget = STUB_HEADER.unpack_from(stub)
     base = APP_VBASE + STUB_OFFSET
     code = (boot, view_proc) + tuple(p for p in (ble, applist) if p)
     if (magic != b"WP2S" or version != 1 or not all(p & 1 for p in code)
             or not all(base <= p & ~1 < base + len(stub) for p in (*code, view_name))):
         raise ValueError("bad stub header")
+    if widget:
+        if widget % 4 or not base <= widget <= base + len(stub) - WGT_ENTRY.size:
+            raise ValueError("bad stub widget entry")
+        entry = WGT_ENTRY.unpack_from(stub, widget - base)
+        wid, callbacks = entry[0], entry[5:]
+        if wid != WGT_ID or not all(p & 1 and base <= p & ~1 < base + len(stub) for p in callbacks):
+            raise ValueError("bad stub widget entry")
     if len(out) != STUB_OFFSET:
         raise ValueError(f"app.bin is {len(out):#x} bytes; the stub goes at {STUB_OFFSET:#x}")
     out += stub
     out += bytes(-len(out) % 8)
     table = APP_VBASE + len(out)
     out += out[VIEW_TABLE - APP_VBASE:VIEW_TABLE_END - APP_VBASE]
-    out += struct.pack("<IIIIHHHH", view_name, view_proc, 0, 0, VIEW_ID, 0x102, 466, 466)
+    for view_id in (VIEW_ID, *PAGE_VIEWS):
+        out += struct.pack("<IIIIHHHH", view_name, view_proc, 0, 0, view_id, 0x102, 466, 466)
     if len(out) - STUB_OFFSET > STUB_MAX:
         raise ValueError(f"stub and view table take {len(out) - STUB_OFFSET:#x} bytes; the limit is {STUB_MAX:#x}")
     for lit in VIEW_START_LITERALS:
@@ -240,6 +255,8 @@ def add_stub(out: bytearray, stub: bytes) -> None:
         put(out, BLE_CALL, thumb_bl(BLE_CALL, STOCK_BLE_READ), thumb_bl(BLE_CALL, ble & ~1))
     if applist:
         put(out, APPLIST_LAYOUT, struct.pack("<I", STOCK_APPLIST_LAYOUT), struct.pack("<I", applist))
+    if widget:
+        put(out, WGT_REG + 4 * WGT_ID, bytes(4), struct.pack("<I", widget))
 
 
 def changed_ranges(old: bytes, new: bytes, gap: int = 16) -> list[tuple[int, int]]:
