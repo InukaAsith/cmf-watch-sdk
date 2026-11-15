@@ -630,7 +630,8 @@ as `wp2apps herdr` does.
   in `~/.cache/wp2apps/sessions.json` (mode 0600, `WP2APPS_SESSIONS` overrides it) resumes without a popup until the
   watch reboots or another client binds. The file is personal data: never in the repository.
 - **One central at a time.** Turn the phone's Bluetooth off; if the Nothing X app connects it binds with a new key
-  and the daemon loses the session.
+  and the daemon loses the session. The channel key `K` doesn't change this: it lets a second app share the
+  link on the same phone (`docs/abi-1.4.md`, "Writing a host"), not a second device.
 - **macOS can hold the LE link** after a crash, a sleep or even a normal session: the watch stops advertising and the
   daemon retries without connecting (the watch shows as connected in the macOS Bluetooth settings while no process
   of ours holds it). Turning the Mac's Bluetooth off and on frees it.
