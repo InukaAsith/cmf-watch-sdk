@@ -23,6 +23,36 @@ Every host on the link sees every notification. A host skips frames and `EVENT`s
 (`link.Session.request`, `channel.recv`). Switching between a stock host and a `K` host drops the app messages
 queued for the other one (as a new host key always did).
 
+## Writing a host (a phone companion)
+
+What a host next to Nothing X does, in order. Implementations: the Python host (`link.Session.open_channel`,
+`Channel(channel_key=True)`) and WireKit in the workout iPhone app (`KSession`), which is iOS only.
+
+1. **Use the link the phone already has.** The watch takes one central, and on the phone it is the system's link
+   that Nothing X holds. iOS: `retrieveConnectedPeripherals(withServices: [FFF0])`, else connect.
+   Android: `connectGatt` to the bonded watch is expected to add a second GATT client on the same link
+   (untested). A second device (a Mac while the phone is connected) does not work: that is another central.
+2. **Characteristics.** Commands: write `0000FFF2-0000-1000-8000-00805F9B34FB`, notify
+   `0000FFF1-0000-1000-8000-00805F9B34FB`. Shell: write `77D4FF01-2FE2-2334-0D35-9CCD078F529C`, notify
+   `77D4FF02-2FE2-2334-0D35-9CCD078F529C`. Subscribe to both notifies.
+3. **K.** Write `AT GETSECRET\r\n` to the shell; the reply is `GETSECRET:<32 hex>,OK`, possibly over several
+   notifications. K is those 16 bytes. Cache it like a password: it is personal data (AGENTS.md, rule 2) and only
+   changes with a factory reset.
+4. **Frames.** `F5 ‖ len:u16be ‖ c1:u16be ‖ 00 01 ‖ 00 01 ‖ c2:u16be ‖ body`, `c1 = FFFF`, `len` = body length,
+   `body = AES-128-CBC(K, IV, PKCS7(plain ‖ crc32le(plain)))`, IV `50 51 52 53 54 55 56 57 60 61 62 63 64 65 66 5A`.
+   Each frame is one ATT write (write with response when over MTU−3). Opcodes and payloads: `docs/abi-1.1.md`,
+   "Data channel"; the reply to `c2` is `c2 | 0xA000`.
+5. **Reassemble and filter notifications.** Frames span notifications: find `F5`, wait for `11 + len` bytes. Drop
+   every frame that does not open with K (bad padding or CRC): those are Nothing X's.
+6. **Register with one `PING`** (`0x90A7`, payload `00`). From then on the stub sends the app's messages as `EVENT`
+   (`0xB0A6`, plain `seq ‖ slot ‖ data`) without polling, if the loader is from 2026-11-13 or later; with an older
+   loader, poll with `PING`.
+7. **Detect the firmware.** No reply to a `K` frame: stock firmware or a stub without `K` (anything before the
+   `fw-wp2.bin` of 2026-11-13); the user needs the OTA. `INFO` with slot `0xFE` tells stub versions apart
+   ("Stub version" below).
+
+The app on the watch side needs nothing new: `send`/`recv` as in `docs/app-guide.md`, section 4.
+
 ## Unsolicited app messages
 
 - At boot the stub stores `StubRam.kick` (its `wp2_kick`) and `kick_magic = "KICK"`. The loader calls `kick` on the
