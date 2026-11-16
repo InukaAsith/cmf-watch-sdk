@@ -47,6 +47,10 @@ pub enum Class {
     /// swipe, no crown. While one lives the loader keeps the right back swipe from the app (docs/abi-1.4.md,
     /// "Horizontal pager"). Loader of 2026-11-16; an older loader answers `-22`. Its children are pages only.
     PagerH = 10,
+    /// The stock workout screen's music tile (`sport1_view`, docs/abi-1.4.md "Music tile"): track title and artist,
+    /// "No music", previous / play-pause / next and volume, with the stock images and fonts. The loader fills it
+    /// from the phone and sends the keys itself. One at a time. Loader of 2026-11-16; an older loader answers `-22`.
+    Music = 11,
 }
 
 impl Class {
@@ -63,6 +67,7 @@ impl Class {
             8 => Class::Pager,
             9 => Class::Page,
             10 => Class::PagerH,
+            11 => Class::Music,
             _ => return None,
         })
     }
@@ -336,6 +341,8 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
             if p == Class::ScrollBar || matches!(p, Class::Pager | Class::PagerH) != (class == Class::Page) {
                 return Err(Error::BadClass);
             }
+            // the loader keeps one music tile's images, fonts and objects
+            bad(class == Class::Music && t.has(Class::Music))?;
         }
         Rec::Del(h) => {
             // a bar goes with its target: the target keeps callbacks into the bar (Ruling 13). A page goes with its
@@ -377,6 +384,8 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
             Class::Roller => bad(u16::try_from(v).is_err())?,
             // the page to show; past the last one it shows the last
             Class::Pager | Class::PagerH => bad(!(0..=MAX_OBJS as i32).contains(&v))?,
+            // the play button: 0 shows play, 1 pause (until the phone's state changes)
+            Class::Music => bad(!(0..=1).contains(&v))?,
             _ => return Err(Error::BadClass),
         },
         Rec::Range { h, min, max } => {
@@ -581,6 +590,60 @@ pub fn media_bind(buf: &[u8]) -> Option<(bool, u16, u16)> {
     match *buf {
         [0x17, 5, 0, 0, on @ (0 | 1), t0, t1, a0, a1] => Some((on == 1, u16::from_le_bytes([t0, t1]), u16::from_le_bytes([a0, a1]))),
         _ => None,
+    }
+}
+
+/// Music tile images: SPORT1_IMGS[MUSIC_IMG_FIRST..][..MUSIC_IMGS], indices into that run.
+pub const MUSIC_IMG_FIRST: usize = 6;
+pub const MUSIC_IMGS: usize = 13;
+pub const IMG_PAUSE: usize = 0;
+pub const IMG_PREV: usize = 1;
+pub const IMG_NEXT: usize = 2;
+pub const IMG_VOLUME: usize = 3;
+pub const IMG_PLAY: usize = 4;
+pub const IMG_PLAY_OFF: usize = 6;
+/// The volume popup's: muted and on icons, slider track and fill.
+pub const IMG_MUTED: usize = 9;
+pub const IMG_VOLUME_ON: usize = 10;
+pub const IMG_TRACK: usize = 11;
+pub const IMG_FILL: usize = 12;
+/// MEDIA_KEY-style ux2sys 0x4E volume commands, sent only by the volume popup.
+pub const MEDIA_VOLUME_UP: u8 = 5;
+pub const MEDIA_VOLUME_DOWN: u8 = 6;
+
+/// The volume popup's crown (sport1_view 0x10078FE4): six knob events one way make one volume command, with a
+/// vibration when the volume can still move that way. `counts` = (up, down); a positive step is up.
+pub fn volume_knob(counts: &mut (u8, u8), step: i32, cur: u8, max: u8) -> Option<(u8, bool)> {
+    if step > 0 {
+        *counts = (counts.0.wrapping_add(1), 0);
+    } else if step < 0 {
+        *counts = (0, counts.1.wrapping_add(1));
+    }
+    if counts.0 > 5 {
+        counts.0 = 0;
+        return Some((MEDIA_VOLUME_UP, cur < max));
+    }
+    if counts.1 > 5 {
+        counts.1 = 0;
+        return Some((MEDIA_VOLUME_DOWN, cur != 0));
+    }
+    None
+}
+/// "No music": SPORT1_TEXTS[14].
+pub const TEXT_NO_MUSIC: usize = 14;
+/// Music tile buttons: the `delta` of the app's `LV` CLICKED event (`x` = the tile's handle).
+pub const MUSIC_PLAY: i16 = 0;
+pub const MUSIC_PREV: i16 = 1;
+pub const MUSIC_NEXT: i16 = 2;
+pub const MUSIC_VOLUME: i16 = 3;
+
+/// The play button's image, as the stock tile picks it (`0x101AF03C`): grey play without phone media, else pause
+/// while playing and play while paused.
+pub fn music_icon(available: bool, playing: bool) -> usize {
+    match (available, playing) {
+        (false, _) => IMG_PLAY_OFF,
+        (true, true) => IMG_PAUSE,
+        (true, false) => IMG_PLAY,
     }
 }
 
@@ -933,7 +996,7 @@ mod tests {
         assert_eq!(v(&[value(1, -1)]), Err(Error::BadValue));
         assert_eq!(v(&[value(1, 193)]), Err(Error::BadValue));
         assert_eq!(v(&[value(2, 0)]), Err(Error::BadClass));
-        assert_eq!(v(&[r(1, 4, &[11, 0, 0])]), Err(Error::BadValue), "no class 11");
+        assert_eq!(v(&[r(1, 4, &[12, 0, 0])]), Err(Error::BadValue), "no class 12");
     }
 
     #[test]
@@ -1004,5 +1067,27 @@ mod tests {
         b[..0x40].fill(b'x');
         b[0x3F] = 0xD0; // half a two-byte char at the end
         assert_eq!(media_info(&b).0.len(), 0x3F);
+    }
+
+    #[test]
+    fn music_tile() {
+        assert_eq!(check(&[create(1, 11, 0), value(1, 1), value(1, 0)]), Ok(()));
+        assert_eq!(check(&[create(1, 11, 0), value(1, 2)]), Err(Error::BadValue));
+        assert_eq!(check(&[create(1, 11, 0), create(2, 11, 0)]), Err(Error::BadValue), "one at a time");
+        assert_eq!(check(&[create(1, 11, 0), r(2, 1, &[]), create(2, 11, 0)]), Ok(()), "again after DEL");
+        assert_eq!(check(&[create(1, 10, 0), create(2, 11, 1)]), Err(Error::BadClass), "a pager holds pages");
+        assert_eq!(check(&[create(1, 10, 0), create(2, 9, 1), create(3, 11, 2)]), Ok(()));
+        assert_eq!([music_icon(false, true), music_icon(true, true), music_icon(true, false)], [IMG_PLAY_OFF, IMG_PAUSE, IMG_PLAY]);
+        let mut c = (0, 0);
+        assert!((0..5).all(|_| volume_knob(&mut c, 1, 3, 10).is_none()));
+        assert_eq!(volume_knob(&mut c, 1, 3, 10), Some((MEDIA_VOLUME_UP, true)));
+        assert_eq!(c, (0, 0));
+        (0..5).for_each(|_| assert!(volume_knob(&mut c, -1, 0, 10).is_none()));
+        assert_eq!(volume_knob(&mut c, 1, 0, 10), None); // a turn back starts over
+        assert_eq!(c, (1, 0));
+        (0..4).for_each(|_| assert!(volume_knob(&mut c, 1, 10, 10).is_none()));
+        assert_eq!(volume_knob(&mut c, 1, 10, 10), Some((MEDIA_VOLUME_UP, false)), "at the top: sent, no buzz");
+        (0..6).for_each(|_| _ = volume_knob(&mut c, -1, 0, 10));
+        assert_eq!(c, (0, 0));
     }
 }

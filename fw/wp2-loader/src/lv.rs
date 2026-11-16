@@ -250,6 +250,12 @@ fn exec(r: &Rec) -> Result<(), i32> {
                     return Ok(());
                 }
                 Class::ScrollBar => return Err(-22),
+                Class::Music => {
+                    let obj = crate::music::create(o(parent), h)?;
+                    let h = h as usize;
+                    (s.objs[h], s.events[h], s.options[h]) = (obj, 0, 0);
+                    return Ok(());
+                }
             };
             let obj = stock!(create, fn(Obj) -> Obj)(o(parent));
             let h = h as usize;
@@ -272,7 +278,15 @@ fn exec(r: &Rec) -> Result<(), i32> {
             if lvcmd::freed_by_del(&s.table, h).any(|x| x == s.focus) {
                 s.focus = 0;
             }
+            let music = crate::music::handle();
+            let music_gone = music != 0 && lvcmd::freed_by_del(&s.table, h).any(|x| x == music);
+            if music_gone {
+                crate::music::close(); // on the root, not under `h`
+            }
             stock!(LV_OBJ_DEL, fn(Obj))(o(h));
+            if music_gone {
+                crate::music::free();
+            }
             // the focus container's children may have shifted: shape them all again
             s.focus_last = [0; FOCUS_MAX];
             // scroll bars targeting the subtree sit on the root: deleted after their target, as stock lists do.
@@ -305,6 +319,7 @@ fn exec(r: &Rec) -> Result<(), i32> {
             // validated: arc values fit i16, roller indices u16
             Some(Class::Arc) => stock!(LV_ARC_SET_VALUE, fn(Obj, i16))(o(h), v as i16),
             Some(Class::Pager | Class::PagerH) => go_page(h, v as u32, anim),
+            Some(Class::Music) => crate::music::set_playing(v == 1),
             Some(Class::Roller) => {
                 let n = s.options[h as usize];
                 if n != 0 {
@@ -576,10 +591,12 @@ extern "C" fn on_pager(e: *mut c_void) {
 pub fn teardown() {
     let s = st();
     s.focus = 0; // before the delete, as in DEL
+    crate::music::close();
     if !s.objs[0].is_null() {
         // children first, scroll bars after their targets (created later)
         stock!(LV_OBJ_DEL, fn(Obj))(s.objs[0]);
     }
+    crate::music::free();
     for slot in 0..MAX_FONTS as usize {
         if s.fonts_open >> slot & 1 != 0 {
             stock!(LVGL_BITMAP_FONT_CLOSE, fn(*mut u32))(s.fonts[slot].as_mut_ptr());

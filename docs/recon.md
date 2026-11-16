@@ -449,6 +449,27 @@ Ghidra and capstone on the launcher's message handler (`0x1005DE00…0x1005E290`
 | Not modelled | deep sleep (S2/S3BT) stops the emulator ("Guest hit a fatal or unsupported path"); forcing the AOD branch (`r4 = 1` at `0x1005E120`) does too. Both need a hardware check | — |
 | Earlier note | "the stock closes the app view on auto-sleep" (`docs/herdr-agents.md`, `docs/app-guide.md`, 2026-11-11) came from emulator runs; no stock path that deletes view 240 on blank was found | medium |
 
+## Music tile (sport1_view)
+
+Ghidra on `0x10076F00..0x1007A400` (`sport1_view`, id `0x64`, desc `0x101ED554`: data `0x504` B, scene
+`0x6880AE34`, layout `0x10079148`, paint `0x10078B2C`, preload `0x10078044`).
+
+| Item | Value | Confidence |
+|---|---|---|
+| Tiles | `lv_tileview` with tiles (0,0) dir 2, (1,0) dir 3, (2,0) dir 1; it opens on (1,0). Music is (2,0) | high |
+| Scene resources | `SCENE_OPEN 0x10184804(scene id, &{id, node, res}, "/NAND:A/bt_watch.sty" 0x10203EA6, "/NAND:A/bt_watch.res" 0x10203E91, lang 0x100DFB88())` (refcounted, as popups open theirs); close `0x101D7714(&scene)`; images `0x101848D4(&scene, ids, lv_img_dsc_t[n], 0, n)`, free `0x101D775A(dsc, n)`; texts `0x10184A5C(&scene, ids, {char *, u32}[n], n)`, free `0x101D777A(texts, n)` | high (emulator) |
+| Ids | 22 images at `0x101ED460` (6 pause, 7 previous, 8 next, 9 volume, 10 play, 12 grey play), 3 page dots at `0x101ED4F0`, 22 texts at `0x101ED4FC` (14 "No music") | high (emulator) |
+| Objects | `simple_img` (`0x1005A014`/`0x1005A02C`) play `TOP_MID 0,173`; previous `align_to(play, OUT_LEFT_MID, -32, 0)`; next `OUT_RIGHT_MID, 32, 0`; volume `BOTTOM_MID 0,-44`, all clickable; labels 266 px × one line, `SCROLL_CIRCULAR`, title `TOP_MID 0,44` sans32 anim speed 20, artist `align_to(title, OUT_BOTTOM_MID, 0, 12)` sans32 colour `0x9492`, "No music" `TOP_MID 0,44` font32M; page dots image `TOP_MID 0,440` | high |
+| Fonts | opened by `0x100DF9A0(lv_font_t *, path)`: `lvgl_bitmap_font_open` plus per file: font32M and font28M line height +6, font32R and font24M +4, `/NAND:C/sans32.font` gets the emoji28 fallback; `LVGL_BITMAP_FONT_CLOSE` frees the fallback | high |
+| Paint (`0x101AF03C`) | `0x4C` set: title/artist from `0x4F`, play image pause (`0x4D` set) or play, "No music" hidden; else title/artist hidden, "No music" shown, grey play | high |
+| Taps | previous/next send `0x4E` 3/4, play `0x4E` 1 or 2 by its own flag, only with `0x31` and `0x4C` set; else a "connect the phone" popup; volume opens a volume popup (`0x50`) | high (static) |
+| Volume popup (`0x100786DC`) | once, on the view's root: `lv_obj` 466 × 466, bg black opa 255, `CENTER`, no `GESTURE_BUBBLE`; `lv_img` images 15 (volume 0) / 16 at `TOP_LEFT 173,45` (the whole pill with its + and − icons); `lv_slider` 12 × 148 `CENTER`, `BG_IMG_SRC` (`0x28`) image 17, indicator (`0x20000`) image 18, range 0..max, value current, not clickable; two `lv_btn` 120 × 96 (flag `CHECKABLE`) `TOP_MID 0,45` / `BOTTOM_MID 0,-45`, CLICKED → `0x100772EC(5 / 6)` = `0x4E` volume up / down; on the overlay `0x2D` (knob) and `0x0C` (gesture) callbacks, clickable, no `SCROLLABLE`; then `0x10182238(0)`, `0x1E` on close. Shown again if hidden | high (static, emulator frame) |
+| Volume (`0x50`, 2 B) | `{max, current}`; the popup shows current (0 when max is 0) | high (static) |
+| Popup crown (`0x10078FE4`) | counts knob events per direction, six make one `0x4E` 5 (step > 0) or 6, with `0x26 {8}` (vibrate) first while current < max (up) or > 0 (down) | high (static) |
+| Popup close (`0x101AEFF8`) | gesture dir 2 (right): hide the overlay, `lv_indev_wait_release`, `0x10182238(0x1E)`. The paint refreshes icon and slider once a second while it shows | high (static) |
+| Emulator | images 17/18 are `TRUE_COLOR_ALPHA` (cf 5); drawing them stops the emulator ("fatal or unsupported path") for the stock popup too. With cf 4 in their descriptors both draw | high (emulator) |
+| Centred text | the labels draw centred, inherited (no `text_align` on them); the loader sets it on its container | high (emulator) |
+
 ## Return to watch face
 
 Capstone on `0x1005D968`, `0x100C27CC…0x100C28D0`, the launcher message handler (`0x1005DEDE`, `0x1005E128`,
