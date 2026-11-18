@@ -269,3 +269,7 @@ can't be read back. So the stub answers its own release:
 - Host: `install.stub` (`wp2apps list` prints it as `stub`).
 - Stub 6: `BEGIN` into the loader slot or an app page's slot is no longer `BUSY` while the page is only behind the
   face; the page reloads on its next FOCUS (`docs/app-guide.md`, install notes). Same frames, same statuses.
+- Stub 7: `DELETE` of an app page's slot is no longer `BUSY` while the page is only behind the face; the stub drops
+  the app's page and widgets from the cards (the stock lays the face out again, which stops the app), then unlinks.
+  Every `DELETE` now takes the slot's widgets and page off the cards. `DELETE` of the loader slot stays `BUSY` while
+  it is held. Same frames, same statuses (`docs/app-guide.md`, install notes).

@@ -199,7 +199,14 @@ uv run --locked wp2apps install target/<name>.wp2app --address <UUID>
   and the page's app take the install while the page is not in view, keep running the old code, and the page loads
   the new loader and starts the new app the next time it comes into view (`behind_face`, `fw/wp2-stub/src/view.rs`,
   `tests/test_page_install_e2e.py`). Nothing to remove first, no host change. A page in view is a foreground app:
-  `BUSY` as before. `remove` of the page's app or the loader still answers `BUSY`; stub 5 answers `BUSY` to both.
+  `BUSY` as before. Stub 5 answers `BUSY` to both.
+- From stub 7 on `remove` of a page's app behind the face is no `BUSY` either: the stub takes the app's page and its
+  widgets (`0x40` / slot + 1) off the cards, as "Remove page" / "Remove widget" on the watch, then deletes the package
+  and its data. Storing the cards lays the face out again at once (as the phone's `0x906D` set does), which deletes
+  the page view and stops its app. A widget goes with every `remove`, running app or not (`forget`,
+  `fw/wp2-stub/src/ble.rs`, `tests/test_page_delete_e2e.py`). A page in view, the menu or an app in the foreground
+  stay `BUSY`, and so does `remove` of the loader while it is held, a page behind the face included (the page would
+  stay on the cards without a loader). Stub 6 still answers `BUSY` to a page's app.
 - `install`, `list` and `remove` do a full bind, and the stock then shows a "Paired" popup. Close it with the
   button. If an app was running, closing that popup ends it (section 4).
 - Open an app: stock app list (list style, not waterfall) → "Custom Apps", the first row → tap the app's row (the
