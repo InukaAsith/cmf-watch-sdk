@@ -696,9 +696,10 @@ Other paths:
 | Claim | Confidence |
 |---|---|
 | `0x9055` layout, set active, unlist | high (static + emulator, built-in faces) |
+| `0x9055 00` on hardware | high: 2026-11-18 a real watch answered `01 03 06 07` + six downloaded ids (all > 2³⁰): downloaded faces **are** listed, no `0xFFFFFFFF` when no photo face is installed |
 | Downloaded face: unlisted, then its file deleted at boot / next upload | medium (static only) |
 | `0xFFFFFFFF` = photo face | medium (static) |
 | `0x009F/0x0001` is log-only | high (static) |
 
-Not yet tried: any of it on hardware; a set while the watch is in face edit mode (`WFM in EditMode` suggests the
+Not yet tried on hardware: set and unlist; a set while the watch is in face edit mode (`WFM in EditMode` suggests the
 handler waits for it); dropping the active face (the code takes the entry at `idx`, so pick another `idx`).
