@@ -650,3 +650,55 @@ icon reader; the tile is text only); `param_id` of the stock families; byte `0x6
 
 Not proven in the first pass (no emulator on that machine) and settled by the emulator results above: the widget
 drawing and tapping. Still unmeasured: what the 1 s update costs (the stub's update returns at once).
+
+## Stock watch faces over BLE: set active, delete (0xFFFF9055)
+
+For FMC Companion (tap = make active, context menu = delete). Ghidra (`scripts/recon/decomp`) on the BLE dispatcher
+`FUN_100D343C`, its `0x9055` handler `FUN_100D3138` and `WFManager.c` (`0x100DC500..0x100DE900`); checked on the
+emulator (stock paired NOR over netsim, 2026-11-18): get, set active, drop an id.
+
+One command does both: **`0xFFFF9055`**, the phone side of `0xA055`. Session-encrypted like any stock command (sent
+on the command characteristic in the emulator run). Payload, ids **LE**:
+
+| op | payload | effect | reply |
+|---|---|---|---|
+| get | `00` | `sync_watch_face_info` (`FUN_100D2D5C`) | `0xA055` list, as after auth |
+| set | `01 ‖ idx ‖ cnt ‖ 00 ‖ cnt × u32 id` | `WFManager_SetWatchFaceListForBle(idx, cnt, ids)` `0x100DE6FC` → pending opt 2 → `_SetList` in `FUN_100DE10C` | `0xA055` with the single byte `00` |
+
+The `0xA055` list is `01 ‖ idx ‖ cnt ‖ 07 ‖ cnt × u32 id`: byte 1 is the **active index** (`WFM GetList idx:%u cnt:%u`,
+`FUN_100DE67C`: `*(u8*)0x3801AE55`), byte 2 the count (at most 10), byte 3 the constant 7 (`FUN_101B91C8`). Every
+entry of the watch's list is sent; records are 16 B from `0x3801AE5C`.
+
+`_SetList` walks the sent ids in order and keeps those already in the watch's list, in the new order; the active face
+becomes the sent entry at `idx` (index into the **sent** list; 0 if that id is not on the watch). It then saves the
+list (`FUN_100DD16C`) and reloads the face. Consequences:
+
+- **Set active**: send the current list unchanged with a new `idx`. Emulator: `idx 0 → 1` gave
+  `WFM _SetList … Opt ret:0`, then `WFM Load Idx:1, Id:274` at once, and the next get returned header `01 01 06 07`.
+- **Delete**: send the list without the id (and `idx` of the face that should stay active). Emulator: dropping 280
+  gave `cnt 5` in the next get. The list entry goes at once; a downloaded face's `.wfc` stays on NAND until
+  `WFManager_DelRubbish` (`FUN_100DCFEC`, deletes `/NAND:/*.wfc` whose id is not listed) runs at boot (`0x100E0F2E`)
+  or at the next upload init (`0x9063` `0x100EBB4A`, `0x9075` `0x100EBEAC`). Built-ins (`273 274 275 276 277 280`,
+  table `0x101F3D54`) are never deleted from NAND, only unlisted.
+- Ids not on the watch are ignored: the command cannot add or bring back a face. The reply is `00` even when nothing
+  matched (all unknown ids leave the list as it was), so read the list again to confirm.
+- `0xFFFFFFFF` in the list is the photo ("album") face, not a separator: `FUN_100DC534` returns kind 1 for `-1`,
+  0 for the six built-ins, 2 for downloads. Keep it in a set list like any other id.
+
+Other paths:
+
+- Gadgetbridge's `WATCHFACE` `0x009F/0x0001` does **not** change the face: the dispatcher (`0x100D52AE`) only logs
+  `set wf id:%d` with `payload[0] - 1` and answers an empty `0x009F/0x0003`. `0x009F/0x0002` sends the `0xA055` list
+  (`FUN_100D2D5C`), like `0x9055 00`.
+- Delete through the upload flow (`0x9075` with `new_wf_id = 0`, cmf-watch-utils `protocol/ble.md` §4.1, verified on
+  hardware) still needs the data phase; `0x9055` needs none.
+
+| Claim | Confidence |
+|---|---|
+| `0x9055` layout, set active, unlist | high (static + emulator, built-in faces) |
+| Downloaded face: unlisted, then its file deleted at boot / next upload | medium (static only) |
+| `0xFFFFFFFF` = photo face | medium (static) |
+| `0x009F/0x0001` is log-only | high (static) |
+
+Not yet tried: any of it on hardware; a set while the watch is in face edit mode (`WFM in EditMode` suggests the
+handler waits for it); dropping the active face (the code takes the entry at `idx`, so pick another `idx`).
