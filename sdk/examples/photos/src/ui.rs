@@ -33,17 +33,51 @@ const ROW: i32 = 56;
 /// Moved more than this between down and up: a drag, not a tap.
 const DRAG: i32 = 14;
 const SWIPE: i32 = 70;
+/// Stepping pauses this long before the picture it stopped on is asked for.
+const ASK_MS: u32 = 350;
 
 const STORE_CAP: usize = 40 * 1024;
 const THUMB_CAP: usize = 12 * 1024;
 
+/// The open picture, kept for zooming: up to BANDS horizontal bands, each a picture of its own (`I` header, its
+/// own 16 colours, tokens), the first at the picture's origin and each next one `rows` picture rows below it.
 struct Store {
-    header: [u8; HEADER],
+    headers: [[u8; HEADER]; BANDS],
+    rows: [i32; BANDS],
+    /// tokens of band k: data[start[k]..start[k + 1]], the last ending at len
+    start: [usize; BANDS + 1],
+    n: usize,
+    /// bands announced by `P n` (0: a single `I` picture, as before)
+    expect: usize,
     data: [u8; STORE_CAP],
     len: usize,
     ok: bool,
 }
-static mut STORE: Store = Store { header: [0; HEADER], data: [0; STORE_CAP], len: 0, ok: false };
+const BANDS: usize = 8;
+static mut STORE: Store =
+    Store { headers: [[0; HEADER]; BANDS], rows: [0; BANDS], start: [0; BANDS + 1], n: 0, expect: 0, data: [0; STORE_CAP], len: 0, ok: false };
+
+impl Store {
+    fn reset(&mut self, expect: usize) {
+        (self.n, self.len, self.expect, self.ok) = (0, 0, expect, false);
+    }
+
+    /// The whole picture's width and height in its pixels (all bands).
+    fn size(&self) -> (i32, i32) {
+        if self.n == 0 {
+            return (0, 0);
+        }
+        let u = |h: &[u8; HEADER], i: usize| i32::from(u16::from_le_bytes([h[i], h[i + 1]]));
+        (u(&self.headers[0], 1), self.rows[self.n - 1] + u(&self.headers[self.n - 1], 3))
+    }
+
+    /// The picture's origin and scale as sent (its first band's header).
+    fn origin(&self) -> (i32, i32, u8) {
+        let h = &self.headers[0];
+        let u = |i: usize| i16::from_le_bytes([h[i], h[i + 1]]) as i32;
+        (u(6), u(8), h[5].max(1))
+    }
+}
 static mut THUMB: [u8; THUMB_CAP] = [0; THUMB_CAP];
 static mut CHUNK: [u8; FILE_CHUNK] = [0; FILE_CHUNK];
 static mut GALLERY: Gallery = Gallery::new();
@@ -120,6 +154,8 @@ struct Ui {
     last_tap: Option<(i32, i32, u32)>,
     /// zoom mode (double tap): the crown zooms instead of going through the pictures
     zooming: bool,
+    /// a picture shown by name while the crown or a swipe steps on: asked for once stepping pauses (this time)
+    ask_at: Option<u32>,
     dec: Decoder,
     loaded: bool,
     inc: Incoming,
@@ -317,16 +353,39 @@ impl Ui {
     // --- viewer
 
     fn open_picture(&mut self, i: usize) {
+        self.show_name(i);
+        self.ask_at = None;
+        let _ = self.api.send(&[b'o', i as u8]);
+    }
+
+    /// The viewer with the picture's name while it comes; nothing asked yet.
+    fn show_name(&mut self, i: usize) {
         self.zooming = false;
         self.open = i;
         self.screen = Screen::Viewer;
         self.view = None;
-        store().ok = false;
+        store().reset(0);
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
         font::centre(&mut s, C, 222, gallery().items[i].name(), GREY);
         self.api.show();
-        let _ = self.api.send(&[b'o', i as u8]);
+    }
+
+    /// Stepping through: only the picture it stops on is asked for (ASK_MS after the last step).
+    fn ask_due(&mut self) {
+        if let Some(t) = self.ask_at {
+            if self.api.now().wrapping_sub(t) as i32 >= 0 {
+                self.ask_at = None;
+                if self.screen == Screen::Viewer {
+                    let _ = self.api.send(&[b'o', self.open as u8]);
+                }
+            }
+        }
+    }
+
+    /// ms to the next due ask, if any.
+    fn ask_wait(&self) -> Option<u32> {
+        self.ask_at.map(|t| (t.wrapping_sub(self.api.now()) as i32).max(0) as u32)
     }
 
     fn redraw(&self, x0: i32, y0: i32, scale: u8) -> bool {
@@ -334,20 +393,24 @@ impl Ui {
         if !st.ok {
             return false;
         }
-        let mut d = Decoder::new();
-        if !d.start(&st.header, x0, y0, scale) {
-            return false;
-        }
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
-        if scale < self.base.2 {
-            let r = i32::from(d.w) * i32::from(scale) / 2;
-            d.feed(&st.data[..st.len], &mut Round { api: self.api, cx: x0 + r, cy: y0 + r, r });
-        } else {
-            d.feed(&st.data[..st.len], &mut Clip(self.api, 0));
+        let w = i32::from(u16::from_le_bytes([st.headers[0][1], st.headers[0][2]]));
+        let r = w * i32::from(scale) / 2;
+        for k in 0..st.n {
+            let mut d = Decoder::new();
+            if !d.start(&st.headers[k], x0, y0 + st.rows[k] * i32::from(scale), scale) {
+                continue;
+            }
+            let t = &st.data[st.start[k]..st.start[k + 1]];
+            if scale < self.base.2 {
+                d.feed(t, &mut Round { api: self.api, cx: x0 + r, cy: y0 + r, r });
+            } else {
+                d.feed(t, &mut Clip(self.api, 0));
+            }
         }
         self.api.show();
-        true
+        st.n > 0
     }
 
     fn zoomed(&self) -> bool {
@@ -416,8 +479,8 @@ impl Ui {
     fn pan(&mut self, dx: i32, dy: i32) {
         let Some((x0, y0, s)) = self.view else { return };
         let st = store();
-        let w = i32::from(u16::from_le_bytes([st.header[1], st.header[2]])) * i32::from(s);
-        let h = i32::from(u16::from_le_bytes([st.header[3], st.header[4]])) * i32::from(s);
+        let (w, h) = st.size();
+        let (w, h) = (w * i32::from(s), h * i32::from(s));
         let x = (x0 + dx).clamp((466 - w).min(0), 0.max(466 - w));
         let y = (y0 + dy).clamp((466 - h).min(0), 0.max(466 - h));
         if (x, y) != (x0, y0) && self.redraw(x, y, s) {
@@ -431,7 +494,8 @@ impl Ui {
         if n > 1 {
             self.motor.play(haptic::TICK);
             let next = if d > 0 { (self.open + 1) % n } else { (self.open + n - 1) % n };
-            self.open_picture(next);
+            self.show_name(next);
+            self.ask_at = Some(self.api.now().wrapping_add(ASK_MS));
         }
     }
 
@@ -510,12 +574,27 @@ impl Ui {
                 Some(b'?') => {
                     let _ = self.api.send(b"R");
                 }
+                Some(b'P') if self.screen == Screen::Viewer && m.len() == 2 => {
+                    // a picture in m[1] bands follows (each `I`/`D`/`E`)
+                    store().reset(usize::from(m[1]).clamp(1, BANDS));
+                }
                 Some(b'I' | b'D' | b'E') if self.screen == Screen::Viewer => {
                     let st = store();
                     match m[0] {
                         b'I' if m.len() == HEADER => {
-                            st.header.copy_from_slice(m);
-                            st.len = 0;
+                            if st.expect == 0 || st.n >= BANDS {
+                                st.reset(0);
+                            }
+                            let k = st.n;
+                            st.headers[k].copy_from_slice(m);
+                            st.rows[k] = if k == 0 {
+                                0
+                            } else {
+                                let (_, y0, sc) = st.origin();
+                                (i32::from(i16::from_le_bytes([m[8], m[9]])) - y0) / i32::from(sc)
+                            };
+                            st.start[k] = st.len.min(STORE_CAP);
+                            st.n += 1;
                             st.ok = false;
                         }
                         b'D' if m.len() >= 2 => {
@@ -527,15 +606,19 @@ impl Ui {
                         }
                         _ => {}
                     }
+                    let first = st.n <= 1;
                     match self.dec.message(m, &mut Clip(self.api, 0)) {
-                        Status::Begin => {
+                        Status::Begin if first => {
                             let mut s = self.api;
                             Surface::rect(&mut s, 0, 0, 466, 466, 0);
                         }
                         Status::Done(_) => {
-                            st.ok = st.len <= STORE_CAP;
-                            self.view = Some(self.dec.origin());
-                            self.base = self.dec.origin();
+                            st.start[st.n] = st.len.min(STORE_CAP);
+                            if st.n >= st.expect.max(1) {
+                                st.ok = st.len <= STORE_CAP;
+                                self.view = Some(st.origin());
+                                self.base = st.origin();
+                            }
                         }
                         Status::Gap(s) => {
                             let _ = self.api.send(&[b'G', s]);
@@ -595,6 +678,9 @@ impl Ui {
                 }
                 if self.screen == Screen::Viewer {
                     self.screen = Screen::Gallery;
+                    self.ask_at = None;
+                    // the phone goes back to the thumbnails it paused
+                    let _ = self.api.send(b"g");
                     self.draw_gallery();
                     return false;
                 }
@@ -660,6 +746,7 @@ fn main(api: &'static Api) -> i32 {
         base: (0, 0, 1),
         last_tap: None,
         zooming: false,
+        ask_at: None,
         dec: Decoder::new(),
         loaded: false,
         inc: Incoming { name: [0; 20], nlen: 0, len: 0, on: false },
@@ -676,9 +763,16 @@ fn main(api: &'static Api) -> i32 {
     loop {
         let e = match ahead.take() {
             Some(e) => Some(e),
-            None => api.event(ui.motor.wait().unwrap_or(u32::MAX)),
+            None => {
+                let w = match (ui.motor.wait(), ui.ask_wait()) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (a, b) => a.or(b).unwrap_or(u32::MAX),
+                };
+                api.event(w)
+            }
         };
         ui.motor.update();
+        ui.ask_due();
         let Some(mut e) = e else { continue };
         if e.kind == CROWN {
             // detents queued while a frame drew: one step

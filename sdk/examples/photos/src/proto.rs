@@ -5,9 +5,10 @@
 //!   its cached thumbnails).
 //! - `l idx:u8 name…` a picture's name.
 //! - `F name`, `f data…`, `c` a file (thumbnail `th<idx>`: an `I` header then run tokens, rle.rs); the watch acks `a`.
-//! - `I`, `D`, `E` the opened picture (rle.rs), `?` asks for `R`.
+//! - `P n` then n bands, each `I`, `D`…, `E` (rle.rs; its own 16 colours, its header's y0 the band's row): the
+//!   opened picture. A lone `I`/`D`/`E` is a one-band picture. `?` asks for `R`.
 //!
-//! Watch → phone: `R` ready (send the gallery), `q idx` a thumbnail it has not got, `o idx` open a picture, `a` file
+//! Watch → phone: `R` ready (send the gallery), `q idx` a thumbnail it has not got, `o idx` open a picture (stepping through: the one it stops on), `g` back in the gallery (thumbnails go on), `a` file
 //! stored, `G seq` a gap in the picture's stream.
 
 pub const MAX: usize = 64;
