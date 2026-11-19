@@ -422,7 +422,7 @@ impl Ui {
         let mut s = Dot(self.api);
         // the heading over whatever scrolled under it, and the scroll dots on the right rim
         Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
-        heading(&mut s, 34, "WHATSAPP", 3);
+        heading(&mut s, 34, crate::TITLE, 3);
         self.unread_line(&mut s);
         self.scroll_dots(self.list_scroll, self.list_max());
     }
@@ -510,29 +510,59 @@ impl Ui {
         } else {
             m.open.and_then(|id| m.chat(id)).map(|c| c.name.as_str()).unwrap_or(m.title.as_str())
         };
+        if crate::PLAIN {
+            // a note's title, as written
+            let (t, _) = clip(name, 240);
+            centre(&mut s, C, 30, t, W);
+            rule(&mut s, 66);
+            Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
+            return self.chat_buttons(&mut s);
+        }
         let mut up = [0u8; 24];
-        let n = upper(name, &mut up);
-        let (shown, _) = cmf_wp2_ui::text::clip(fit(&up[..n], 24), 11);
+        let mut n = upper(name, &mut up);
+        // a long name: its first word, if that fits the round top (Priya Perera → PRIYA)
+        if n > 9 {
+            if let Some(sp) = up[..n].iter().position(|&c| c == b' ').filter(|&sp| sp >= 2) {
+                n = sp;
+            }
+        }
+        let (shown, _) = cmf_wp2_ui::text::clip(fit(&up[..n], 24), 9);
         heading(&mut s, 26, shown, 3);
         rule(&mut s, 66);
         Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
-        // keyboard · quick replies · dial
-        ring(&mut s, BTN_X[0], BTN_Y, 24, 26, WHITE, BLACK);
-        centre(&mut s, BTN_X[0], BTN_Y - 8, "Aa", W);
-        disc(&mut s, BTN_X[1], BTN_Y, 28, RED, BLACK);
-        for dx in [-10, 0, 10] {
-            Surface::rect(&mut s, BTN_X[1] + dx - 2, BTN_Y - 2, 4, 4, W);
-        }
-        ring(&mut s, BTN_X[2], BTN_Y, 24, 26, WHITE, BLACK);
-        ring(&mut s, BTN_X[2], BTN_Y, 10, 12, WHITE, BLACK);
-        disc(&mut s, BTN_X[2], BTN_Y - 17, 3, RED, BLACK);
+        self.chat_buttons(&mut s);
     }
 
     /// The messages, each over the last frame's, the gaps between cleared; the heading and buttons left alone.
+    fn chat_buttons(&self, s: &mut Dot) {
+        // keyboard · quick replies · dial
+        ring(s, BTN_X[0], BTN_Y, 24, 26, WHITE, BLACK);
+        centre(s, BTN_X[0], BTN_Y - 8, "Aa", W);
+        disc(s, BTN_X[1], BTN_Y, 28, RED, BLACK);
+        for dx in [-10, 0, 10] {
+            Surface::rect(s, BTN_X[1] + dx - 2, BTN_Y - 2, 4, 4, W);
+        }
+        ring(s, BTN_X[2], BTN_Y, 24, 26, WHITE, BLACK);
+        ring(s, BTN_X[2], BTN_Y, 10, 12, WHITE, BLACK);
+        disc(s, BTN_X[2], BTN_Y - 17, 3, RED, BLACK);
+    }
+
+    /// Where the newest message ends: the feed's foot (chats), or a page's text from the top while it fits (notes).
+    fn feed_bottom(&self) -> i32 {
+        let m = model();
+        if crate::PLAIN {
+            let total: i32 = m.msgs[..m.n_msgs].iter().map(|msg| bubble_h(msg) + GAP).sum();
+            if total <= FEED_END - FEED_TOP - 16 {
+                return FEED_TOP + 14 + total - GAP;
+            }
+        }
+        FEED_END - 6 + self.chat_scroll
+    }
+
     fn feed(&mut self) {
         let mut s = Band(self.api, FEED_TOP, FEED_END);
         let m = model();
-        let mut bottom = FEED_END - 6 + self.chat_scroll;
+        let mut bottom = self.feed_bottom();
         Surface::rect(&mut s, 0, bottom, 466, FEED_END - bottom, 0);
         let mut total = 0;
         for msg in m.msgs[..m.n_msgs].iter().rev() {
@@ -548,7 +578,7 @@ impl Ui {
         Surface::rect(&mut s, 0, FEED_TOP, 466, bottom - FEED_TOP, 0);
         self.chat_max = (total - (FEED_END - FEED_TOP)).max(0);
         if m.n_msgs == 0 {
-            centre(&mut s, C, C - 8, if crate::ASSISTANT { "Ask me anything" } else { "Loading" }, GREY);
+            centre(&mut s, C, C - 8, crate::EMPTY, GREY);
         }
     }
 
@@ -588,7 +618,7 @@ impl Ui {
             centre(&mut s, C, y + 19, t, W);
         }
         Surface::rect(&mut s, 0, 0, 466, 90, 0);
-        heading(&mut s, 34, if crate::ASSISTANT { "ASK" } else { "REPLY" }, 4);
+        heading(&mut s, 34, crate::QUICK_TITLE, 4);
     }
 
     fn quick_max(&self) -> i32 {
@@ -865,7 +895,9 @@ impl Ui {
         out[1] = id;
         out[2..2 + n].copy_from_slice(&text[..n]);
         let _ = self.api.send(&out[..2 + n]);
-        model().append_local(&text[..n]);
+        if !crate::PLAIN {
+            model().append_local(&text[..n]);
+        }
         self.motor.play(haptic::DONE);
         self.go(Screen::Chat);
     }
@@ -1000,6 +1032,18 @@ impl Ui {
                     return;
                 }
                 if y < FEED_END {
+                    // a tap on a message: the phone decides (Notes: ticks a reminder; Mail, chats: nothing)
+                    let m = model();
+                    let mut bottom = self.feed_bottom();
+                    for i in (0..m.n_msgs).rev() {
+                        let top = bottom - bubble_h(&m.msgs[i]);
+                        if (top..bottom).contains(&y) {
+                            let _ = self.api.send(&[b't', i as u8]);
+                            self.motor.play(haptic::TICK);
+                            break;
+                        }
+                        bottom = top - GAP;
+                    }
                     return;
                 }
                 let to = [Screen::Qwerty, Screen::Quick, Screen::Dial];
@@ -1046,15 +1090,32 @@ struct Lines<'a> {
     n: usize,
 }
 
+/// Notes: text from x 72, 322 px wide (the round screen's width at the feed's top and bottom); a checklist line
+/// starts at 106.
+const PLAIN_X: i32 = 72;
+const PLAIN_W: i32 = 322;
+const CHECK_X: i32 = 106;
+
+fn text_w(msg: &Msg) -> i32 {
+    if !crate::PLAIN {
+        TEXT_W
+    } else if matches!(msg.kind, 3 | 4) {
+        PLAIN_X + PLAIN_W - CHECK_X
+    } else {
+        PLAIN_W
+    }
+}
+
 fn lines(msg: &Msg) -> Lines<'_> {
     let mut l = [""; 8];
-    let n = wrap(msg.text.as_str(), TEXT_W, &mut l);
+    let n = wrap(msg.text.as_str(), text_w(msg), &mut l);
     Lines { l, n }
 }
 
 fn bubble_h(msg: &Msg) -> i32 {
     match msg.img.filter(|i| i.ok) {
         Some(img) => img.size().1 + if msg.text.as_str().is_empty() { 0 } else { LINE + 8 },
+        None if crate::PLAIN => lines(msg).n.max(1) as i32 * LINE + if matches!(msg.kind, 3 | 4) { 12 } else { 2 },
         None => lines(msg).n.max(1) as i32 * LINE + 20,
     }
 }
@@ -1074,6 +1135,26 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
         }
         if !msg.text.as_str().is_empty() {
             fitted(s, x, top + h + 6, msg.text.as_str(), w.max(120), GREY);
+        }
+        return;
+    }
+    if crate::PLAIN {
+        // a page: plain lines, a checklist line with its box; the band is cleared under it
+        let h = bubble_h(msg);
+        Surface::rect(s, 0, top, 466, h, 0);
+        let ls = lines(msg);
+        let check = matches!(msg.kind, 3 | 4);
+        let x = if check { CHECK_X } else { PLAIN_X };
+        if check {
+            let cy = top + LINE / 2 + 2;
+            ring(s, PLAIN_X + 12, cy, 9, 11, WHITE, BLACK);
+            if msg.kind == 4 {
+                disc(s, PLAIN_X + 12, cy, 6, RED, BLACK);
+            }
+        }
+        let c = if msg.kind == 4 { GREY } else { W };
+        for (i, l) in ls.l[..ls.n].iter().enumerate() {
+            fitted(s, x, top + i as i32 * LINE, l, text_w(msg), c);
         }
         return;
     }
