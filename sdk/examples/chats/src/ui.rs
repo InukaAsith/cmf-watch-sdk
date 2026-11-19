@@ -68,6 +68,8 @@ const TEXT_W: i32 = 262;
 const GAP: i32 = 10;
 const BTN_Y: i32 = 424;
 /// Dial letters per crown detent, in 1/100s: a slow turn, a fast spin (ui.crown).
+/// Moved more than this between down and up: a drag, not a tap.
+const DRAG: i32 = 14;
 const DIAL_SLOW: i32 = 25;
 const DIAL_FAST: i32 = 150;
 const BTN_X: [i32; 3] = [C - 72, C, C + 72];
@@ -180,6 +182,8 @@ struct Ui {
     crown_at: u32,
     /// the detent gap averaged, ms
     crown_gap: i32,
+    /// where a touch on a scrolling screen went down
+    down: Option<(i32, i32)>,
 }
 
 fn main(api: &'static Api) -> i32 {
@@ -202,6 +206,7 @@ fn main(api: &'static Api) -> i32 {
         crown_acc: 0,
         crown_at: 0,
         crown_gap: 400,
+        down: None,
     };
     if crate::ASSISTANT {
         model().open = Some(1);
@@ -210,6 +215,8 @@ fn main(api: &'static Api) -> i32 {
     ui.draw();
     let _ = api.send(b"R");
     let mut msg = [0u8; MSG_MAX];
+    // an event read ahead while crown detents were merged
+    let mut ahead: Option<cmf_wp2_app::Event> = None;
     loop {
         let now = api.now();
         let flash = ui.flash.map(|(_, t)| t.wrapping_sub(now).min(1000));
@@ -218,7 +225,21 @@ fn main(api: &'static Api) -> i32 {
             _ => None,
         };
         let wait = [ui.motor.wait(), flash, hold].into_iter().flatten().min().unwrap_or(u32::MAX);
-        let e = api.event(wait);
+        let mut e = match ahead.take() {
+            Some(e) => Some(e),
+            None => api.event(wait),
+        };
+        // crown detents queued while the last frame was drawn become one step: no backlog, no stutter
+        if let Some(c) = e.as_mut().filter(|c| c.kind == CROWN && ui.screen != Screen::Dial) {
+            while let Some(n) = api.event(0) {
+                if n.kind == CROWN && (n.delta > 0) == (c.delta > 0) {
+                    c.delta = c.delta.saturating_add(n.delta);
+                } else {
+                    ahead = Some(n);
+                    break;
+                }
+            }
+        }
         ui.motor.update();
         if let Some((k, t)) = ui.flash {
             if api.now().wrapping_sub(t) as i32 >= 0 {
@@ -266,6 +287,17 @@ fn main(api: &'static Api) -> i32 {
                 }
             }
             CROWN => ui.crown(e.delta),
+            TOUCH_DOWN if ui.scrolls() => ui.down = Some((e.x as i32, e.y as i32)),
+            TOUCH_UP if ui.scrolls() => {
+                if let Some((x, y)) = ui.down.take() {
+                    let dy = e.y as i32 - y;
+                    if dy.abs() > DRAG {
+                        ui.drag(dy);
+                    } else {
+                        ui.tap(x, y);
+                    }
+                }
+            }
             TOUCH_DOWN => ui.tap(e.x as i32, e.y as i32),
             MESSAGE => {
                 let (mut list, mut chat) = (false, false);
@@ -749,8 +781,44 @@ impl Ui {
 
     // --- input
 
+    /// Screens that scroll: a drag scrolls them, a tap acts on TOUCH_UP.
+    fn scrolls(&self) -> bool {
+        matches!(self.screen, Screen::List | Screen::Chat | Screen::Quick)
+    }
+
+    /// A drag of `dy` px (down > 0): the content follows the finger.
+    fn drag(&mut self, dy: i32) {
+        match self.screen {
+            Screen::List => {
+                let next = (self.list_scroll - dy).clamp(0, self.list_max());
+                if next == self.list_scroll {
+                    return;
+                }
+                self.list_scroll = next;
+            }
+            Screen::Chat => {
+                // chat_scroll counts up towards older messages, which sit above
+                let next = (self.chat_scroll + dy).clamp(0, self.chat_max);
+                if next == self.chat_scroll {
+                    return;
+                }
+                self.chat_scroll = next;
+            }
+            Screen::Quick => {
+                let next = (self.quick_scroll - dy).clamp(0, self.quick_max());
+                if next == self.quick_scroll {
+                    return;
+                }
+                self.quick_scroll = next;
+            }
+            _ => return,
+        }
+        self.draw();
+    }
+
     fn crown(&mut self, d: i16) {
-        let d = d.signum() as i32;
+        // merged detents (main loop) scroll as far as they add up, a few at most
+        let d = if self.screen == Screen::Dial { d.signum() as i32 } else { (d as i32).clamp(-4, 4) };
         match self.screen {
             Screen::List => {
                 let next = (self.list_scroll + 47 * d).clamp(0, self.list_max());
