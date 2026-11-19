@@ -7,7 +7,7 @@
 //! - files `t<level>_<col>_<row>`: one 256 × 256 px tile, `scale: u8` (1, or 2 for a 128² tile drawn doubled) then
 //!   pixview run tokens (rle.rs).
 //!
-//! Phone → watch: `F name…` a new file, `f data…` its next bytes, `c` file complete (watch acks `a`),
+//! Phone → watch: `W` delete the map (watch acks `w`), `F name…` a new file, `f data…` its next bytes, `c` file complete (watch acks `a`),
 //! `P done:u16 total:u16` progress, `Z` pack complete, `X x:u32 y:u32` the phone's position (z20 world px).
 //! Watch → phone: `R` ready, `a` file stored, `k` pack loaded.
 
