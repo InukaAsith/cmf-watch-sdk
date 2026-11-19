@@ -10,6 +10,12 @@ mod rle;
 mod model;
 
 pub const ASSISTANT: bool = true;
+pub const TITLE: &str = "GEMINI";
+/// An open conversation with nothing in it yet.
+pub const EMPTY: &str = "Ask me anything";
+/// Notes: a page (title, plain text, checklists), not chat bubbles; the phone echoes what is typed.
+pub const PLAIN: bool = false;
+pub const QUICK_TITLE: &str = "ASK";
 
 #[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}

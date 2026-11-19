@@ -94,6 +94,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "maps"
 version = "0.1.0"
 dependencies = [
@@ -117,6 +125,14 @@ dependencies = [
 
 [[package]]
 name = "nav"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "notes"
 version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
