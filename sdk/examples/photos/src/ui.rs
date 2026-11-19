@@ -1,6 +1,7 @@
 //! Photos on the watch: the phone's gallery as a grid of thumbnails or a list of names (tap the heading to switch),
 //! scrolled by a drag or the crown; a tap opens the picture full screen, where the crown or a sideways drag goes to
-//! the next or previous one, a double tap zooms in there (then the crown zooms, a drag pans, a double tap leaves)
+//! the next or previous one, a double tap zooms in there (zoom mode: the crown zooms from ½× to 8×, a drag pans, a double tap or the button
+//! leaves)
 //! and the button goes back. Thumbnails are kept in the app's files: asked for once,
 //! only when they scroll into view.
 
@@ -56,6 +57,29 @@ fn gallery() -> &'static mut Gallery {
 
 /// The panel, rows above `top` left alone (the heading stays over scrolled thumbnails).
 struct Clip(&'static Api, i32);
+
+/// A round picture drawn smaller than the panel: only its disc (its corners are filler colour, not black).
+struct Round {
+    api: &'static Api,
+    cx: i32,
+    cy: i32,
+    r: i32,
+}
+impl rle::Surface for Round {
+    fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
+        let dy = (y + h / 2 - self.cy).abs();
+        if dy > self.r {
+            return;
+        }
+        let dx = cmf_wp2_ui::motion::isqrt(self.r * self.r - dy * dy);
+        let (x0, x1) = (x.max(self.cx - dx).max(0), (x + w).min(self.cx + dx).min(466));
+        let (y0, y1) = (y.max(0), (y + h).min(466));
+        if x1 > x0 && y1 > y0 {
+            let mut a = self.api;
+            Surface::rect(&mut a, x0, y0, x1 - x0, y1 - y0, c);
+        }
+    }
+}
 impl rle::Surface for Clip {
     fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
         // clipped to the panel here: a zoomed picture's runs reach far off it, past what i16 holds
@@ -94,6 +118,8 @@ struct Ui {
     base: (i32, i32, u8),
     /// the last single tap in the viewer, for a double tap
     last_tap: Option<(i32, i32, u32)>,
+    /// zoom mode (double tap): the crown zooms instead of going through the pictures
+    zooming: bool,
     dec: Decoder,
     loaded: bool,
     inc: Incoming,
@@ -291,6 +317,7 @@ impl Ui {
     // --- viewer
 
     fn open_picture(&mut self, i: usize) {
+        self.zooming = false;
         self.open = i;
         self.screen = Screen::Viewer;
         self.view = None;
@@ -313,51 +340,76 @@ impl Ui {
         }
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
-        d.feed(&st.data[..st.len], &mut Clip(self.api, 0));
+        if scale < self.base.2 {
+            let r = i32::from(d.w) * i32::from(scale) / 2;
+            d.feed(&st.data[..st.len], &mut Round { api: self.api, cx: x0 + r, cy: y0 + r, r });
+        } else {
+            d.feed(&st.data[..st.len], &mut Clip(self.api, 0));
+        }
         self.api.show();
         true
     }
 
     fn zoomed(&self) -> bool {
-        self.view.is_some_and(|v| v.2 > self.base.2)
+        self.zooming
     }
 
-    /// Double tap: 2× about (tx, ty), or back to the whole picture.
+    /// Double tap: into zoom mode at 2× about (tx, ty); in it, back to the whole picture and out.
     fn zoom_at(&mut self, tx: i32, ty: i32) {
         let Some((x0, y0, s)) = self.view else { return };
         self.motor.play(haptic::TICK);
-        let (x, y, next) = if s > self.base.2 {
-            self.base
-        } else {
-            // the tapped point comes to the centre
-            (C - (tx - x0) * 2, C - (ty - y0) * 2, (s * 2).min(8))
-        };
-        if self.redraw(x, y, next) {
-            self.view = Some((x, y, next));
+        if self.zooming {
+            return self.leave_zoom();
+        }
+        self.zooming = true;
+        let (x, y, n) = (C - (tx - x0) * 2, C - (ty - y0) * 2, (s * 2).min(8));
+        if self.redraw(x, y, n) {
+            self.view = Some((x, y, n));
+            self.pan(0, 0);
+            self.zoom_label();
         }
     }
 
-    /// Crown on a zoomed picture: 2× more or less about the panel's centre; back at the whole picture it leaves zoom.
+    fn leave_zoom(&mut self) {
+        self.zooming = false;
+        let (x, y, n) = self.base;
+        if self.redraw(x, y, n) {
+            self.view = Some(self.base);
+        }
+    }
+
+    /// Crown in zoom mode: 2× more or less about the panel's centre, from half the whole picture to 8×.
     fn zoom_by(&mut self, d: i32) {
         let Some((x0, y0, s)) = self.view else { return };
-        let next = if d > 0 { (s * 2).min(8) } else { s / 2 };
+        let min = (self.base.2 / 2).max(1);
+        let next = if d > 0 { (s * 2).min(8) } else { (s / 2).max(min) };
         if next == s {
             return;
         }
         self.motor.play(haptic::TICK);
-        let (x, y, n) = if next <= self.base.2 {
-            self.base
-        } else if next > s {
-            (C - (C - x0) * 2, C - (C - y0) * 2, next)
-        } else {
-            (C - (C - x0) / 2, C - (C - y0) / 2, next)
-        };
-        if self.redraw(x, y, n) {
-            self.view = Some((x, y, n));
-            if n > self.base.2 {
-                self.pan(0, 0);
-            }
+        let (x, y) = if next > s { (C - (C - x0) * 2, C - (C - y0) * 2) } else { (C - (C - x0) / 2, C - (C - y0) / 2) };
+        if self.redraw(x, y, next) {
+            self.view = Some((x, y, next));
+            self.pan(0, 0);
+            self.zoom_label();
         }
+    }
+
+    /// The zoom level at the top while in zoom mode.
+    fn zoom_label(&self) {
+        let Some((_, _, s)) = self.view else { return };
+        let b = self.base.2.max(1);
+        let t = match (s * 4 / b) as u32 {
+            0..=2 => "\u{bd}\u{d7}",
+            3..=4 => "1\u{d7}",
+            5..=8 => "2\u{d7}",
+            9..=16 => "4\u{d7}",
+            _ => "8\u{d7}",
+        };
+        let mut a = self.api;
+        rrect(&mut a, C - 28, 14, 56, 30, 15, Rgb(0x10, 0x10, 0x10), BLACK);
+        font::centre(&mut a, C, 18, t, W);
+        self.api.show();
     }
 
     /// Moves a zoomed picture, never past its edges.
@@ -370,6 +422,7 @@ impl Ui {
         let y = (y0 + dy).clamp((466 - h).min(0), 0.max(466 - h));
         if (x, y) != (x0, y0) && self.redraw(x, y, s) {
             self.view = Some((x, y, s));
+            self.zoom_label();
         }
     }
 
@@ -543,6 +596,10 @@ impl Ui {
     fn event(&mut self, e: Event) -> bool {
         match e.kind {
             BUTTON => {
+                if self.screen == Screen::Viewer && self.zooming {
+                    self.leave_zoom();
+                    return false;
+                }
                 if self.screen == Screen::Viewer {
                     self.screen = Screen::Gallery;
                     self.draw_gallery();
@@ -574,7 +631,7 @@ impl Ui {
                     Screen::Viewer => {
                         if self.zoomed() && (dx.abs() > DRAG || dy.abs() > DRAG) {
                             self.pan(dx, dy);
-                        } else if dx.abs() > SWIPE && dx.abs() > dy.abs() {
+                        } else if !self.zoomed() && dx.abs() > SWIPE && dx.abs() > dy.abs() {
                             self.step(if dx < 0 { 1 } else { -1 });
                         } else if dx.abs() <= DRAG && dy.abs() <= DRAG {
                             let now = self.api.now();
@@ -608,6 +665,7 @@ fn main(api: &'static Api) -> i32 {
         view: None,
         base: (0, 0, 1),
         last_tap: None,
+        zooming: false,
         dec: Decoder::new(),
         loaded: false,
         inc: Incoming { name: [0; 20], nlen: 0, len: 0, on: false },
@@ -615,6 +673,8 @@ fn main(api: &'static Api) -> i32 {
         down: None,
         motor: Motor::new(api),
     };
+    // the button is ours: back from a picture or out of zoom; from the gallery it leaves the app
+    api.own_back(true);
     ui.restore();
     ui.draw_gallery();
     let _ = api.send(b"R");
