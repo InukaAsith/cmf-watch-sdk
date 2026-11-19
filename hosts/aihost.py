@@ -36,7 +36,8 @@ async def gemini_stream(history):
     """Yields text pieces from Gemini's SSE stream (blocking HTTP in a thread)."""
     key = os.environ["GEMINI_API_KEY"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:streamGenerateContent?alt=sse"
-    body = json.dumps({"systemInstruction": {"parts": [{"text": SYSTEM}]}, "contents": history}).encode()
+    body = json.dumps({"systemInstruction": {"parts": [{"text": SYSTEM}]}, "contents": history,
+                       "generationConfig": {"thinkingConfig": {"thinkingLevel": "MINIMAL"}}}).encode()
     req = urllib.request.Request(url, body, {"Content-Type": "application/json", "x-goog-api-key": key})
     q: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
