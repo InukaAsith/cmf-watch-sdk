@@ -10,7 +10,7 @@ Notes: row 0 starts a note; reminder lists tick with a tap (`t idx`); typing add
 import argparse, asyncio, pathlib, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
-from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
+from wp2apps.channel import ANY, Channel, NoApp, SimChannel, send_when_open  # noqa: E402
 
 MAX_ROWS, MAX_MSGS, TEXT = 12, 12, 120
 
@@ -141,61 +141,92 @@ class Notes:
         return idx, it["lines"][idx]
 
 
-async def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["mail", "notes"])
-    ap.add_argument("--sim", type=int)
-    ap.add_argument("--address", help="a real watch (K channel)")
-    a = ap.parse_args()
-    box = Mail() if a.mode == "mail" else Notes()
-    opened = None
+class Inbox:
+    """One app's mock state and its answers; `slot` is the app's slot on the watch (ANY in the sim)."""
 
-    async def send_list(ch):
-        rows = box.rows()[:MAX_ROWS]
-        await ch.send(b"L" + bytes([len(rows)]))
+    def __init__(self, box, slot):
+        self.box, self.slot, self.opened = box, slot, None
+
+    async def out(self, ch, data):
+        ch.slot = self.slot
+        try:
+            await ch.send(data)
+        finally:
+            ch.slot = ANY
+
+    async def send_list(self, ch):
+        rows = self.box.rows()[:MAX_ROWS]
+        await self.out(ch, b"L" + bytes([len(rows)]))
         for idx, (i, name, unread, preview) in enumerate(rows):
             n, p = cut(name, 24), cut(preview, 40)
-            await ch.send(b"C" + bytes([idx, i, unread, len(n)]) + n + bytes([len(p)]) + p)
-        for q, text in enumerate(box.QUICK):
-            await ch.send(msg("Q", q, text=text))
+            await self.out(ch, b"C" + bytes([idx, i, unread, len(n)]) + n + bytes([len(p)]) + p)
+        for q, text in enumerate(self.box.QUICK):
+            await self.out(ch, msg("Q", q, text=text))
 
-    async def open_(ch, i):
-        box.opened(i)
-        await ch.send(b"H" + bytes([i]) + cut(box.title(i), 24))
-        for idx, (me, kind, text) in enumerate(box.lines(i)[-MAX_MSGS:]):
-            await ch.send(msg("M", idx, me, kind, text=text))
+    async def open_(self, ch, i):
+        self.opened = i
+        self.box.opened(i)
+        await self.out(ch, b"H" + bytes([i]) + cut(self.box.title(i), 24))
+        for idx, (me, kind, text) in enumerate(self.box.lines(i)[-MAX_MSGS:]):
+            await self.out(ch, msg("M", idx, me, kind, text=text))
 
+    async def handle(self, ch, m):
+        box = self.box
+        if m == b"R":
+            await self.send_list(ch)
+        elif m[:1] == b"o" and len(m) == 2:
+            await self.open_(ch, m[1])
+        elif m[:1] == b"s" and len(m) > 2:
+            i, text = m[1], m[2:].decode(errors="replace")
+            try:
+                add, changed = box.send(i, text)
+            except KeyError:
+                return
+            if add == "reopen":
+                await self.open_(ch, max(box.items))
+            elif add == "reload":
+                await self.open_(ch, i)
+            for me, kind, t in add if isinstance(add, list) else []:
+                await self.out(ch, msg("A", me, kind, text=t))
+            if changed:
+                await self.send_list(ch)
+        elif m[:1] == b"t" and len(m) == 2 and self.opened is not None:
+            got = box.tap(self.opened, m[1])
+            if got:
+                idx, (kind, text) = got
+                await self.out(ch, msg("M", idx, 0, kind, text=text))
+
+
+async def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("mode", choices=["mail", "notes", "both"])
+    ap.add_argument("--sim", type=int)
+    ap.add_argument("--address", help="a real watch (K channel)")
+    ap.add_argument("--mail-slot", type=int, default=6)
+    ap.add_argument("--notes-slot", type=int, default=7)
+    a = ap.parse_args()
+    if a.mode == "both":
+        apps = {a.mail_slot: Inbox(Mail(), a.mail_slot), a.notes_slot: Inbox(Notes(), a.notes_slot)}
+    else:
+        apps = {None: Inbox(Mail() if a.mode == "mail" else Notes(), ANY)}
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
-        await send_when_open(ch, b"?")  # waits till the app is open
-        await send_list(ch)
-        while True:
-            m = (await ch.recv()).data
-            print("watch:", m[:1].decode(errors="replace"), m[1:], flush=True)
-            if m == b"R":
-                await send_list(ch)
-            elif m[:1] == b"o" and len(m) == 2:
-                opened = m[1]
-                await open_(ch, opened)
-            elif m[:1] == b"s" and len(m) > 2:
-                i, text = m[1], m[2:].decode(errors="replace")
+        print("waiting for the app", flush=True)
+        if None in apps:
+            await send_when_open(ch, b"?")
+            await apps[None].send_list(ch)
+        else:
+            # whichever of the two is open now gets its list (the other answers NoApp); later opens ask with R
+            for app in apps.values():
                 try:
-                    add, changed = box.send(i, text)
-                except KeyError:
-                    continue
-                if add == "reopen":
-                    opened = max(box.items)
-                    await open_(ch, opened)
-                elif add == "reload":
-                    await open_(ch, i)
-                for me, kind, t in add if isinstance(add, list) else []:
-                    await ch.send(msg("A", me, kind, text=t))
-                if changed:
-                    await send_list(ch)
-            elif m[:1] == b"t" and len(m) == 2 and opened is not None:
-                got = box.tap(opened, m[1])
-                if got:
-                    idx, (kind, text) = got
-                    await ch.send(msg("M", idx, 0, kind, text=text))
+                    await app.send_list(ch)
+                except NoApp:
+                    pass
+        while True:
+            m = await ch.recv()
+            app = apps.get(m.slot) or apps.get(None)
+            print(f"slot {m.slot}:", m.data[:1].decode(errors="replace"), m.data[1:], "" if app else "(not ours)", flush=True)
+            if app:
+                await app.handle(ch, m.data)
 
 
 if __name__ == "__main__":
