@@ -41,6 +41,8 @@ const RING: (i32, i32) = (224, 229);
 const CTRL_Y: i32 = 312;
 const CTRL_X: [i32; 3] = [C - 96, C, C + 96];
 const TOOL_Y: i32 = 392;
+/// Taps this far from the centre (outside the tools) seek on the progress ring.
+const SEEK_R: i32 = 196;
 const TOOL_X: [i32; 4] = [C - 99, C - 33, C + 33, C + 99];
 // --- lists
 const LIST_TOP: i32 = 100;
@@ -310,7 +312,44 @@ impl Ui {
         if (ART_X..ART_X + ART).contains(&x) && (ART_Y..ART_Y + ART).contains(&y) {
             self.motor.play(haptic::TICK);
             self.open_list(b'A');
+            return;
         }
+        // a tap at the rim: seek to that point of the progress ring (clockwise from the top)
+        let (dx, dy) = (x - C, y - C);
+        if dx * dx + dy * dy >= SEEK_R * SEEK_R {
+            self.seek(dx, dy);
+        }
+    }
+
+    fn seek(&mut self, dx: i32, dy: i32) {
+        let n = &mut model().now;
+        if n.dur == 0 {
+            return;
+        }
+        self.motor.play(haptic::TICK);
+        if n.flags & PREMIUM == 0 {
+            return self.toast(b"Premium needed");
+        }
+        let frac = u32::from(cmf_wp2_ui::motion::angle(dx, dy).wrapping_sub(49152));
+        let pos = (frac * u32::from(n.dur) / 65536) as u16;
+        n.pos = pos;
+        self.tick_at = self.api.now();
+        let p = pos.to_le_bytes();
+        self.send(&[b'j', p[0], p[1]]);
+        // the time where the device name is, for a moment
+        let mut t = [0u8; 8];
+        let mut k = 0;
+        let (m, sec) = (pos / 60, pos % 60);
+        if m >= 10 {
+            t[k] = b'0' + (m / 10 % 10) as u8;
+            k += 1;
+        }
+        t[k] = b'0' + (m % 10) as u8;
+        t[k + 1] = b':';
+        t[k + 2] = b'0' + (sec / 10) as u8;
+        t[k + 3] = b'0' + (sec % 10) as u8;
+        self.draw_ring(true);
+        self.toast(&t[..k + 4]);
     }
 
     fn toast(&mut self, text: &[u8]) {
