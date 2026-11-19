@@ -86,32 +86,85 @@ async def answer(ch, history, prompt):
     history.append({"role": "model", "parts": [{"text": full}]})
 
 
+def chunks(text, n=BUBBLE):
+    out, cur = [], ""
+    for w in clean(text).split():
+        if len((cur + " " + w).strip()) > n and cur:
+            out.append(cur)
+            cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    return out + ([cur] if cur else [])
+
+
 async def main():
+    """The watch lists New chat (id 1) and the last 3 conversations; a question to New chat makes a conversation
+    (the phone opens it with `H`). Every question is acknowledged at once (`Q`) so the watch does not ask again."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--sim", type=int)
     ap.add_argument("--address", help="a real watch (K channel)")
+    ap.add_argument("--delay", type=float, default=0, help="seconds before an answer starts (a slow model)")
+    ap.add_argument("--deaf", type=int, default=0, help="ignore the first N questions (a phone that was asleep)")
     a = ap.parse_args()
     print("Gemini" if os.environ.get("GEMINI_API_KEY") else "demo mode (no GEMINI_API_KEY)", flush=True)
-    history = []
+    convos = {}  # id -> history, newest last in order
+    current = [None]
+    deaf = [a.deaf]
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
 
-        async def hello():
-            await ch.send(b"H\x01Gemini")
+        async def quick():
             for i, p in enumerate(PROMPTS):
                 await ch.send(b"Q" + bytes([i]) + p.encode())
 
+        async def send_list():
+            rows = [(1, "New chat", "Ask anything")] + [
+                (i, h[0]["parts"][0]["text"], next((t["parts"][0]["text"] for t in reversed(h) if t["role"] == "model"), ""))
+                for i, h in reversed(list(convos.items()))]
+            await ch.send(b"L" + bytes([len(rows)]))
+            for k, (i, name, prev) in enumerate(rows):
+                n, pv = clean(name).encode()[:24], clean(prev).encode()[:40]
+                await ch.send(b"C" + bytes([k, i, 0, len(n)]) + n + bytes([len(pv)]) + pv)
+            await quick()
+
+        async def open_chat(i):
+            bubbles = [(t["role"] == "user", c) for t in convos[i] for c in chunks(t["parts"][0]["text"])][-10:]
+            await ch.send(b"H" + bytes([i]) + b"Gemini")
+            for k, (me, c) in enumerate(bubbles):
+                await ch.send(b"M" + bytes([k, int(me), 0]) + c.encode()[:120])
+
         await send_when_open(ch, b"?")  # waits till the app is open
-        await hello()
+        await send_list()
         while True:
             m = (await ch.recv()).data
             print("watch:", m, flush=True)
             if m == b"R":
-                history.clear()
-                await hello()
+                await send_list()
+            elif m[:1] == b"o" and len(m) == 2:
+                current[0] = None if m[1] == 1 else m[1]
+                if m[1] in convos:
+                    await open_chat(m[1])
+                else:
+                    await ch.send(b"H\x01Gemini")
             elif m[:1] == b"s":
+                if deaf[0] > 0:
+                    deaf[0] -= 1
+                    continue
                 prompt = m[2:].decode(errors="replace")
-                history.append({"role": "user", "parts": [{"text": prompt}]})
-                await answer(ch, history, prompt)
+                if current[0] is None:
+                    current[0] = next(i for i in range(2, 250) if i not in convos)
+                    convos[current[0]] = []
+                    fresh = True
+                else:
+                    fresh = False
+                h = convos.pop(current[0])
+                convos[current[0]] = h
+                while len(convos) > 3:
+                    convos.pop(next(iter(convos)))
+                h.append({"role": "user", "parts": [{"text": prompt}]})
+                await (open_chat(current[0]) if fresh else quick())
+                await asyncio.sleep(a.delay)
+                await answer(ch, h, prompt)
+                await send_list()  # the conversation now heads the list
 
 
 if __name__ == "__main__":
