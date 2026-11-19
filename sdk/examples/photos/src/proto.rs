@@ -7,6 +7,9 @@
 //! - `F name`, `f data…`, `c` a file (thumbnail `th<idx>`: an `I` header then run tokens, rle.rs); the watch acks `a`.
 //! - `P n` then n bands, each `I`, `D`…, `E` (rle.rs; its own 16 colours, its header's y0 the band's row): the
 //!   opened picture. A lone `I`/`D`/`E` is a one-band picture. `?` asks for `R`.
+//! - then the sharp version, 256 colours, shown with a progress bar and replacing the bands: `S total:u16 w:u16
+//!   h:u16 scale x0:i16 y0:i16`, `K first count rgb565…` (the palette), `Y seq tokens…` (a byte < 255 one pixel of
+//!   that colour, `255 c n` n pixels; runs stay in a row), `Z`. A gap: the watch sends `G`, the phone sends it again.
 //!
 //! Watch → phone: `R` ready (send the gallery), `q idx` a thumbnail it has not got, `o idx` open a picture (stepping through: the one it stops on), `g` back in the gallery (thumbnails go on), `a` file
 //! stored, `G seq` a gap in the picture's stream.
