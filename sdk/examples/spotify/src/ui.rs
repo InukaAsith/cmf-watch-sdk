@@ -800,8 +800,15 @@ fn main(api: &'static Api) -> i32 {
     };
     ui.draw();
     ui.send(b"R");
+    let mut ask = cmf_wp2_ui::ask::Ask::new(api.now(), 10);
     loop {
-        let e = api.event(ui.wait());
+        let e = api.event(ask.wait(api.now()).map_or(ui.wait(), |a| a.min(ui.wait())));
+        if ask.due(api.now()) {
+            ui.send(b"R");
+        }
+        if e.as_ref().is_some_and(|e| e.kind == MESSAGE) {
+            ask.answered();
+        }
         let mut dirty = false;
         if let Some(e) = e {
             match e.kind {

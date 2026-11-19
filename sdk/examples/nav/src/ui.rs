@@ -44,11 +44,19 @@ fn main(api: &'static Api) -> i32 {
     api.keep_screen_on(true);
     ui.draw();
     let _ = api.send(b"R");
+    let mut ask = cmf_wp2_ui::ask::Ask::new(api.now(), 10);
     let mut msg = [0u8; MSG_MAX];
     loop {
-        let e = api.event(ui.motor.wait().unwrap_or(u32::MAX));
+        let w = [ui.motor.wait(), ask.wait(api.now())].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let e = api.event(w);
         ui.motor.update();
+        if ask.due(api.now()) {
+            let _ = api.send(b"R");
+        }
         let Some(e) = e else { continue };
+        if e.kind == MESSAGE {
+            ask.answered();
+        }
         match e.kind {
             BUTTON => {
                 ui.motor.off();

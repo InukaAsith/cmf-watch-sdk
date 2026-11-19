@@ -800,18 +800,22 @@ fn main(api: &'static Api) -> i32 {
     ui.wipe();
     ui.draw_gallery();
     let _ = api.send(b"R");
+    let mut ask = cmf_wp2_ui::ask::Ask::new(api.now(), 10);
     let mut ahead: Option<Event> = None;
     loop {
         let e = match ahead.take() {
             Some(e) => Some(e),
             None => {
-                let w = match (ui.motor.wait(), ui.ask_wait()) {
-                    (Some(a), Some(b)) => a.min(b),
-                    (a, b) => a.or(b).unwrap_or(u32::MAX),
-                };
+                let w = [ui.motor.wait(), ui.ask_wait(), ask.wait(api.now())].into_iter().flatten().min().unwrap_or(u32::MAX);
                 api.event(w)
             }
         };
+        if ask.due(api.now()) {
+            let _ = api.send(b"R");
+        }
+        if e.as_ref().is_some_and(|e| e.kind == MESSAGE) {
+            ask.answered();
+        }
         ui.motor.update();
         ui.ask_due();
         ui.tap_check();

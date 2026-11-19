@@ -494,8 +494,16 @@ fn main(api: &'static Api) -> i32 {
     ui.load_pack();
     ui.draw();
     let _ = api.send(b"R");
+    let mut ask = cmf_wp2_ui::ask::Ask::new(api.now(), 10);
     loop {
-        let Some(e) = api.event(u32::MAX) else { continue };
+        let e = api.event(ask.wait(api.now()).unwrap_or(u32::MAX));
+        if ask.due(api.now()) {
+            let _ = api.send(b"R");
+        }
+        let Some(e) = e else { continue };
+        if e.kind == MESSAGE {
+            ask.answered();
+        }
         let mut dirty = match e.kind {
             BUTTON => return 0,
             PAUSE => loop {
