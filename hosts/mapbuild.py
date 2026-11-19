@@ -1,6 +1,6 @@
 """Offline map packs for the maps app (sdk/examples/maps/src/pack.rs has the format).
 
-  build: OSM tiles round a point → Nothing dark style (fixed 16 colours, STYLE), run-length coded per tile
+  build: Apple Maps (--style hd, the default: big sharp labels) or OSM tiles round a point → 16-colour, (fixed 16 colours, STYLE), run-length coded per tile
   send:  the pack to the watch app over the channel (F/f/c per file, acked; P progress; Z done)
 
   uv run --with pillow python hosts/mapbuild.py build --lat 51.5080 --lon -0.1281 --radius 1.5 --out runs/mappack/london
@@ -58,6 +58,30 @@ LIGHT[13] = (0x55, 0x55, 0x55)
 TEXT = (12, 13)
 
 
+SNAP = pathlib.Path(__file__).resolve().parents[1] / "runs/bin/mapsnap"
+
+
+def hd_levels(grids):
+    """Apple Maps (hosts/mapkit/snap.swift, built into runs/bin on first use), one image per zoom level drawn at 2×
+    (big sharp labels, none cut at a tile edge), cut into tiles: {(level, col, row): image}."""
+    import subprocess, tempfile
+    src = SNAP.parents[2] / "hosts/mapkit/snap.swift"
+    if not SNAP.exists() or SNAP.stat().st_mtime < src.stat().st_mtime:
+        SNAP.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["swiftc", "-O", str(src), "-o", str(SNAP)], check=True)
+    out = {}
+    with tempfile.TemporaryDirectory() as d:
+        lines = "".join(f"{z} {x0} {y0} {w} {h} {d}/{li}.png\n" for li, (z, x0, y0, w, h) in enumerate(grids))
+        subprocess.run([str(SNAP)], input=lines, text=True, check=True, capture_output=True)
+        for li, (z, x0, y0, w, h) in enumerate(grids):
+            big = Image.open(f"{d}/{li}.png").convert("RGB")
+            for r in range(h):
+                for c in range(w):
+                    out[li, c, r] = big.crop((c * TILE, r * TILE, (c + 1) * TILE, (r + 1) * TILE))
+            print(f"  z{z}: {w}x{h}", flush=True)
+    return out
+
+
 def styled(img):
     """OSM tile → palette indices in STYLE order, speckle merged (anti-aliasing would cost a run per pixel)."""
     q = img.convert("RGB").quantize(palette=REF, dither=Image.Dither.NONE)
@@ -110,8 +134,19 @@ def build(a):
     if total > a.max_tiles:
         sys.exit(f"{total} tiles > --max-tiles {a.max_tiles}: smaller --radius or fewer zooms")
     print(f"{total} tiles, zooms {zooms[0]}..{zooms[-1]}", flush=True)
-    imgs, done = {}, 0
-    for li, (z, x0, y0, w, h) in enumerate(grids):
+    if a.style == "hd":
+        raw = hd_levels(grids)
+        # one 16-colour palette fitted to this map's own colours (text keeps its dark core and a clean edge)
+        sheet = Image.new("RGB", (256, 256 * len(raw)))
+        for i, im in enumerate(raw.values()):
+            sheet.paste(im, (0, 256 * i))
+        ref = sheet.quantize(16, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        hd_pal = [tuple(ref.getpalette()[3 * i:3 * i + 3]) for i in range(16)]
+        imgs = {k: im.quantize(palette=ref, dither=Image.Dither.NONE) for k, im in raw.items()}
+    else:
+        hd_pal = None
+        imgs = {}
+    for li, (z, x0, y0, w, h) in enumerate(grids if a.style != "hd" else []):
         for r in range(h):
             for c in range(w):
                 cached = (pathlib.Path(__file__).resolve().parents[1] / "runs/tiles" / f"{z}/{x0 + c}/{y0 + r}.png").exists()
@@ -120,7 +155,7 @@ def build(a):
                 if not cached:
                     time.sleep(0.3)  # gentle on the OSM servers
         print(f"  z{z}: {w}x{h}", flush=True)
-    pal = [v for c in (LIGHT if a.style == "light" else PALETTE) for v in c]
+    pal = [v for c in (hd_pal or (LIGHT if a.style == "light" else PALETTE)) for v in c]
     sizes = []
     for (li, c, r), im in imgs.items():
         data = encode(im)
@@ -175,8 +210,16 @@ async def wipe(a):
     ch_ = SimChannel(a.sim) if a.sim else Channel(address=a.address, hci_port=a.hci_port, channel_key=True)
     async with ch_ as ch:
         await send_when_open(ch, b"W")
-        while (await ch.recv(timeout=30)).data != b"w":
-            pass
+        for _ in range(3):
+            try:
+                while (m := (await ch.recv(timeout=20)).data) != b"w":
+                    print("got", m[:20], flush=True)
+                break
+            except TimeoutError:
+                print("no answer, sending again", flush=True)
+                await ch.send(b"W")
+        else:
+            sys.exit("the watch did not confirm")
     print("map deleted on the watch")
 
 
@@ -190,7 +233,7 @@ def main():
     b.add_argument("--min-zoom", type=int, default=13)
     b.add_argument("--max-zoom", type=int, default=17)
     b.add_argument("--max-tiles", type=int, default=300)
-    b.add_argument("--style", choices=["light", "dark"], default="light", help="light: OSM colours (readable labels); dark: Nothing dark")
+    b.add_argument("--style", choices=["hd", "light", "dark"], default="hd", help="hd: Apple Maps at 2× (big sharp labels); light: OSM colours; dark: Nothing dark")
     b.add_argument("--out", required=True)
     s = sub.add_parser("send")
     s.add_argument("pack")
