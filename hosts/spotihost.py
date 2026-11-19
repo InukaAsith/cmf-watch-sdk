@@ -147,6 +147,10 @@ class Demo:
         self.queue = list(self.view)
         self.load(i)
 
+    async def seek(self, pos):
+        self.started = time.monotonic() - pos
+        self.st["pos"] = pos
+
     async def device(self, i):
         for k, d in enumerate(self.devices):
             d[2] = k == i
@@ -218,6 +222,9 @@ class Web:
             await self.run("POST", "/me/player/next" if k == "n" else "/me/player/previous")
         await asyncio.sleep(0.4)
         return True
+
+    async def seek(self, pos):
+        await self.run("PUT", "/me/player/seek", query={"position_ms": pos * 1000})
 
     async def volume(self, v):
         await self.run("PUT", "/me/player/volume", query={"volume_percent": v})
@@ -316,6 +323,9 @@ async def main():
                         await push()
                     else:
                         await ch.send(now_message(src.state()))
+                elif m[:1] == b"j" and len(m) >= 3:
+                    await src.seek(int.from_bytes(m[1:3], "little"))
+                    await ch.send(now_message(src.state()))
                 elif m[:1] == b"v":
                     await src.volume(m[1])
                 elif m == b"h":
