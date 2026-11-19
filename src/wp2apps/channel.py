@@ -233,3 +233,12 @@ class SimChannel:
                     continue
                 self._seq = (self._seq + 1) & 0xFF
                 return Message(self._seq, 0, bytes.fromhex(line.decode().strip()))
+
+
+async def send_when_open(ch, data: bytes, every: float = 2.0) -> None:
+    """Send once the watch app runs: a host started before its app was opened waits for it."""
+    while True:
+        try:
+            return await ch.send(data)
+        except NoApp:
+            await asyncio.sleep(every)

@@ -7,7 +7,7 @@ along it, sending the next manoeuvre and where we are every tick (examples/nav/s
 import argparse, asyncio, datetime, json, math, pathlib, struct, sys, urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
-from wp2apps.channel import SimChannel  # noqa: E402
+from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
 
 CACHE = pathlib.Path(__file__).resolve().parents[1] / "runs" / "routes"
 DIRS = {"straight": 0, "slight left": 1, "left": 2, "sharp left": 3, "slight right": 4, "right": 5,
@@ -125,7 +125,8 @@ async def drive(ch, route, speed, tick):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sim", type=int, required=True)
+    ap.add_argument("--sim", type=int)
+    ap.add_argument("--address", help="a real watch (K channel)")
     ap.add_argument("--from", dest="a", default="51.50797,-0.12804")  # Trafalgar Square
     ap.add_argument("--to", dest="b", default="51.51939,-0.12697")    # British Museum
     ap.add_argument("--speed", type=float, default=12.0, help="m/s")
@@ -133,7 +134,8 @@ async def main():
     a = ap.parse_args()
     route = Route(osrm(tuple(map(float, a.a.split(","))), tuple(map(float, a.b.split(",")))))
     print(f"route {route.length:.0f} m, {len(route.steps)} steps, {len(route.shape)} points", flush=True)
-    async with SimChannel(a.sim) as ch:
+    async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
+        await send_when_open(ch, b"?")  # waits till the app is open
         await send_route(ch, route)
         task = asyncio.create_task(drive(ch, route, a.speed, a.tick))
         while True:

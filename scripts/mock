@@ -1,0 +1,37 @@
+#!/bin/bash
+# The phone's half of one watch app, faked from this Mac against the real watch: open the app on the watch,
+# then `scripts/mock <app>`. Ctrl-C stops it. One at a time: every K host hears every app.
+#
+#   spotify   demo player (SPOTIFY_TOKEN=… for your real account)
+#   gemini    demo answers (GEMINI_API_KEY=… for real ones)
+#   whatsapp  demo chats
+#   nav       a walk in London, driven along the route
+#   photos    a test picture
+#   maps      saves the small test pack (runs/mappack/small), then exits
+#
+# The watch: WP2_ADDR (its CoreBluetooth id or MAC), never committed.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+: "${WP2_ADDR:?set WP2_ADDR to the watch (uv run wp2apps scan)}"
+py() { uv run -q --with pillow python "$@"; }
+case "${1:-}" in
+  spotify)  py hosts/spotihost.py --address "$WP2_ADDR" ;;
+  gemini)   py hosts/aihost.py --address "$WP2_ADDR" ;;
+  whatsapp) py hosts/wahost.py --address "$WP2_ADDR" ;;
+  nav)      py hosts/navhost.py --address "$WP2_ADDR" --speed 6 --tick 2 ;;
+  photos)
+    mkdir -p runs/mock
+    [ -f runs/mock/photo.png ] || py - <<'P'
+from PIL import Image, ImageDraw
+im = Image.new("RGB", (466, 466))
+d = ImageDraw.Draw(im)
+for y in range(466):
+    d.line((0, y, 466, y), fill=(20 + y // 4, 10, 60 + y // 3))
+d.ellipse((133, 133, 333, 333), fill=(0xD7, 0x19, 0x21))
+d.rectangle((60, 380, 406, 400), fill=(255, 255, 255))
+im.save("runs/mock/photo.png")
+P
+    py hosts/pixhost.py --address "$WP2_ADDR" --rate 8000 photo runs/mock/photo.png ;;
+  maps)     py hosts/mapbuild.py send runs/mappack/small --address "$WP2_ADDR" ;;
+  *) sed -n 2,13p "$0"; exit 2 ;;
+esac

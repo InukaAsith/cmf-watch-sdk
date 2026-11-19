@@ -181,7 +181,7 @@ async def main():
         if a.cmd == "map" and not a.google_key:
             asyncio.get_running_loop().run_in_executor(None, prefetch, a.lat, a.lon, a.zoom)
 
-    ch_ = SimChannel(a.sim) if a.sim else Channel(address=a.address, hci_port=a.hci_port)
+    ch_ = SimChannel(a.sim) if a.sim else Channel(address=a.address, hci_port=a.hci_port, channel_key=True)
     async with ch_ as ch:
         await show()
         while True:

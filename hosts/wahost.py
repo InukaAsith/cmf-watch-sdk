@@ -8,7 +8,7 @@ import argparse, asyncio, pathlib, struct, sys
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
-from wp2apps.channel import SimChannel  # noqa: E402
+from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
 
 MAX_MSGS = 12
 
@@ -112,10 +112,12 @@ async def open_chat(ch, cid):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sim", type=int, required=True)
+    ap.add_argument("--sim", type=int)
+    ap.add_argument("--address", help="a real watch (K channel)")
     a = ap.parse_args()
     opened = None
-    async with SimChannel(a.sim) as ch:
+    async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
+        await send_when_open(ch, b"?")  # waits till the app is open
         await send_list(ch)
         for i, q in enumerate(QUICK):
             await ch.send(b"Q" + bytes([i]) + q.encode())
