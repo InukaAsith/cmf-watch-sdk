@@ -4,6 +4,8 @@
 
 pub mod color;
 pub mod draw;
+pub mod font;
+mod inter;
 pub mod geom;
 pub mod haptic;
 pub mod motion;

@@ -279,6 +279,60 @@ impl Api {
 
 const WIDGET_BATCH: usize = 4 + 64;
 
+/// FILE batches (lv_submit op 0x16): one static buffer in the app block; a read comes back in it.
+const FILE_BATCH: usize = 2048;
+/// Longest name for [`Api::file_write`] and friends: `[a-z0-9_.]`, not starting with a dot.
+pub const FILE_NAME_MAX: usize = 20;
+/// Most bytes one [`Api::file_write`] takes (append more for a bigger file).
+pub const FILE_CHUNK: usize = FILE_BATCH - 6 - FILE_NAME_MAX;
+static mut FILE_REC: [u8; FILE_BATCH] = [0; FILE_BATCH];
+
+impl Api {
+    fn file_rec(&self, cmd: u8, name: &str, rest: &[u8], whole: bool) -> (i32, &'static [u8]) {
+        let n = name.len();
+        if self.abi_minor < 2 || n == 0 || n > FILE_NAME_MAX || 6 + n + rest.len() > FILE_BATCH {
+            return (-22, &[]);
+        }
+        // one app thread
+        let r = unsafe { &mut *core::ptr::addr_of_mut!(FILE_REC) };
+        r[..6].copy_from_slice(&[0x16, 0, 0, 0, cmd, n as u8]);
+        r[6..6 + n].copy_from_slice(name.as_bytes());
+        r[6 + n..6 + n + rest.len()].copy_from_slice(rest);
+        let len = if whole { FILE_BATCH } else { 6 + n + rest.len() };
+        let rc = (self.lv_submit)(r.as_ptr(), len);
+        (rc, &r[..rc.clamp(0, FILE_BATCH as i32) as usize])
+    }
+
+    /// Reads the app's own file `name` from byte `skip` into `buf`: bytes read, or < 0 (no such file). Big data that
+    /// does not fit the 4 KiB [`Api::save`] blob, such as offline map tiles. Needs a loader with FILE (-22 before).
+    pub fn file_read(&self, name: &str, skip: usize, buf: &mut [u8]) -> i32 {
+        let mut got = 0;
+        while got < buf.len() {
+            let (rc, data) = self.file_rec(1, name, &((skip + got) as u32).to_le_bytes(), true);
+            if rc < 0 {
+                return if got > 0 { got as i32 } else { rc };
+            }
+            let k = data.len().min(buf.len() - got);
+            buf[got..got + k].copy_from_slice(&data[..k]);
+            got += k;
+            if data.len() < FILE_BATCH {
+                break;
+            }
+        }
+        got as i32
+    }
+
+    /// Writes `data` (at most [`FILE_CHUNK`] bytes) to the app's file `name`, replacing it, or after its end with
+    /// `append`. Writes NAND synchronously.
+    pub fn file_write(&self, name: &str, data: &[u8], append: bool) -> i32 {
+        self.file_rec(if append { 3 } else { 2 }, name, data, false).0
+    }
+
+    pub fn file_delete(&self, name: &str) -> i32 {
+        self.file_rec(4, name, &[], false).0
+    }
+}
+
 /// WIDGET record for `lv_submit` (op 0x14, handle 0): title NUL-padded to 24 bytes, then the value NUL-padded to 40.
 #[doc(hidden)]
 pub fn widget_record(title: &str, value: &str) -> [u8; WIDGET_BATCH] {

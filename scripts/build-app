@@ -3,6 +3,8 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 name=$1
 version=$2
+# shown in the watch menu (24 UTF-8 bytes); the crate name when not given
+display=${3:-$name}
 svg=$root/sdk/examples/$name/icon.svg
 if [ -f "$svg" ]; then
     export WP2_ICON=$root/sdk/target/icons/$name.wp2icon
@@ -20,5 +22,5 @@ llvm-objcopy -O binary --set-section-flags .data=alloc,load,contents "$root/sdk/
 rm -f "$root/target/$name.wp2app"
 cd "$root"
 uv run --locked wp2apps pack "target/$name.bin" --elf "sdk/target/thumbv7em-none-eabi/release/$name" \
-    --name "$name" --version "$version" --output "target/$name.wp2app"
+    --name "$display" --version "$version" --output "target/$name.wp2app"
 echo "$root/target/$name.wp2app"
