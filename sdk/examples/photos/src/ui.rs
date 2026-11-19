@@ -1,15 +1,15 @@
-//! Photos on the watch (nothing kept: its files go when it closes, and at the next start after a swipe closed it): the phone's gallery as a grid of thumbnails or a list of names (tap the heading to switch),
-//! scrolled by a drag or the crown; a tap opens the picture full screen, where the crown or a sideways drag goes to
-//! the next or previous one, a double tap zooms in there (zoom mode: the crown zooms from ½× to 8×, a drag pans, a double tap or the button
-//! leaves)
-//! and the button goes back. Thumbnails are kept in the app's files: asked for once,
-//! only when they scroll into view.
+//! Photos on the watch (nothing kept: its files go when it closes, and at the next start after a swipe closed it):
+//! the phone's gallery as a grid of thumbnails or a list of names (tap the heading to switch), scrolled by a drag or
+//! the crown. A tap opens a picture: the whole of it, a rounded rectangle, or (double tap, again to go back) filling
+//! the round panel. It comes in 8 bands of 16 colours; a tap asks for the sharp version (256 colours), with a
+//! progress ring on the rim. The crown or a sideways drag goes to the next or previous picture; the button goes back.
+//! Thumbnails are kept in the app's files: asked for once, only when they scroll into view.
 
 use crate::proto::{thumb_name, Gallery, MAX};
 use crate::rle::{self, Decoder, Status, HEADER};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, FILE_CHUNK, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
-use cmf_wp2_ui::draw::{disc, rrect};
+use cmf_wp2_ui::draw::{arc, disc, rrect};
 use cmf_wp2_ui::font::{self, fitted};
 use cmf_wp2_ui::geom::chord;
 use cmf_wp2_ui::haptic::{self, Motor};
@@ -35,11 +35,16 @@ const DRAG: i32 = 14;
 const SWIPE: i32 = 70;
 /// Stepping pauses this long before the picture it stopped on is asked for.
 const ASK_MS: u32 = 350;
+/// A second tap within this: a double tap.
+const DOUBLE_MS: u32 = 400;
+/// The progress ring along the rim, from the top.
+const RING: (i32, i32) = (225, 231);
+const TOP: u16 = 49152;
 
 const STORE_CAP: usize = 40 * 1024;
 const THUMB_CAP: usize = 12 * 1024;
 
-/// The open picture, kept for zooming: up to BANDS horizontal bands, each a picture of its own (`I` header, its
+/// The open picture, kept to draw it again: up to BANDS horizontal bands, each a picture of its own (`I` header, its
 /// own 16 colours, tokens), the first at the picture's origin and each next one `rows` picture rows below it.
 struct Store {
     headers: [[u8; HEADER]; BANDS],
@@ -52,27 +57,39 @@ struct Store {
     data: [u8; STORE_CAP],
     len: usize,
     ok: bool,
+    /// the sharp version (256 colours) replaced the bands: `hd` geometry and palette, its tokens in data
+    hd: Option<Hd>,
+    /// the sharp version on its way: (bytes so far, of total, next seq)
+    loading: Option<(usize, usize, u8)>,
+    pal: [u16; 256],
+}
+
+/// The 256-colour picture: w × h at scale, top left at (x0, y0). Its tokens: a byte < 255 is one pixel of that
+/// colour; 255, c, n is n pixels of colour c; no run crosses a row.
+#[derive(Clone, Copy)]
+struct Hd {
+    w: i32,
+    h: i32,
+    scale: u8,
+    x0: i32,
+    y0: i32,
 }
 const BANDS: usize = 8;
 static mut STORE: Store =
-    Store { headers: [[0; HEADER]; BANDS], rows: [0; BANDS], start: [0; BANDS + 1], n: 0, expect: 0, data: [0; STORE_CAP], len: 0, ok: false };
+    Store { headers: [[0; HEADER]; BANDS], rows: [0; BANDS], start: [0; BANDS + 1], n: 0, expect: 0, data: [0; STORE_CAP], len: 0, ok: false, hd: None, loading: None, pal: [0; 256] };
 
 impl Store {
     fn reset(&mut self, expect: usize) {
         (self.n, self.len, self.expect, self.ok) = (0, 0, expect, false);
-    }
-
-    /// The whole picture's width and height in its pixels (all bands).
-    fn size(&self) -> (i32, i32) {
-        if self.n == 0 {
-            return (0, 0);
-        }
-        let u = |h: &[u8; HEADER], i: usize| i32::from(u16::from_le_bytes([h[i], h[i + 1]]));
-        (u(&self.headers[0], 1), self.rows[self.n - 1] + u(&self.headers[self.n - 1], 3))
+        self.hd = None;
+        self.loading = None;
     }
 
     /// The picture's origin and scale as sent (its first band's header).
     fn origin(&self) -> (i32, i32, u8) {
+        if let Some(h) = self.hd {
+            return (h.x0, h.y0, h.scale);
+        }
         let h = &self.headers[0];
         let u = |i: usize| i16::from_le_bytes([h[i], h[i + 1]]) as i32;
         (u(6), u(8), h[5].max(1))
@@ -81,6 +98,29 @@ impl Store {
 static mut THUMB: [u8; THUMB_CAP] = [0; THUMB_CAP];
 static mut CHUNK: [u8; FILE_CHUNK] = [0; FILE_CHUNK];
 static mut GALLERY: Gallery = Gallery::new();
+
+/// Draws the 256-colour picture's tokens at (x0, y0), `scale` px a pixel.
+fn draw_hd(st: &Store, hd: Hd, x0: i32, y0: i32, scale: i32, s: &mut impl rle::Surface) {
+    let (mut x, mut y) = (0, 0);
+    let t = &st.data[..st.len];
+    let mut i = 0;
+    while i < t.len() && y < hd.h {
+        let (c, n) = if t[i] == 255 && i + 2 < t.len() {
+            i += 3;
+            (t[i - 2], i32::from(t[i - 1]))
+        } else {
+            i += 1;
+            (t[i - 1], 1)
+        };
+        let n = n.min(hd.w - x);
+        s.rect(x0 + x * scale, y0 + y * scale, n * scale, scale, st.pal[usize::from(c)]);
+        x += n;
+        if x >= hd.w {
+            x = 0;
+            y += 1;
+        }
+    }
+}
 
 fn store() -> &'static mut Store {
     unsafe { &mut *core::ptr::addr_of_mut!(STORE) }
@@ -92,31 +132,9 @@ fn gallery() -> &'static mut Gallery {
 /// The panel, rows above `top` left alone (the heading stays over scrolled thumbnails).
 struct Clip(&'static Api, i32);
 
-/// A round picture drawn smaller than the panel: only its disc (its corners are filler colour, not black).
-struct Round {
-    api: &'static Api,
-    cx: i32,
-    cy: i32,
-    r: i32,
-}
-impl rle::Surface for Round {
-    fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
-        let dy = (y + h / 2 - self.cy).abs();
-        if dy > self.r {
-            return;
-        }
-        let dx = cmf_wp2_ui::motion::isqrt(self.r * self.r - dy * dy);
-        let (x0, x1) = (x.max(self.cx - dx).max(0), (x + w).min(self.cx + dx).min(466));
-        let (y0, y1) = (y.max(0), (y + h).min(466));
-        if x1 > x0 && y1 > y0 {
-            let mut a = self.api;
-            Surface::rect(&mut a, x0, y0, x1 - x0, y1 - y0, c);
-        }
-    }
-}
 impl rle::Surface for Clip {
     fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
-        // clipped to the panel here: a zoomed picture's runs reach far off it, past what i16 holds
+        // clipped to the panel here
         let (x0, x1) = (x.max(0), (x + w).min(466));
         let (y0, y1) = (y.max(self.1), (y + h).min(466));
         if x1 > x0 && y1 > y0 {
@@ -146,14 +164,18 @@ struct Ui {
     scroll: i32,
     asked: [bool; MAX],
     open: usize,
-    /// the opened picture as drawn now (moved by local zooms until the next comes)
+    /// the opened picture as drawn now
     view: Option<(i32, i32, u8)>,
-    /// where the picture sits unzoomed (as it came)
+    /// where the picture sits (as it came)
     base: (i32, i32, u8),
     /// the last single tap in the viewer, for a double tap
     last_tap: Option<(i32, i32, u32)>,
-    /// zoom mode (double tap): the crown zooms instead of going through the pictures
-    zooming: bool,
+    /// round: the picture fills the circle (cropped); else the whole picture, a rounded rectangle (double tap)
+    round: bool,
+    /// a single tap waits this long for a second one (double tap) before it asks for the sharp version
+    tap_due: Option<u32>,
+    /// how much of the progress ring is drawn (u32::MAX: not yet its track)
+    ring_drawn: u32,
     /// a picture shown by name while the crown or a swipe steps on: asked for once stepping pauses (this time)
     ask_at: Option<u32>,
     dec: Decoder,
@@ -355,12 +377,11 @@ impl Ui {
     fn open_picture(&mut self, i: usize) {
         self.show_name(i);
         self.ask_at = None;
-        let _ = self.api.send(&[b'o', i as u8]);
+        self.ask_open();
     }
 
     /// The viewer with the picture's name while it comes; nothing asked yet.
     fn show_name(&mut self, i: usize) {
-        self.zooming = false;
         self.open = i;
         self.screen = Screen::Viewer;
         self.view = None;
@@ -377,7 +398,31 @@ impl Ui {
             if self.api.now().wrapping_sub(t) as i32 >= 0 {
                 self.ask_at = None;
                 if self.screen == Screen::Viewer {
-                    let _ = self.api.send(&[b'o', self.open as u8]);
+                    self.ask_open();
+                }
+            }
+        }
+    }
+
+    /// `o idx mode` (mode 1: round, 0: the whole picture).
+    fn ask_open(&mut self) {
+        self.tap_due = None;
+        let _ = self.api.send(&[b'o', self.open as u8, self.round as u8]);
+    }
+
+    /// A single tap that no second one followed: the sharp version of what is shown.
+    fn tap_check(&mut self) {
+        if let Some(t) = self.tap_due {
+            if self.api.now().wrapping_sub(t) as i32 >= 0 {
+                self.tap_due = None;
+                let st = store();
+                if self.screen == Screen::Viewer && st.ok && st.hd.is_none() && st.loading.is_none() {
+                    self.motor.play(haptic::TICK);
+                    let _ = self.api.send(b"h");
+                    // the ring's track at once: the tap was taken (the phone prepares the picture first)
+                    let mut a = self.api;
+                    arc(&mut a, C, C, RING.0, RING.1, TOP, 65536, Rgb(0x30, 0x30, 0x30), None, BLACK);
+                    self.api.show();
                 }
             }
         }
@@ -385,7 +430,11 @@ impl Ui {
 
     /// ms to the next due ask, if any.
     fn ask_wait(&self) -> Option<u32> {
-        self.ask_at.map(|t| (t.wrapping_sub(self.api.now()) as i32).max(0) as u32)
+        let left = |t: u32| (t.wrapping_sub(self.api.now()) as i32).max(0) as u32;
+        match (self.ask_at.map(left), self.tap_due.map(left)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn redraw(&self, x0: i32, y0: i32, scale: u8) -> bool {
@@ -395,97 +444,35 @@ impl Ui {
         }
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
-        let w = i32::from(u16::from_le_bytes([st.headers[0][1], st.headers[0][2]]));
-        let r = w * i32::from(scale) / 2;
+        if let Some(hd) = st.hd {
+            draw_hd(st, hd, x0, y0, i32::from(scale), &mut Clip(self.api, 0));
+            self.api.show();
+            return true;
+        }
         for k in 0..st.n {
             let mut d = Decoder::new();
             if !d.start(&st.headers[k], x0, y0 + st.rows[k] * i32::from(scale), scale) {
                 continue;
             }
             let t = &st.data[st.start[k]..st.start[k + 1]];
-            if scale < self.base.2 {
-                d.feed(t, &mut Round { api: self.api, cx: x0 + r, cy: y0 + r, r });
-            } else {
-                d.feed(t, &mut Clip(self.api, 0));
-            }
+            d.feed(t, &mut Clip(self.api, 0));
         }
         self.api.show();
         st.n > 0
     }
 
-    fn zoomed(&self) -> bool {
-        self.zooming
-    }
-
-    /// Double tap: into zoom mode at 2× about (tx, ty); in it, back to the whole picture and out.
-    fn zoom_at(&mut self, tx: i32, ty: i32) {
-        let Some((x0, y0, s)) = self.view else { return };
-        self.motor.play(haptic::TICK);
-        if self.zooming {
-            return self.leave_zoom();
+    /// The sharp version's progress: a ring along the rim, filling clockwise from the top.
+    fn hd_ring(&mut self) {
+        let Some((got, total, _)) = store().loading else { return };
+        let want = (got.min(total) as u64 * 65536 / total.max(1) as u64) as u32;
+        let mut s = self.api;
+        if self.ring_drawn == u32::MAX {
+            arc(&mut s, C, C, RING.0, RING.1, TOP, 65536, Rgb(0x30, 0x30, 0x30), None, BLACK);
+            self.ring_drawn = 0;
         }
-        self.zooming = true;
-        let (x, y, n) = (C - (tx - x0) * 2, C - (ty - y0) * 2, (s * 2).min(8));
-        if self.redraw(x, y, n) {
-            self.view = Some((x, y, n));
-            self.pan(0, 0);
-            self.zoom_label();
-        }
-    }
-
-    fn leave_zoom(&mut self) {
-        self.zooming = false;
-        let (x, y, n) = self.base;
-        if self.redraw(x, y, n) {
-            self.view = Some(self.base);
-        }
-    }
-
-    /// Crown in zoom mode: 2× more or less about the panel's centre, from half the whole picture to 8×.
-    fn zoom_by(&mut self, d: i32) {
-        let Some((x0, y0, s)) = self.view else { return };
-        let min = (self.base.2 / 2).max(1);
-        let next = if d > 0 { (s * 2).min(8) } else { (s / 2).max(min) };
-        if next == s {
-            return;
-        }
-        self.motor.play(haptic::TICK);
-        let (x, y) = if next > s { (C - (C - x0) * 2, C - (C - y0) * 2) } else { (C - (C - x0) / 2, C - (C - y0) / 2) };
-        if self.redraw(x, y, next) {
-            self.view = Some((x, y, next));
-            self.pan(0, 0);
-            self.zoom_label();
-        }
-    }
-
-    /// The zoom level at the top while in zoom mode.
-    fn zoom_label(&self) {
-        let Some((_, _, s)) = self.view else { return };
-        let b = self.base.2.max(1);
-        let t = match (s * 4 / b) as u32 {
-            0..=2 => "\u{bd}\u{d7}",
-            3..=4 => "1\u{d7}",
-            5..=8 => "2\u{d7}",
-            9..=16 => "4\u{d7}",
-            _ => "8\u{d7}",
-        };
-        let mut a = self.api;
-        rrect(&mut a, C - 28, 14, 56, 30, 15, Rgb(0x10, 0x10, 0x10), BLACK);
-        font::centre(&mut a, C, 18, t, W);
-        self.api.show();
-    }
-
-    /// Moves a zoomed picture, never past its edges.
-    fn pan(&mut self, dx: i32, dy: i32) {
-        let Some((x0, y0, s)) = self.view else { return };
-        let st = store();
-        let (w, h) = st.size();
-        let (w, h) = (w * i32::from(s), h * i32::from(s));
-        let x = (x0 + dx).clamp((466 - w).min(0), 0.max(466 - w));
-        let y = (y0 + dy).clamp((466 - h).min(0), 0.max(466 - h));
-        if (x, y) != (x0, y0) && self.redraw(x, y, s) {
-            self.view = Some((x, y, s));
-            self.zoom_label();
+        if want > self.ring_drawn {
+            arc(&mut s, C, C, RING.0, RING.1, TOP.wrapping_add(self.ring_drawn as u16), want - self.ring_drawn, Rgb(0xFF, 0xFF, 0xFF), None, BLACK);
+            self.ring_drawn = want;
         }
     }
 
@@ -573,6 +560,58 @@ impl Ui {
                 }
                 Some(b'?') => {
                     let _ = self.api.send(b"R");
+                }
+                // the sharp version (256 colours) after the bands: `S total:u16 w:u16 h:u16 scale x0:i16 y0:i16`,
+                // `K first count rgb565…`, `Y seq tokens…`, `Z`
+                Some(b'S') if self.screen == Screen::Viewer && m.len() == 12 && store().ok => {
+                    let u = |i: usize| i32::from(i16::from_le_bytes([m[i], m[i + 1]]));
+                    let st = store();
+                    let total = u16::from_le_bytes([m[1], m[2]]) as usize;
+                    if total <= STORE_CAP {
+                        st.hd = Some(Hd { w: u(3), h: u(5), scale: m[7].max(1), x0: u(8), y0: u(10) });
+                        st.loading = Some((0, total, 0));
+                        self.ring_drawn = u32::MAX;
+                        st.ok = false;
+                        st.len = 0;
+                        self.hd_ring();
+                        drew = true;
+                    }
+                }
+                Some(b'K') if m.len() >= 3 && store().loading.is_some() => {
+                    let st = store();
+                    let (first, count) = (usize::from(m[1]), usize::from(m[2]));
+                    for k in 0..count.min((m.len() - 3) / 2) {
+                        if first + k < 256 {
+                            st.pal[first + k] = u16::from_le_bytes([m[3 + 2 * k], m[4 + 2 * k]]);
+                        }
+                    }
+                }
+                Some(b'Y') if m.len() >= 2 && store().loading.is_some() => {
+                    let st = store();
+                    let Some((got, total, seq)) = st.loading else { continue };
+                    if m[1] != seq {
+                        // a chunk lost: the phone sends the sharp version again
+                        st.loading = None;
+                        let _ = self.api.send(&[b'G', seq]);
+                        continue;
+                    }
+                    let t = &m[2..];
+                    if st.len + t.len() <= STORE_CAP {
+                        st.data[st.len..st.len + t.len()].copy_from_slice(t);
+                        st.len += t.len();
+                    }
+                    st.loading = Some((got + t.len(), total, seq.wrapping_add(1)));
+                    self.hd_ring();
+                    drew = true;
+                }
+                Some(b'Z') if store().loading.is_some() => {
+                    let st = store();
+                    st.loading = None;
+                    st.ok = true;
+                    self.base = st.origin();
+                    self.view = Some(self.base);
+                    let (x, y, sc) = self.base;
+                    self.redraw(x, y, sc);
                 }
                 Some(b'P') if self.screen == Screen::Viewer && m.len() == 2 => {
                     // a picture in m[1] bands follows (each `I`/`D`/`E`)
@@ -672,10 +711,6 @@ impl Ui {
     fn event(&mut self, e: Event) -> bool {
         match e.kind {
             BUTTON => {
-                if self.screen == Screen::Viewer && self.zooming {
-                    self.leave_zoom();
-                    return false;
-                }
                 if self.screen == Screen::Viewer {
                     self.screen = Screen::Gallery;
                     self.ask_at = None;
@@ -692,8 +727,7 @@ impl Ui {
                     let step = if self.grid { PITCH / 2 } else { ROW };
                     self.scroll_by(i32::from(e.delta).clamp(-4, 4) * step);
                 }
-                // the crown goes through the pictures; on a zoomed one (double tap) it zooms
-                Screen::Viewer if self.zoomed() => self.zoom_by(i32::from(e.delta)),
+                // the crown goes through the pictures
                 Screen::Viewer => self.step(i32::from(e.delta)),
             },
             TOUCH_DOWN => self.down = Some((i32::from(e.x), i32::from(e.y))),
@@ -709,17 +743,22 @@ impl Ui {
                         }
                     }
                     Screen::Viewer => {
-                        if self.zoomed() && (dx.abs() > DRAG || dy.abs() > DRAG) {
-                            self.pan(dx, dy);
-                        } else if !self.zoomed() && dx.abs() > SWIPE && dx.abs() > dy.abs() {
+                        if dx.abs() > SWIPE && dx.abs() > dy.abs() {
                             self.step(if dx < 0 { 1 } else { -1 });
                         } else if dx.abs() <= DRAG && dy.abs() <= DRAG {
                             let now = self.api.now();
                             match self.last_tap.take() {
-                                Some((px, py, t)) if now.wrapping_sub(t) < 400 && (px - x).abs() < 50 && (py - y).abs() < 50 => {
-                                    self.zoom_at(x, y)
+                                // double tap: round ⇄ the whole picture
+                                Some((px, py, t)) if now.wrapping_sub(t) < DOUBLE_MS && (px - x).abs() < 50 && (py - y).abs() < 50 => {
+                                    self.tap_due = None;
+                                    self.motor.play(haptic::TICK);
+                                    self.round = !self.round;
+                                    self.open_picture(self.open);
                                 }
-                                _ => self.last_tap = Some((x, y, now)),
+                                _ => {
+                                    self.last_tap = Some((x, y, now));
+                                    self.tap_due = Some(now.wrapping_add(DOUBLE_MS));
+                                }
                             }
                         }
                     }
@@ -745,7 +784,9 @@ fn main(api: &'static Api) -> i32 {
         view: None,
         base: (0, 0, 1),
         last_tap: None,
-        zooming: false,
+        round: false,
+        tap_due: None,
+        ring_drawn: u32::MAX,
         ask_at: None,
         dec: Decoder::new(),
         loaded: false,
@@ -754,7 +795,7 @@ fn main(api: &'static Api) -> i32 {
         down: None,
         motor: Motor::new(api),
     };
-    // the button is ours: back from a picture or out of zoom; from the gallery it leaves the app
+    // the button is ours: back from a picture; from the gallery it leaves the app
     api.own_back(true);
     ui.wipe();
     ui.draw_gallery();
@@ -773,6 +814,7 @@ fn main(api: &'static Api) -> i32 {
         };
         ui.motor.update();
         ui.ask_due();
+        ui.tap_check();
         let Some(mut e) = e else { continue };
         if e.kind == CROWN {
             // detents queued while a frame drew: one step
