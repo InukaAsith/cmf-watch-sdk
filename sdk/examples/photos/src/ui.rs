@@ -1,6 +1,7 @@
 //! Photos on the watch: the phone's gallery as a grid of thumbnails or a list of names (tap the heading to switch),
 //! scrolled by a drag or the crown; a tap opens the picture full screen, where the crown or a sideways drag goes to
-//! the next or previous one, a double tap zooms in there (drag or crown then scroll it) and the button goes back. Thumbnails are kept in the app's files: asked for once,
+//! the next or previous one, a double tap zooms in there (then the crown zooms, a drag pans, a double tap leaves)
+//! and the button goes back. Thumbnails are kept in the app's files: asked for once,
 //! only when they scroll into view.
 
 use crate::proto::{thumb_name, Gallery, MAX};
@@ -336,6 +337,29 @@ impl Ui {
         }
     }
 
+    /// Crown on a zoomed picture: 2× more or less about the panel's centre; back at the whole picture it leaves zoom.
+    fn zoom_by(&mut self, d: i32) {
+        let Some((x0, y0, s)) = self.view else { return };
+        let next = if d > 0 { (s * 2).min(8) } else { s / 2 };
+        if next == s {
+            return;
+        }
+        self.motor.play(haptic::TICK);
+        let (x, y, n) = if next <= self.base.2 {
+            self.base
+        } else if next > s {
+            (C - (C - x0) * 2, C - (C - y0) * 2, next)
+        } else {
+            (C - (C - x0) / 2, C - (C - y0) / 2, next)
+        };
+        if self.redraw(x, y, n) {
+            self.view = Some((x, y, n));
+            if n > self.base.2 {
+                self.pan(0, 0);
+            }
+        }
+    }
+
     /// Moves a zoomed picture, never past its edges.
     fn pan(&mut self, dx: i32, dy: i32) {
         let Some((x0, y0, s)) = self.view else { return };
@@ -531,8 +555,8 @@ impl Ui {
                     let step = if self.grid { PITCH / 2 } else { ROW };
                     self.scroll_by(i32::from(e.delta).clamp(-4, 4) * step);
                 }
-                // the crown goes through the pictures; on a zoomed one it scrolls it
-                Screen::Viewer if self.zoomed() => self.pan(0, -i32::from(e.delta).clamp(-4, 4) * 40),
+                // the crown goes through the pictures; on a zoomed one (double tap) it zooms
+                Screen::Viewer if self.zoomed() => self.zoom_by(i32::from(e.delta)),
                 Screen::Viewer => self.step(i32::from(e.delta)),
             },
             TOUCH_DOWN => self.down = Some((i32::from(e.x), i32::from(e.y))),
