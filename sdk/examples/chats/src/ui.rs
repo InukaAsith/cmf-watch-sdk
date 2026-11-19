@@ -223,7 +223,7 @@ struct Ui {
     /// where a touch on a scrolling screen went down
     down: Option<(i32, i32)>,
     /// Gemini: a question sent, no answer yet: when, and whether it was sent again
-    pending: Option<(u32, bool)>,
+    pending: Option<(u32, u8)>,
     /// Gemini: the phone has the question, the answer has not started
     thinking: bool,
     asked: [u8; MSG_MAX],
@@ -265,7 +265,9 @@ fn main(api: &'static Api) -> i32 {
     // answers, at most 20 times
     const RETRY_MS: u32 = 3000;
     /// Gemini: no word of an answer after this long, ask again (once), then say the phone did not answer
-    const ASK_AGAIN_MS: u32 = 9000;
+    const ASK_AGAIN_MS: u32 = 5000;
+    /// times a question is sent again before the watch says the phone did not answer
+    const ASK_TIMES: u8 = 3;
     let mut retry: Option<(u32, u8)> = Some((api.now().wrapping_add(RETRY_MS), 20));
     let mut msg = [0u8; MSG_MAX];
     // an event read ahead while crown detents were merged
@@ -304,10 +306,10 @@ fn main(api: &'static Api) -> i32 {
         }
         if let Some((t, again)) = ui.pending {
             if api.now().wrapping_sub(t) >= ASK_AGAIN_MS {
-                if !again {
-                    // the phone may have been asleep and lost it (iOS relaunching CMFX): once more
+                if again < ASK_TIMES {
+                    // the phone may have been asleep and lost it (iOS relaunching CMFX): again
                     let _ = api.send(&ui.asked[..ui.asked_n]);
-                    ui.pending = Some((api.now(), true));
+                    ui.pending = Some((api.now(), again + 1));
                 } else {
                     ui.pending = None;
                     let mut m = [0u8; 64];
@@ -957,7 +959,7 @@ impl Ui {
         if crate::ASSISTANT {
             self.asked = out;
             self.asked_n = 2 + n;
-            self.pending = Some((self.api.now(), false));
+            self.pending = Some((self.api.now(), 0));
         }
         if !crate::PLAIN {
             model().append_local(&text[..n]);
