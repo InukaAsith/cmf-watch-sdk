@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
+from wp2apps.channel import Channel, NoApp, SimChannel, send_when_open  # noqa: E402
 from pixhost import encode, messages, rgb565  # noqa: E402
 from mapbuild import tokens  # noqa: E402
 
@@ -92,10 +92,7 @@ async def main():
             for i, n in enumerate(names):
                 await ch.send(b"l" + bytes([i]) + n.encode()[:40])
 
-        await send_when_open(ch, b"?")
-        while True:
-            m = (await ch.recv()).data
-            print("watch:", m[:20], flush=True)
+        async def handle(m):
             if m == b"R":
                 await gallery()
             elif m[:1] == b"q" and len(m) == 2 and m[1] < len(pics):
@@ -105,6 +102,15 @@ async def main():
                 hdr, stream = encode(Image.open(pics[m[1]]), scale=2)
                 for msg in messages(hdr, stream):
                     await ch.send(msg)
+
+        await send_when_open(ch, b"?")
+        while True:
+            m = (await ch.recv()).data
+            print("watch:", m[:20], flush=True)
+            try:
+                await handle(m)
+            except NoApp:
+                print("the app was closed", flush=True)
 
 
 if __name__ == "__main__":

@@ -96,6 +96,7 @@ struct Ui {
     dec: Decoder,
     loaded: bool,
     inc: Incoming,
+    save_list: bool,
     down: Option<(i32, i32)>,
     motor: Motor,
 }
@@ -122,25 +123,63 @@ impl Ui {
         }
     }
 
-    fn draw_gallery(&mut self) {
+    /// The gallery, each cell painted over the last frame's (no black frame between: that flickers on the panel);
+    /// only the gaps are cleared. `head`: the heading too (a scroll leaves it).
+    fn draw_gallery_(&mut self, head: bool) {
         let api = self.api;
         let mut s = api;
-        Surface::rect(&mut s, 0, 0, 466, 466, 0);
         let g = gallery();
         if g.n == 0 {
+            Surface::rect(&mut s, 0, HEAD, 466, 466 - HEAD, 0);
             font::centre(&mut s, C, 210, if self.loaded { "No photos yet" } else { "Waiting for phone" }, W);
             font::centre(&mut s, C, 240, "Pick photos in CMFX", GREY);
-        }
-        for i in 0..g.n {
-            let (_, y) = self.cell(i);
-            let h = if self.grid { CELL } else { ROW };
-            if y + h <= HEAD || y >= 466 {
-                continue;
+        } else if self.grid {
+            let mut cl = Clip(api, HEAD);
+            let right = GX0 + (COLS - 1) * PITCH + CELL;
+            for r in 0..self.rows() {
+                let top = HEAD + r * PITCH - self.scroll;
+                if top + PITCH <= HEAD || top >= 466 {
+                    continue;
+                }
+                cl.rect_(0, top, GX0, PITCH, 0);
+                cl.rect_(right, top, 466 - right, PITCH, 0);
+                cl.rect_(GX0, top, right - GX0, 6, 0);
+                cl.rect_(GX0, top + 6 + CELL, right - GX0, PITCH - 6 - CELL, 0);
+                for k in 0..COLS - 1 {
+                    cl.rect_(GX0 + CELL + k * PITCH, top + 6, PITCH - CELL, CELL, 0);
+                }
+                for c in 0..COLS {
+                    let i = (r * COLS + c) as usize;
+                    if i < g.n {
+                        self.draw_item(i);
+                    } else {
+                        cl.rect_(GX0 + c * PITCH, top + 6, CELL, CELL, 0);
+                    }
+                }
             }
-            self.draw_item(i);
+            let end = HEAD + self.rows() * PITCH - self.scroll;
+            cl.rect_(0, end, 466, 466 - end, 0);
+        } else {
+            let mut cl = Clip(api, HEAD);
+            for i in 0..g.n {
+                let (_, y) = self.cell(i);
+                if y + ROW <= HEAD || y >= 466 {
+                    continue;
+                }
+                self.draw_item(i);
+            }
+            cl.rect_(0, HEAD, 466, 4 - self.scroll, 0);
+            let end = HEAD + 4 + g.n as i32 * ROW - self.scroll;
+            cl.rect_(0, end, 466, 466 - end, 0);
         }
-        self.draw_head();
+        if head {
+            self.draw_head();
+        }
         api.show();
+    }
+
+    fn draw_gallery(&mut self) {
+        self.draw_gallery_(true);
     }
 
     fn draw_head(&self) {
@@ -165,10 +204,15 @@ impl Ui {
             }
             let (x0, x1) = chord(y.max(HEAD), (y + ROW - 8).min(466), 24);
             if x1 - x0 < 120 {
+                Clip(self.api, HEAD).rect_(0, y, 466, ROW, 0);
                 return;
             }
             let top = y.max(HEAD);
             let bottom = (y + ROW - 8).min(466);
+            let mut cl = Clip(self.api, HEAD);
+            cl.rect_(0, y, x0, ROW, 0);
+            cl.rect_(x1, y, 466 - x1, ROW, 0);
+            cl.rect_(x0, y + ROW - 8, x1 - x0, 8, 0);
             if bottom > top {
                 Surface::rect(&mut s, x0, top, x1 - x0, bottom - top, rgb565(0x12, 0x12, 0x12));
             }
@@ -187,6 +231,10 @@ impl Ui {
             d.feed(&buf[HEADER..n as usize], &mut Clip(self.api, HEAD));
         } else {
             if y >= HEAD {
+                // the corners black first: a picture drawn here before would show through them
+                for (cx, cy) in [(x, y), (x + CELL - 14, y), (x, y + CELL - 14), (x + CELL - 14, y + CELL - 14)] {
+                    Surface::rect(&mut s, cx, cy, 14, 14, 0);
+                }
                 rrect(&mut s, x, y, CELL, CELL, 14, CARD, BLACK);
             } else {
                 Clip(self.api, HEAD).rect_(x, y, CELL, CELL, rgb565(0x16, 0x16, 0x16));
@@ -219,7 +267,7 @@ impl Ui {
         let next = (self.scroll + d).clamp(0, self.max_scroll());
         if next != self.scroll {
             self.scroll = next;
-            self.draw_gallery();
+            self.draw_gallery_(false);
         }
     }
 
@@ -327,9 +375,19 @@ impl Ui {
                         let _ = self.api.file_delete(thumb_name(i, &mut b));
                     }
                     let _ = self.api.file_write("key", &key.to_le_bytes(), false);
+                    self.save_list = true;
+                    let _ = self.api.file_write("list", &[m.len() as u8], false);
+                    let _ = self.api.file_write("list", m, true);
+                } else {
+                    self.save_list = false;
                 }
                 self.asked = [false; MAX];
                 self.loaded = true;
+            }
+            if m.first() == Some(&b'l') && self.save_list {
+                // kept with the thumbnails: the gallery opens without the phone
+                let _ = self.api.file_write("list", &[m.len() as u8], true);
+                let _ = self.api.file_write("list", m, true);
             }
             if g.apply(m) {
                 list = true;
@@ -418,6 +476,25 @@ impl Ui {
         } else if drew {
             self.api.show();
         }
+    }
+
+    /// The gallery as the phone last sent it (its `L` and `l` messages, each after its length).
+    fn restore(&mut self) {
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(THUMB) };
+        let n = self.api.file_read("list", 0, buf);
+        if n <= 0 {
+            return;
+        }
+        let (mut i, n) = (0usize, n as usize);
+        while i < n {
+            let len = buf[i] as usize;
+            if len == 0 || i + 1 + len > n {
+                break;
+            }
+            gallery().apply(&buf[i + 1..i + 1 + len]);
+            i += 1 + len;
+        }
+        self.loaded = gallery().n > 0;
     }
 
     fn saved_key(&self) -> u32 {
@@ -510,9 +587,11 @@ fn main(api: &'static Api) -> i32 {
         dec: Decoder::new(),
         loaded: false,
         inc: Incoming { name: [0; 20], nlen: 0, len: 0, on: false },
+        save_list: false,
         down: None,
         motor: Motor::new(api),
     };
+    ui.restore();
     ui.draw_gallery();
     let _ = api.send(b"R");
     let mut ahead: Option<Event> = None;
