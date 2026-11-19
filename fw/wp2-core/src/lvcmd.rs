@@ -553,6 +553,38 @@ pub fn sensor(buf: &[u8]) -> Option<(u8, bool)> {
     }
 }
 
+/// FILE record (op 0x16, handle 0), alone in a batch: the app's own files on NAND, for data bigger than the 4 KiB
+/// blob (offline map tiles). `[0x16, 0, 0, 0, cmd, name_len, name…, rest…]`: cmd 1 read, rest = `ptr: u32, cap: u32`
+/// LE (a buffer in the app block) → bytes read; 2 write (replaces), 3 append, rest = the data → bytes written;
+/// 4 delete. Names: 1..=FILE_NAME_MAX of `[a-z0-9_.]`. On an older loader op 0x16 is `Malformed` (-22).
+#[derive(Debug, PartialEq)]
+pub enum FileCmd<'a> {
+    Read { name: &'a [u8], skip: u32 },
+    Write { name: &'a [u8], data: &'a [u8], append: bool },
+    Delete { name: &'a [u8] },
+}
+
+pub const FILE_NAME_MAX: usize = 20;
+
+pub fn file(buf: &[u8]) -> Option<FileCmd<'_>> {
+    let [0x16, 0, 0, 0, cmd, n, rest @ ..] = buf else { return None };
+    let n = usize::from(*n);
+    if n == 0 || n > FILE_NAME_MAX || rest.len() < n {
+        return None;
+    }
+    let (name, rest) = rest.split_at(n);
+    if !name.iter().all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.')) || name[0] == b'.' {
+        return None;
+    }
+    let u = |i: usize| u32::from_le_bytes([rest[i], rest[i + 1], rest[i + 2], rest[i + 3]]);
+    match cmd {
+        1 if rest.len() >= 4 => Some(FileCmd::Read { name, skip: u(0) }),
+        2 | 3 => Some(FileCmd::Write { name, data: rest, append: *cmd == 3 }),
+        4 if rest.is_empty() => Some(FileCmd::Delete { name }),
+        _ => None,
+    }
+}
+
 /// LV_DIR_LEFT / LV_DIR_RIGHT.
 pub const DIR_LEFT: u8 = 1;
 pub const DIR_RIGHT: u8 = 2;
@@ -663,6 +695,26 @@ pub fn media_info(buf: &[u8; 0x82]) -> (&[u8], &[u8]) {
         }
     }
     (field(&buf[..0x40]), field(&buf[0x41..0x81]))
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn file_records() {
+        let mut r = std::vec![0x16, 0, 0, 0, 1, 3, b'a', b'_', b'1'];
+        r.extend(4096u32.to_le_bytes());
+        r.extend([0; 32]);
+        assert_eq!(file(&r), Some(FileCmd::Read { name: b"a_1", skip: 4096 }));
+        assert_eq!(file(&[0x16, 0, 0, 0, 3, 1, b't', 9, 9]), Some(FileCmd::Write { name: b"t", data: &[9, 9], append: true }));
+        assert_eq!(file(&[0x16, 0, 0, 0, 4, 2, b'm', b'p']), Some(FileCmd::Delete { name: b"mp" }));
+        // no paths, no hidden names, no upper case, no empty names
+        assert_eq!(file(&[0x16, 0, 0, 0, 4, 2, b'.', b'.']), None);
+        assert_eq!(file(&[0x16, 0, 0, 0, 4, 3, b'a', b'/', b'b']), None);
+        assert_eq!(file(&[0x16, 0, 0, 0, 4, 1, b'A']), None);
+        assert_eq!(file(&[0x16, 0, 0, 0, 4, 0]), None);
+    }
 }
 
 #[cfg(test)]

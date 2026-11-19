@@ -127,6 +127,9 @@ pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
     if lvcmd::page_query(unsafe { core::slice::from_raw_parts(buf, len) }) {
         return crate::app::ON_PAGE.load(Ordering::Acquire) as i32;
     }
+    if let Some(cmd) = lvcmd::file(unsafe { core::slice::from_raw_parts(buf, len) }) {
+        return crate::svc::file(cmd, (buf as *mut u8, len));
+    }
     if let Some(rec) = lvcmd::widget(unsafe { core::slice::from_raw_parts(buf, len) }) {
         return crate::svc::save_widget(rec);
     }

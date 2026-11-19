@@ -1,0 +1,13 @@
+#![cfg_attr(any(target_os = "none", wp2_sim), no_main, cfg_attr(target_os = "none", no_std))]
+
+#[path = "../../pixview/src/rle.rs"]
+#[allow(dead_code)]
+mod rle;
+#[allow(dead_code)]
+mod pack;
+
+#[cfg(not(any(target_os = "none", wp2_sim)))]
+fn main() {}
+
+#[cfg(any(target_os = "none", wp2_sim))]
+mod ui;

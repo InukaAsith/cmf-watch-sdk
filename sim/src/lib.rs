@@ -813,9 +813,36 @@ extern "C" fn own_back(on: bool) {
     call(|s| s.own_back(on))
 }
 
-/// ABI 1.2: LVGL apps are not simulated (a later plan).
-extern "C" fn lv_submit(_: *const u8, _: usize) -> i32 {
-    -95
+/// ABI 1.2: LVGL apps are not simulated (a later plan); FILE records (offline data) are: runs/sim/<app>/files/.
+extern "C" fn lv_submit(buf: *const u8, len: usize) -> i32 {
+    use wp2_core::lvcmd::{file, FileCmd};
+    let rec = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) };
+    let Some(cmd) = file(unsafe { std::slice::from_raw_parts(buf, len) }) else { return -95 };
+    let dir = sim().lock().cfg.store.join("files");
+    let _ = fs::create_dir_all(&dir);
+    let name = |n: &[u8]| dir.join(String::from_utf8_lossy(n).into_owned());
+    match cmd {
+        FileCmd::Read { name: n, skip } => match fs::read(name(n)) {
+            Ok(d) => {
+                let from = (skip as usize).min(d.len());
+                let k = (d.len() - from).min(rec.len());
+                rec[..k].copy_from_slice(&d[from..from + k]);
+                k as i32
+            }
+            Err(_) => -2,
+        },
+        FileCmd::Write { name: n, data, append } => {
+            let data = data.to_vec();
+            let mut f = match fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(name(n)) {
+                Ok(f) => f,
+                Err(_) => return E_IO,
+            };
+            if f.write_all(&data).is_ok() { data.len() as i32 } else { E_IO }
+        }
+        FileCmd::Delete { name: n } => {
+            if fs::remove_file(name(n)).is_ok() { 0 } else { -2 }
+        }
+    }
 }
 
 static API: Api = Api {
