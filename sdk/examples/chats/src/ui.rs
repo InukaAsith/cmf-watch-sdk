@@ -105,8 +105,11 @@ const BTN_Y: i32 = 424;
 /// Dial letters per crown detent, in 1/100s: a slow turn, a fast spin (ui.crown).
 /// Moved more than this between down and up: a drag, not a tap.
 const DRAG: i32 = 14;
-const DIAL_SLOW: i32 = 25;
-const DIAL_FAST: i32 = 150;
+const DIAL_SLOW: i32 = 17;
+const DIAL_FAST: i32 = 60;
+/// The space bar under the dial's centre letter: top and height.
+const SPACE_Y: i32 = 312;
+const SPACE_H: i32 = 40;
 const BTN_X: [i32; 3] = [C - 72, C, C + 72];
 // --- quick replies
 const Q_TOP: i32 = 100;
@@ -858,13 +861,15 @@ impl Ui {
         }
         let c = if self.dial()[self.sel] == b'>' { RED.rgb565() } else { W };
         cmf_wp2_ui::text::dots_opaque(&mut s, x, y, label, pitch, pitch - 1, c, 0);
-        centre(&mut s, C, 296, "tap  hold: Aa", DIM);
+        centre(&mut s, C, 280, "tap  hold: Aa", DIM);
     }
 
     fn draw_dial(&self) {
         let mut s = Dot(self.api);
         rule(&mut s, 170);
         self.draw_typed(110, 2, 14);
+        rrect(&mut s, C - 64, SPACE_Y, 128, SPACE_H, SPACE_H / 2, Rgb(0x2a, 0x2a, 0x2a), BLACK);
+        centre(&mut s, C, SPACE_Y + 9, "space", W);
         for i in 0..self.dial().len() {
             self.draw_dial_cell(i);
         }
@@ -1089,7 +1094,12 @@ impl Ui {
                     self.press = Some((i, self.api.now(), false));
                     self.draw_dial_centre();
                     self.api.show();
-                } else if (176..326).contains(&y) {
+                } else if (SPACE_Y - 6..SPACE_Y + SPACE_H + 6).contains(&y) && (x - C).abs() < 80 {
+                    // the space bar: types a space, the selection stays
+                    if let Some(i) = self.dial().iter().position(|&c| c == b'_') {
+                        self.press = Some((i, self.api.now(), false));
+                    }
+                } else if (176..SPACE_Y - 6).contains(&y) {
                     self.press = Some((self.sel, self.api.now(), false));
                 }
             }
