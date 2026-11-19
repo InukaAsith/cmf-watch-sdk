@@ -124,6 +124,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "photos"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "pixview"
 version = "0.1.0"
 dependencies = [

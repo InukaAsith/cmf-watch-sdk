@@ -6,7 +6,7 @@
 #   gemini    demo answers (GEMINI_API_KEY=… for real ones)
 #   whatsapp  demo chats
 #   nav       a walk in London, driven along the route
-#   photos    a test picture
+#   photos    a gallery of 14 test pictures (grid and list, tap to open)
 #   maps      saves the small test pack (runs/mappack/small), then exits
 #
 # The watch: WP2_ADDR (its CoreBluetooth id or MAC), never committed.
@@ -19,7 +19,7 @@ case "${1:-}" in
   gemini)   py hosts/aihost.py --address "$WP2_ADDR" ;;
   whatsapp) py hosts/wahost.py --address "$WP2_ADDR" ;;
   nav)      py hosts/navhost.py --address "$WP2_ADDR" --speed 6 --tick 2 ;;
-  photos)
+  photos-old)
     mkdir -p runs/mock
     [ -f runs/mock/photo.png ] || py - <<'P'
 from PIL import Image, ImageDraw
@@ -32,6 +32,7 @@ d.rectangle((60, 380, 406, 400), fill=(255, 255, 255))
 im.save("runs/mock/photo.png")
 P
     py hosts/pixhost.py --address "$WP2_ADDR" --rate 8000 photo runs/mock/photo.png ;;
+  photos)   py hosts/photohost.py --address "$WP2_ADDR" ;;
   maps)     py hosts/mapbuild.py send runs/mappack/small --address "$WP2_ADDR" ;;
   *) sed -n 2,13p "$0"; exit 2 ;;
 esac
