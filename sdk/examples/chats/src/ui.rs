@@ -222,6 +222,12 @@ struct Ui {
     crown_gap: i32,
     /// where a touch on a scrolling screen went down
     down: Option<(i32, i32)>,
+    /// Gemini: a question sent, no answer yet: when, and whether it was sent again
+    pending: Option<(u32, bool)>,
+    /// Gemini: the phone has the question, the answer has not started
+    thinking: bool,
+    asked: [u8; MSG_MAX],
+    asked_n: usize,
     /// the dial letter's dot pitch as last drawn
     dial_pitch: core::cell::Cell<i32>,
 }
@@ -247,17 +253,19 @@ fn main(api: &'static Api) -> i32 {
         crown_at: 0,
         crown_gap: 400,
         down: None,
+        pending: None,
+        thinking: false,
+        asked: [0; MSG_MAX],
+        asked_n: 0,
         dial_pitch: core::cell::Cell::new(0),
     };
-    if crate::ASSISTANT {
-        model().open = Some(1);
-        ui.screen = Screen::Chat;
-    }
     ui.draw();
     let _ = api.send(b"R");
     // the phone may still be starting (iOS relaunching CMFX loses the first ask): ask again every 3 s until it
     // answers, at most 20 times
     const RETRY_MS: u32 = 3000;
+    /// Gemini: no word of an answer after this long, ask again (once), then say the phone did not answer
+    const ASK_AGAIN_MS: u32 = 9000;
     let mut retry: Option<(u32, u8)> = Some((api.now().wrapping_add(RETRY_MS), 20));
     let mut msg = [0u8; MSG_MAX];
     // an event read ahead while crown detents were merged
@@ -270,7 +278,8 @@ fn main(api: &'static Api) -> i32 {
             _ => None,
         };
         let again = retry.map(|(t, _)| t.wrapping_sub(now).min(RETRY_MS));
-        let wait = [ui.motor.wait(), flash, hold, again].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let asked = ui.pending.map(|(t, _)| t.wrapping_add(ASK_AGAIN_MS).wrapping_sub(now).min(ASK_AGAIN_MS));
+        let wait = [ui.motor.wait(), flash, hold, again, asked].into_iter().flatten().min().unwrap_or(u32::MAX);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
             None => api.event(wait),
@@ -291,6 +300,27 @@ fn main(api: &'static Api) -> i32 {
             if api.now().wrapping_sub(t) as i32 >= 0 {
                 let _ = api.send(b"R");
                 retry = (left > 1).then(|| (api.now().wrapping_add(RETRY_MS), left - 1));
+            }
+        }
+        if let Some((t, again)) = ui.pending {
+            if api.now().wrapping_sub(t) >= ASK_AGAIN_MS {
+                if !again {
+                    // the phone may have been asleep and lost it (iOS relaunching CMFX): once more
+                    let _ = api.send(&ui.asked[..ui.asked_n]);
+                    ui.pending = Some((api.now(), true));
+                } else {
+                    ui.pending = None;
+                    let mut m = [0u8; 64];
+                    let t = b"No answer from the phone. Is CMFX open?";
+                    m[..3].copy_from_slice(&[b'A', 0, 0]);
+                    let n = t.len().min(61);
+                    m[3..3 + n].copy_from_slice(&t[..n]);
+                    model().apply(&m[..3 + n]);
+                    ui.motor.play(haptic::DOUBLE);
+                    if ui.screen == Screen::Chat {
+                        ui.draw();
+                    }
+                }
             }
         }
         if let Some((k, t)) = ui.flash {
@@ -323,7 +353,6 @@ fn main(api: &'static Api) -> i32 {
                 ui.press = None;
                 match ui.screen {
                     Screen::List => return 0,
-                    Screen::Chat if crate::ASSISTANT => return 0,
                     Screen::Chat => ui.go(Screen::List),
                     Screen::Quick | Screen::Qwerty | Screen::Dial => ui.go(Screen::Chat),
                 }
@@ -353,8 +382,15 @@ fn main(api: &'static Api) -> i32 {
             TOUCH_DOWN => ui.tap(e.x as i32, e.y as i32),
             MESSAGE => {
                 retry = None;
+                let waiting = ui.pending.is_some() || ui.thinking;
+                // any message: the phone is there (no asking again); Gemini's own words: the answer has started
+                ui.pending = None;
+                let mut answer = false;
                 let (mut list, mut chat) = (false, false);
                 while let Some(m) = api.recv(&mut msg) {
+                    if m.first() == Some(&b'T') || (m.first() == Some(&b'A') && m.get(1) == Some(&0)) {
+                        answer = true;
+                    }
                     match model().apply(m) {
                         Effect::List => list = true,
                         Effect::Chat => chat = true,
@@ -362,7 +398,13 @@ fn main(api: &'static Api) -> i32 {
                         Effect::None => {}
                     }
                 }
-                if (list && ui.screen == Screen::List) || (chat && ui.screen == Screen::Chat) {
+                ui.thinking = waiting && !answer;
+                if waiting && answer {
+                    // the answer is coming: the header says Gemini again
+                    if ui.screen == Screen::Chat {
+                        ui.draw();
+                    }
+                } else if (list && ui.screen == Screen::List) || (chat && ui.screen == Screen::Chat) {
                     ui.refresh();
                 }
             }
@@ -521,7 +563,7 @@ impl Ui {
         let m = model();
         Surface::rect(&mut s, 0, 0, 466, FEED_TOP, 0);
         let name = if crate::ASSISTANT {
-            "Gemini"
+            if self.pending.is_some() || self.thinking { "Thinking..." } else { "Gemini" }
         } else {
             m.open.and_then(|id| m.chat(id)).map(|c| c.name.as_str()).unwrap_or(m.title.as_str())
         };
@@ -912,6 +954,11 @@ impl Ui {
         out[1] = id;
         out[2..2 + n].copy_from_slice(&text[..n]);
         let _ = self.api.send(&out[..2 + n]);
+        if crate::ASSISTANT {
+            self.asked = out;
+            self.asked_n = 2 + n;
+            self.pending = Some((self.api.now(), false));
+        }
         if !crate::PLAIN {
             model().append_local(&text[..n]);
         }
@@ -1043,9 +1090,7 @@ impl Ui {
             }
             Screen::Chat => {
                 if y < FEED_TOP {
-                    if !crate::ASSISTANT {
-                        self.go(Screen::List);
-                    }
+                    self.go(Screen::List);
                     return;
                 }
                 if y < FEED_END {
