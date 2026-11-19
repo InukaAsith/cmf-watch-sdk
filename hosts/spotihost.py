@@ -16,7 +16,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from mapbuild import tokens  # noqa: E402
 from pixhost import rgb565  # noqa: E402
-from wp2apps.channel import Channel, SimChannel  # noqa: E402
+from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
 
 ART, MSG_MAX = 152, 128
 PLAYING, PREMIUM, LIKED, SHUFFLE, IDLE = 1, 2, 4, 8, 16
@@ -304,7 +304,7 @@ async def main():
         async def note(text):
             await ch.send(b"X" + text.encode()[:60])
 
-        await ch.send(b"?")  # the app answers R: its hello may have gone out before this host connected
+        await send_when_open(ch, b"?")  # the app answers R: its hello may have gone out before this host connected
         while True:
             m = (await ch.recv()).data
             print("watch:", m[:40], flush=True)

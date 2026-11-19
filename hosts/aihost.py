@@ -8,7 +8,7 @@ Watch protocol: examples/chats/src/model.rs (`A` a new bubble, `T` more text for
 import argparse, asyncio, json, os, pathlib, re, sys, unicodedata, urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
-from wp2apps.channel import SimChannel  # noqa: E402
+from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
 
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 SYSTEM = ("You answer on a small round smartwatch screen. Reply in plain text, at most 60 words, no markdown, "
@@ -88,17 +88,19 @@ async def answer(ch, history, prompt):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sim", type=int, required=True)
+    ap.add_argument("--sim", type=int)
+    ap.add_argument("--address", help="a real watch (K channel)")
     a = ap.parse_args()
     print("Gemini" if os.environ.get("GEMINI_API_KEY") else "demo mode (no GEMINI_API_KEY)", flush=True)
     history = []
-    async with SimChannel(a.sim) as ch:
+    async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
 
         async def hello():
             await ch.send(b"H\x01Gemini")
             for i, p in enumerate(PROMPTS):
                 await ch.send(b"Q" + bytes([i]) + p.encode())
 
+        await send_when_open(ch, b"?")  # waits till the app is open
         await hello()
         while True:
             m = (await ch.recv()).data
