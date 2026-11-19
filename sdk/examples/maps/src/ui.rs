@@ -8,7 +8,8 @@ use cmf_wp2_app::{Api, Event, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TO
 use cmf_wp2_app::FILE_CHUNK;
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::draw::{disc, rrect};
-use cmf_wp2_ui::text::{centre, dots_centre, int};
+use cmf_wp2_ui::font;
+use cmf_wp2_ui::text::{dots_centre, int};
 use cmf_wp2_ui::{C, Surface};
 
 cmf_wp2_app::entry!(main);
@@ -31,6 +32,8 @@ static mut CHUNK: [u8; FILE_CHUNK] = [0; FILE_CHUNK];
 /// Moved more than this between down and up: a drag, not a tap.
 const DRAG: i32 = 14;
 const HOLD_MS: u32 = 600;
+/// Held this long: "Delete map?".
+const DELETE_MS: u32 = 2000;
 
 struct Screen(&'static Api);
 impl rle::Surface for Screen {
@@ -52,6 +55,12 @@ struct Ui {
     api: &'static Api,
     have: bool,
     level: usize,
+    /// past the most detailed level: its tiles drawn 2× or 4× (labels big enough to read)
+    mag: u32,
+    /// the how-to line until the first touch
+    hint: bool,
+    /// "Delete map?" is open (a 2 s hold)
+    confirm: bool,
     /// view centre, z20 world pixels
     cx: u32,
     cy: u32,
@@ -86,6 +95,26 @@ impl Ui {
         }
     }
 
+    /// Deletes the saved map: every tile the index names, then the index (no listing on this filesystem).
+    fn delete_pack(&mut self) {
+        if self.have {
+            let p = pack();
+            let mut name = [0u8; 20];
+            for li in 0..p.n {
+                let l = p.levels[li];
+                for r in 0..u32::from(l.h) {
+                    for c in 0..u32::from(l.w) {
+                        let n = tile_name(li, c, r, &mut name);
+                        let _ = self.api.file_delete(core::str::from_utf8(&name[..n]).unwrap_or(""));
+                    }
+                }
+            }
+        }
+        let _ = self.api.file_delete("idx");
+        self.have = false;
+        self.mag = 1;
+    }
+
     /// Keeps the centre inside the current level's tiles.
     fn clamp(&mut self) {
         let l = pack().levels[self.level];
@@ -99,6 +128,9 @@ impl Ui {
     }
 
     fn draw(&mut self) {
+        if self.confirm {
+            return self.draw_confirm();
+        }
         if let Some((done, total)) = self.loading {
             return self.draw_loading(done, total);
         }
@@ -109,9 +141,10 @@ impl Ui {
         let p = pack();
         let l = p.levels[self.level];
         let sh = self.shift();
-        let (vx, vy) = (i64::from(self.cx >> sh), i64::from(self.cy >> sh));
+        let mag = i64::from(self.mag);
+        let (vx, vy) = (i64::from(self.cx >> sh) * mag, i64::from(self.cy >> sh) * mag);
         let (left, top) = (vx - i64::from(C), vy - i64::from(C));
-        let t = i64::from(TILE);
+        let t = i64::from(TILE) * mag;
         let buf = unsafe { &mut *core::ptr::addr_of_mut!(TILE_BUF) };
         let mut name = [0u8; 20];
         let mut screen = Screen(api);
@@ -126,14 +159,18 @@ impl Ui {
                     let got = api.file_read(name, 0, buf);
                     if got > 1 {
                         let mut d = Decoder::new();
-                        if d.start(&p.header(buf[0]), sx, sy, buf[0]) {
+                        if d.start(&p.header(buf[0]), sx, sy, buf[0] * self.mag as u8) {
                             d.feed(&buf[1..got as usize], &mut screen);
                             drawn = true;
                         }
                     }
                 }
                 if !drawn {
-                    self.empty_tile(sx, sy);
+                    for ey in 0..self.mag as i32 {
+                        for ex in 0..self.mag as i32 {
+                            self.empty_tile(sx + ex * TILE, sy + ey * TILE);
+                        }
+                    }
                 }
             }
         }
@@ -157,7 +194,8 @@ impl Ui {
         let sh = self.shift();
         // you
         if let Some((px, py)) = self.pos {
-            let (x, y) = ((i64::from(px >> sh) - left) as i32, (i64::from(py >> sh) - top) as i32);
+            let mag = i64::from(self.mag);
+            let (x, y) = ((i64::from(px >> sh) * mag - left) as i32, (i64::from(py >> sh) * mag - top) as i32);
             let (dx, dy) = (x - C, y - C);
             if dx * dx + dy * dy < 205 * 205 {
                 disc(&mut s, x, y, 12, Rgb(0xFF, 0xFF, 0xFF), BLACK);
@@ -172,23 +210,28 @@ impl Ui {
             Surface::rect(&mut s, C - 8, C - 1, 16, 2, W);
             Surface::rect(&mut s, C - 1, C - 8, 2, 16, W);
         }
-        // zoom ladder on the right rim, zoomed in at the top
-        let n = pack().n as i32;
+        // zoom ladder on the right rim, zoomed in at the top: the pack's levels, then the two magnified steps
+        let n = pack().n as i32 + 2;
+        let at = self.level as i32 + if self.mag == 4 { 2 } else if self.mag == 2 { 1 } else { 0 };
         let y0 = C - (n - 1) * 9;
         rrect(&mut s, 426, y0 - 12, 20, (n - 1) * 18 + 24, 10, PILL, BLACK);
         for i in 0..n {
             let y = y0 + (n - 1 - i) * 18;
-            if i as usize == self.level {
-                disc(&mut s, 436, y, 5, RED, PILL);
+            if i == at {
+                disc(&mut s, 436, y, 5, Rgb(0xFF, 0xFF, 0xFF), PILL);
             } else {
-                Surface::rect(&mut s, 435, y - 1, 3, 3, GREY);
+                Surface::rect(&mut s, 435, y - 1, 3, 3, if i >= pack().n as i32 { DIM } else { GREY });
             }
+        }
+        if self.hint {
+            rrect(&mut s, C - 118, 40, 236, 34, 17, PILL, BLACK);
+            font::centre(&mut s, C, 46, "tap: move  hold: you", W);
         }
         self.scale_bar();
     }
 
     fn scale_bar(&self) {
-        let mm = pack().levels[self.level].mm_per_px.max(1);
+        let mm = (pack().levels[self.level].mm_per_px / self.mag).max(1);
         // the longest round distance that fits 130 px
         let mut best = 0;
         for m in [5u32, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000] {
@@ -208,22 +251,34 @@ impl Ui {
         label[k..k + unit.len()].copy_from_slice(unit.as_bytes());
         let label = core::str::from_utf8(&label[..k + unit.len()]).unwrap_or("");
         let mut s = self.api;
-        let w = len.max(label.len() as i32 * 8) + 28;
-        rrect(&mut s, C - w / 2, 392, w, 40, 14, PILL, BLACK);
+        let w = len.max(font::width(label)) + 28;
+        rrect(&mut s, C - w / 2, 386, w, 46, 14, PILL, BLACK);
         let x = C - len / 2;
         Surface::rect(&mut s, x, 422, len, 3, W);
         Surface::rect(&mut s, x, 416, 2, 9, W);
         Surface::rect(&mut s, x + len - 2, 416, 2, 9, W);
-        centre(&mut s, C, 398, label, W);
+        font::centre(&mut s, C, 390, label, W);
+    }
+
+    fn draw_confirm(&self) {
+        let mut s = self.api;
+        Surface::rect(&mut s, 0, 0, 466, 466, 0);
+        font::centre(&mut s, C, 150, "Delete this map?", W);
+        font::centre(&mut s, C, 182, "It is saved on the watch", GREY);
+        rrect(&mut s, C - 150, 240, 140, 64, 32, RED, BLACK);
+        font::centre(&mut s, C - 80, 260, "Delete", W);
+        rrect(&mut s, C + 10, 240, 140, 64, 32, PILL, BLACK);
+        font::centre(&mut s, C + 80, 260, "Keep", W);
+        self.api.show();
     }
 
     fn draw_empty(&self) {
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
         heading(&mut s, 150);
-        centre(&mut s, C, 222, "No offline map", W);
-        centre(&mut s, C, 254, "Pick an area in", GREY);
-        centre(&mut s, C, 276, "the phone app", GREY);
+        font::centre(&mut s, C, 218, "No offline map", W);
+        font::centre(&mut s, C, 252, "Pick an area in", GREY);
+        font::centre(&mut s, C, 276, "CMFX on the iPhone", GREY);
         self.api.show();
     }
 
@@ -231,7 +286,7 @@ impl Ui {
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
         heading(&mut s, 150);
-        centre(&mut s, C, 222, "Saving map", W);
+        font::centre(&mut s, C, 222, "Saving map", W);
         let total = i32::from(total.max(1));
         let w = 260 * i32::from(done).min(total) / total;
         rrect(&mut s, C - 132, 262, 264, 12, 6, Rgb(0x26, 0x26, 0x26), BLACK);
@@ -246,15 +301,28 @@ impl Ui {
             line[n..n + part.len()].copy_from_slice(part.as_bytes());
             n += part.len();
         }
-        centre(&mut s, C, 292, core::str::from_utf8(&line[..n]).unwrap_or(""), GREY);
+        font::centre(&mut s, C, 288, core::str::from_utf8(&line[..n]).unwrap_or(""), GREY);
         self.api.show();
     }
 
     fn zoom(&mut self, up: bool) -> bool {
-        let next = if up { (self.level + 1).min(pack().n - 1) } else { self.level.saturating_sub(1) };
-        let moved = next != self.level;
-        self.level = next;
-        moved
+        let top = pack().n - 1;
+        if up {
+            if self.level < top {
+                self.level += 1;
+            } else if self.mag < 4 {
+                self.mag *= 2;
+            } else {
+                return false;
+            }
+        } else if self.mag > 1 {
+            self.mag /= 2;
+        } else if self.level > 0 {
+            self.level -= 1;
+        } else {
+            return false;
+        }
+        true
     }
 
     fn home(&mut self) {
@@ -273,20 +341,35 @@ impl Ui {
                 self.down = Some((i32::from(e.x), i32::from(e.y), self.api.now()));
                 false
             }
+            TOUCH_UP if self.confirm => {
+                self.down = None;
+                let (x, y) = (i32::from(e.x), i32::from(e.y));
+                if (230..320).contains(&y) && x < C {
+                    self.delete_pack();
+                }
+                self.confirm = false;
+                true
+            }
             TOUCH_UP if self.have => {
                 let Some((x, y, t)) = self.down.take() else { return false };
+                if self.api.now().wrapping_sub(t) >= DELETE_MS && (i32::from(e.x) - x).abs() + (i32::from(e.y) - y).abs() <= DRAG {
+                    self.confirm = true;
+                    return true;
+                }
                 let (dx, dy) = (i32::from(e.x) - x, i32::from(e.y) - y);
                 let sh = self.shift();
+                let mag = i64::from(self.mag);
+                self.hint = false;
                 if dx.abs() + dy.abs() > DRAG {
                     // the map follows the finger
-                    self.cx = (i64::from(self.cx) - (i64::from(dx) << sh)).max(0) as u32;
-                    self.cy = (i64::from(self.cy) - (i64::from(dy) << sh)).max(0) as u32;
+                    self.cx = (i64::from(self.cx) - (i64::from(dx) << sh) / mag).max(0) as u32;
+                    self.cy = (i64::from(self.cy) - (i64::from(dy) << sh) / mag).max(0) as u32;
                     self.follow = false;
                 } else if self.api.now().wrapping_sub(t) >= HOLD_MS {
                     self.home();
                 } else {
-                    self.cx = (i64::from(self.cx) + (i64::from(x - C) << sh)).max(0) as u32;
-                    self.cy = (i64::from(self.cy) + (i64::from(y - C) << sh)).max(0) as u32;
+                    self.cx = (i64::from(self.cx) + (i64::from(x - C) << sh) / mag).max(0) as u32;
+                    self.cy = (i64::from(self.cy) + (i64::from(y - C) << sh) / mag).max(0) as u32;
                     self.follow = false;
                 }
                 self.clamp();
@@ -303,6 +386,19 @@ impl Ui {
         while let Some(m) = self.api.recv(&mut buf) {
             let u = |i: usize| u32::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]]);
             match m.first() {
+                Some(b'W') => {
+                    self.flush();
+                    self.inc.on = false;
+                    self.delete_pack();
+                    let _ = self.api.send(b"w");
+                    dirty = true;
+                }
+                Some(b'P') if m.len() == 5 && self.loading.is_none() => {
+                    // a new map: the old one goes first (its tiles may not all be replaced)
+                    self.delete_pack();
+                    self.loading = Some((u16::from_le_bytes([m[1], m[2]]), u16::from_le_bytes([m[3], m[4]])));
+                    dirty = true;
+                }
                 Some(b'F') if (2..=21).contains(&m.len()) => {
                     self.flush();
                     let n = m.len() - 1;
@@ -384,6 +480,9 @@ fn main(api: &'static Api) -> i32 {
         api,
         have: false,
         level: 0,
+        mag: 1,
+        hint: true,
+        confirm: false,
         cx: 0,
         cy: 0,
         pos: None,

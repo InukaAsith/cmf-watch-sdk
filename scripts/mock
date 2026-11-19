@@ -7,7 +7,8 @@
 #   whatsapp  demo chats
 #   nav       a walk in London, driven along the route
 #   photos    a gallery of 14 test pictures (grid and list, tap to open)
-#   maps      saves the small test pack (runs/mappack/small), then exits
+#   maps      saves a test map (runs/mappack/small, or the pack given), then exits
+#   maps-wipe deletes the map saved on the watch
 #
 # The watch: WP2_ADDR (its CoreBluetooth id or MAC), never committed.
 set -euo pipefail
@@ -33,6 +34,7 @@ im.save("runs/mock/photo.png")
 P
     py hosts/pixhost.py --address "$WP2_ADDR" --rate 8000 photo runs/mock/photo.png ;;
   photos)   py hosts/photohost.py --address "$WP2_ADDR" ;;
-  maps)     py hosts/mapbuild.py send runs/mappack/small --address "$WP2_ADDR" ;;
+  maps)     py hosts/mapbuild.py send "${2:-runs/mappack/small}" --address "$WP2_ADDR" ;;
+  maps-wipe) py hosts/mapbuild.py wipe --address "$WP2_ADDR" ;;
   *) sed -n 2,13p "$0"; exit 2 ;;
 esac

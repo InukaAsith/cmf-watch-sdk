@@ -16,7 +16,7 @@ from PIL import Image, ImageFilter
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from pixhost import rgb565, tile, world  # noqa: E402
-from wp2apps.channel import Channel, SimChannel  # noqa: E402
+from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
 
 TILE, CAP, WORLD_Z, MSG_MAX = 256, 32 * 1024, 20, 128
 
@@ -51,13 +51,22 @@ REF = Image.new("P", (1, 1))
 REF.putpalette([v for src, _ in STYLE for v in src] + [v for src, _ in ALIAS for v in src])
 TO = list(range(16)) + [i for _, i in ALIAS]
 PALETTE = [dst for _, dst in STYLE]
+# the light style: OSM's own colours (dark labels on light ground: what the labels were drawn for), text darker
+LIGHT = [src for src, _ in STYLE]
+LIGHT[12] = (0x1A, 0x1A, 0x1A)
+LIGHT[13] = (0x55, 0x55, 0x55)
+TEXT = (12, 13)
 
 
 def styled(img):
     """OSM tile → palette indices in STYLE order, speckle merged (anti-aliasing would cost a run per pixel)."""
     q = img.convert("RGB").quantize(palette=REF, dither=Image.Dither.NONE)
     q = q.point(TO + [0] * (256 - len(TO)))
-    return q.filter(ImageFilter.ModeFilter(3))
+    f = q.filter(ImageFilter.ModeFilter(3))
+    # label strokes are one or two pixels wide: the speckle filter would break them up, so they are kept
+    keep = q.point([255 if v in TEXT else 0 for v in range(256)]).convert("L")
+    f.paste(q, mask=keep)
+    return f
 
 
 def tokens(px, w, h):
@@ -111,7 +120,7 @@ def build(a):
                 if not cached:
                     time.sleep(0.3)  # gentle on the OSM servers
         print(f"  z{z}: {w}x{h}", flush=True)
-    pal = [v for c in PALETTE for v in c]
+    pal = [v for c in (LIGHT if a.style == "light" else PALETTE) for v in c]
     sizes = []
     for (li, c, r), im in imgs.items():
         data = encode(im)
@@ -154,9 +163,21 @@ async def send(a):
     ch_ = SimChannel(a.sim) if a.sim else Channel(address=a.address, hci_port=a.hci_port, channel_key=True)
     t0 = time.monotonic()
     async with ch_ as ch:
+        await send_when_open(ch, b"?")  # waits till Offline Maps is open
+        print("sending", flush=True)
         n, total = await send_pack(ch, a.pack)
     dt = time.monotonic() - t0
     print(f"sent {n} files, {total // 1024} KB in {dt:.1f} s ({total / dt / 1024:.1f} KB/s)")
+
+
+async def wipe(a):
+    """Deletes the map saved on the watch (Offline Maps must be open)."""
+    ch_ = SimChannel(a.sim) if a.sim else Channel(address=a.address, hci_port=a.hci_port, channel_key=True)
+    async with ch_ as ch:
+        await send_when_open(ch, b"W")
+        while (await ch.recv(timeout=30)).data != b"w":
+            pass
+    print("map deleted on the watch")
 
 
 def main():
@@ -169,14 +190,22 @@ def main():
     b.add_argument("--min-zoom", type=int, default=13)
     b.add_argument("--max-zoom", type=int, default=17)
     b.add_argument("--max-tiles", type=int, default=300)
+    b.add_argument("--style", choices=["light", "dark"], default="light", help="light: OSM colours (readable labels); dark: Nothing dark")
     b.add_argument("--out", required=True)
     s = sub.add_parser("send")
     s.add_argument("pack")
     s.add_argument("--sim", type=int)
     s.add_argument("--address")
     s.add_argument("--hci-port", type=int)
+    w = sub.add_parser("wipe")
+    w.add_argument("--sim", type=int)
+    w.add_argument("--address")
+    w.add_argument("--hci-port", type=int)
     a = p.parse_args()
-    build(a) if a.cmd == "build" else asyncio.run(send(a))
+    if a.cmd == "build":
+        build(a)
+    else:
+        asyncio.run(send(a) if a.cmd == "send" else wipe(a))
 
 
 if __name__ == "__main__":

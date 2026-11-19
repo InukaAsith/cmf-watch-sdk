@@ -1,4 +1,4 @@
-//! Photos on the watch: the phone's gallery as a grid of thumbnails or a list of names (tap the heading to switch),
+//! Photos on the watch (nothing kept: its files go when it closes, and at the next start after a swipe closed it): the phone's gallery as a grid of thumbnails or a list of names (tap the heading to switch),
 //! scrolled by a drag or the crown; a tap opens the picture full screen, where the crown or a sideways drag goes to
 //! the next or previous one, a double tap zooms in there (zoom mode: the crown zooms from ½× to 8×, a drag pans, a double tap or the button
 //! leaves)
@@ -555,23 +555,16 @@ impl Ui {
         }
     }
 
-    /// The gallery as the phone last sent it (its `L` and `l` messages, each after its length).
-    fn restore(&mut self) {
-        let buf = unsafe { &mut *core::ptr::addr_of_mut!(THUMB) };
-        let n = self.api.file_read("list", 0, buf);
-        if n <= 0 {
-            return;
+    /// Every file this app keeps (thumbnails, the list, the key): Photos leaves nothing on the watch. At the start
+    /// too, for a session the system ended (a swipe closes the app without a word to it).
+    fn wipe(&self) {
+        for i in 0..MAX {
+            let mut b = [0u8; 6];
+            let _ = self.api.file_delete(thumb_name(i, &mut b));
         }
-        let (mut i, n) = (0usize, n as usize);
-        while i < n {
-            let len = buf[i] as usize;
-            if len == 0 || i + 1 + len > n {
-                break;
-            }
-            gallery().apply(&buf[i + 1..i + 1 + len]);
-            i += 1 + len;
+        for f in ["key", "list"] {
+            let _ = self.api.file_delete(f);
         }
-        self.loaded = gallery().n > 0;
     }
 
     fn saved_key(&self) -> u32 {
@@ -605,6 +598,7 @@ impl Ui {
                     self.draw_gallery();
                     return false;
                 }
+                self.wipe();
                 return true;
             }
             CROWN => match self.screen {
@@ -675,7 +669,7 @@ fn main(api: &'static Api) -> i32 {
     };
     // the button is ours: back from a picture or out of zoom; from the gallery it leaves the app
     api.own_back(true);
-    ui.restore();
+    ui.wipe();
     ui.draw_gallery();
     let _ = api.send(b"R");
     let mut ahead: Option<Event> = None;
@@ -703,7 +697,10 @@ fn main(api: &'static Api) -> i32 {
                 loop {
                     match api.event(u32::MAX) {
                         Some(e) if e.kind == RESUME => break,
-                        Some(e) if e.kind == BUTTON => return 0,
+                        Some(e) if e.kind == BUTTON => {
+                            ui.wipe();
+                            return 0;
+                        }
                         _ => {}
                     }
                 }
