@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from wp2apps.channel import Channel, NoApp, SimChannel, send_when_open  # noqa: E402
-from pixhost import encode, messages, rgb565  # noqa: E402
+from pixhost import messages, rgb565  # noqa: E402
 from mapbuild import tokens  # noqa: E402
 
 THUMB = 104
@@ -71,6 +71,35 @@ def file_messages(name: str, data: bytes):
     yield b"c"
 
 
+BANDS = 8
+PANEL = 466
+
+
+def picture_messages(img: Image.Image, scale: int = 2):
+    """An opened picture: `P n`, then n horizontal bands, each its own 16 colours (median cut, refined by k-means),
+    `I` (its row as y0) / `D`… / `E`. Masked to the round panel, black outside."""
+    n = PANEL // scale
+    img = img.convert("RGB")
+    w, h = img.size
+    side = min(w, h)
+    img = img.crop(((w - side) // 2, (h - side) // 2, (w + side) // 2, (h + side) // 2)).resize((n, n), Image.LANCZOS)
+    mask = Image.new("L", (n, n), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, n - 1, n - 1), fill=255)
+    img.paste((0, 0, 0), mask=Image.eval(mask, lambda v: 255 - v))
+    off = (PANEL - n * scale) // 2
+    rows = [n * k // BANDS for k in range(BANDS + 1)]
+    out = [b"P" + bytes([BANDS])]
+    for k in range(BANDS):
+        y0, y1 = rows[k], rows[k + 1]
+        band = img.crop((0, y0, n, y1))
+        q = band.quantize(16, method=Image.Quantize.MEDIANCUT, kmeans=4, dither=Image.Dither.NONE)
+        pal = (q.getpalette()[:48] + [0] * 48)[:48]
+        hdr = b"I" + struct.pack("<HHBhh", n, y1 - y0, scale, off, off + y0 * scale)
+        hdr += b"".join(struct.pack("<H", rgb565(*pal[3 * i:3 * i + 3])) for i in range(16))
+        out += list(messages(hdr, tokens(q.tobytes(), n, y1 - y0)))
+    return out
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sim", type=int)
@@ -92,6 +121,8 @@ async def main():
             for i, n in enumerate(names):
                 await ch.send(b"l" + bytes([i]) + n.encode()[:40])
 
+        shown = [None]
+
         async def handle(m):
             if m == b"R":
                 await gallery()
@@ -99,8 +130,12 @@ async def main():
                 for msg in file_messages(f"th{m[1]}", thumb_file(Image.open(pics[m[1]]))):
                     await ch.send(msg)
             elif m[:1] == b"o" and len(m) == 2 and m[1] < len(pics):
-                hdr, stream = encode(Image.open(pics[m[1]]), scale=2)
-                for msg in messages(hdr, stream):
+                shown[0] = m[1]
+                for msg in picture_messages(Image.open(pics[m[1]])):
+                    await ch.send(msg)
+            elif m[:1] == b"G" and shown[0] is not None:
+                # a band's chunk went missing: the picture again, whole
+                for msg in picture_messages(Image.open(pics[shown[0]])):
                     await ch.send(msg)
 
         await send_when_open(ch, b"?")
