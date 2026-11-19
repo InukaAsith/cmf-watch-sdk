@@ -37,6 +37,41 @@ impl Surface for Dot {
     }
 }
 
+/// The panel between rows `.1` and `.2`: a scroll redraws the feed or list without touching the heading or buttons.
+struct Band(&'static Api, i32, i32);
+
+impl Surface for Band {
+    fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
+        let (y0, y1) = (y.max(self.1), (y + h).min(self.2));
+        if y1 > y0 && w > 0 {
+            let mut a = self.0;
+            Surface::rect(&mut a, x, y0, w, y1 - y0, c);
+        }
+    }
+
+    fn text(&mut self, x: i32, y: i32, s: &str, c: u16) {
+        font::draw(self, x, y, s, c);
+    }
+}
+
+/// Black around a box drawn over the last frame: its rows left and right of it, and outside its rounded corners
+/// (rrect leaves those untouched).
+fn surround(s: &mut impl Surface, x: i32, y: i32, w: i32, h: i32, r: i32) {
+    Surface::rect(s, 0, y, x, h, 0);
+    Surface::rect(s, x + w, y, 466 - x - w, h, 0);
+    let r = r.min(h / 2).min(w / 2);
+    for dy in 0..r {
+        let d = r - dy;
+        let off = r - isqrt(r * r - d * d);
+        if off > 0 {
+            for yy in [y + dy, y + h - 1 - dy] {
+                Surface::rect(s, x, yy, off, 1, 0);
+                Surface::rect(s, x + w - off, yy, off, 1, 0);
+            }
+        }
+    }
+}
+
 fn model() -> &'static mut Model {
     // one app thread
     unsafe { &mut *core::ptr::addr_of_mut!(MODEL) }
@@ -184,6 +219,8 @@ struct Ui {
     crown_gap: i32,
     /// where a touch on a scrolling screen went down
     down: Option<(i32, i32)>,
+    /// the dial letter's dot pitch as last drawn
+    dial_pitch: core::cell::Cell<i32>,
 }
 
 fn main(api: &'static Api) -> i32 {
@@ -207,6 +244,7 @@ fn main(api: &'static Api) -> i32 {
         crown_at: 0,
         crown_gap: 400,
         down: None,
+        dial_pitch: core::cell::Cell::new(0),
     };
     if crate::ASSISTANT {
         model().open = Some(1);
@@ -310,7 +348,7 @@ fn main(api: &'static Api) -> i32 {
                     }
                 }
                 if (list && ui.screen == Screen::List) || (chat && ui.screen == Screen::Chat) {
-                    ui.draw();
+                    ui.refresh();
                 }
             }
             _ => {}
@@ -380,18 +418,45 @@ impl Ui {
     }
 
     fn draw_list(&self) {
+        self.list_cards();
         let mut s = Dot(self.api);
+        // the heading over whatever scrolled under it, and the scroll dots on the right rim
+        Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
+        heading(&mut s, 34, "WHATSAPP", 3);
+        self.unread_line(&mut s);
+        self.scroll_dots(self.list_scroll, self.list_max());
+    }
+
+    fn unread_line(&self, s: &mut Dot) {
         let m = model();
+        let unread = m.chats[..m.n_chats].iter().filter(|c| c.unread > 0).count();
+        if unread > 0 {
+            let mut n = [0u8; 11];
+            let t = cmf_wp2_ui::text::int(unread as i32, &mut n);
+            let w = font::width(t) + font::width(" unread");
+            let x = font::draw(s, C - w / 2, 70, t, GREY);
+            font::draw(s, x, 70, " unread", GREY);
+        }
+    }
+
+    /// The cards, each over the last frame's, the gaps cleared: no black frame between (it flickers).
+    fn list_cards(&self) {
+        let mut s = Band(self.api, HEAD_H, 466);
+        let m = model();
+        Surface::rect(&mut s, 0, HEAD_H, 466, LIST_TOP - self.list_scroll - HEAD_H, 0);
         for i in 0..m.n_chats {
             let y = LIST_TOP + i as i32 * PITCH - self.list_scroll;
-            if y + CARD_H < HEAD_H || y > 466 {
+            if y + PITCH < HEAD_H || y > 466 {
                 continue;
             }
+            Surface::rect(&mut s, 0, y + CARD_H, 466, PITCH - CARD_H, 0);
             let (x0, x1) = chord(y.max(HEAD_H), (y + CARD_H).min(466), 18);
             if x1 - x0 < 160 {
+                Surface::rect(&mut s, 0, y, 466, CARD_H, 0);
                 continue;
             }
             let c = &m.chats[i];
+            surround(&mut s, x0, y, x1 - x0, CARD_H, CARD_H / 2);
             rrect(&mut s, x0, y, x1 - x0, CARD_H, CARD_H / 2, CARD, BLACK);
             let (ax, ay) = (x0 + 46, y + CARD_H / 2);
             ring(&mut s, ax, ay, 25, 27, if c.unread > 0 { WHITE } else { Rgb(0x70, 0x70, 0x70) }, CARD);
@@ -408,21 +473,11 @@ impl Ui {
                 centre(&mut s, x1 - 32, y + 18, cmf_wp2_ui::text::int(c.unread.min(9) as i32, &mut n), W);
             }
         }
+        let end = LIST_TOP + m.n_chats as i32 * PITCH - self.list_scroll;
+        Surface::rect(&mut s, 0, end.max(HEAD_H), 466, 466 - end.max(HEAD_H), 0);
         if m.n_chats == 0 {
             centre(&mut s, C, C - 8, "Waiting for phone", GREY);
         }
-        // the heading over whatever scrolled under it, and the scroll dots on the right rim
-        Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
-        heading(&mut s, 34, "WHATSAPP", 3);
-        let unread = m.chats[..m.n_chats].iter().filter(|c| c.unread > 0).count();
-        if unread > 0 {
-            let mut n = [0u8; 11];
-            let t = cmf_wp2_ui::text::int(unread as i32, &mut n);
-            let w = font::width(t) + font::width(" unread");
-            let x = font::draw(&mut s, C - w / 2, 70, t, GREY);
-            font::draw(&mut s, x, 70, " unread", GREY);
-        }
-        self.scroll_dots(self.list_scroll, self.list_max());
     }
 
     /// Seven dots on the right rim; the lit one shows how far down the list is.
@@ -436,6 +491,9 @@ impl Ui {
             let a = (65536 - 6 * 512 + i * 1024) as u16;
             let (x, y) = polar(C - 12, a);
             let c = if i == lit { WHITE } else { Rgb(0x40, 0x40, 0x40) };
+            if i != lit {
+                Surface::rect(&mut s, x - 4, y - 4, 9, 9, 0);
+            }
             disc(&mut s, x, y, if i == lit { 4 } else { 3 }, c, BLACK);
         }
     }
@@ -443,23 +501,9 @@ impl Ui {
     // --- chat
 
     fn draw_chat(&mut self) {
+        self.feed();
         let mut s = Dot(self.api);
         let m = model();
-        let mut bottom = FEED_END - 6 + self.chat_scroll;
-        let mut total = 0;
-        for msg in m.msgs[..m.n_msgs].iter().rev() {
-            let h = bubble_h(msg);
-            let top = bottom - h;
-            if top < FEED_END && bottom > FEED_TOP {
-                draw_bubble(&mut s, m, msg, top);
-            }
-            bottom = top - GAP;
-            total += h + GAP;
-        }
-        self.chat_max = (total - (FEED_END - FEED_TOP)).max(0);
-        if m.n_msgs == 0 {
-            centre(&mut s, C, C - 8, if crate::ASSISTANT { "Ask me anything" } else { "Loading" }, GREY);
-        }
         Surface::rect(&mut s, 0, 0, 466, FEED_TOP, 0);
         let name = if crate::ASSISTANT {
             "Gemini"
@@ -482,6 +526,46 @@ impl Ui {
         ring(&mut s, BTN_X[2], BTN_Y, 24, 26, WHITE, BLACK);
         ring(&mut s, BTN_X[2], BTN_Y, 10, 12, WHITE, BLACK);
         disc(&mut s, BTN_X[2], BTN_Y - 17, 3, RED, BLACK);
+    }
+
+    /// The messages, each over the last frame's, the gaps between cleared; the heading and buttons left alone.
+    fn feed(&mut self) {
+        let mut s = Band(self.api, FEED_TOP, FEED_END);
+        let m = model();
+        let mut bottom = FEED_END - 6 + self.chat_scroll;
+        Surface::rect(&mut s, 0, bottom, 466, FEED_END - bottom, 0);
+        let mut total = 0;
+        for msg in m.msgs[..m.n_msgs].iter().rev() {
+            let h = bubble_h(msg);
+            let top = bottom - h;
+            if top < FEED_END && bottom > FEED_TOP {
+                draw_bubble(&mut s, m, msg, top);
+            }
+            Surface::rect(&mut s, 0, top - GAP, 466, GAP, 0);
+            bottom = top - GAP;
+            total += h + GAP;
+        }
+        Surface::rect(&mut s, 0, FEED_TOP, 466, bottom - FEED_TOP, 0);
+        self.chat_max = (total - (FEED_END - FEED_TOP)).max(0);
+        if m.n_msgs == 0 {
+            centre(&mut s, C, C - 8, if crate::ASSISTANT { "Ask me anything" } else { "Loading" }, GREY);
+        }
+    }
+
+    /// Redraws what changed on the open screen without a clear (scrolls, new messages).
+    fn refresh(&mut self) {
+        match self.screen {
+            Screen::List => {
+                self.list_cards();
+                let mut s = Dot(self.api);
+                Surface::rect(&mut s, 0, 66, 466, 30, 0);
+                self.unread_line(&mut s);
+                self.scroll_dots(self.list_scroll, self.list_max());
+            }
+            Screen::Chat => self.feed(),
+            _ => return self.draw(),
+        }
+        self.api.show();
     }
 
     // --- quick replies
@@ -687,7 +771,10 @@ impl Ui {
     fn draw_dial_cell(&self, i: usize) {
         let mut s = Dot(self.api);
         let (x, y) = self.dial_at(i);
-        Surface::rect(&mut s, x - 20, y - 20, 40, 40, 0);
+        if i != self.sel {
+            // the selection's disc goes; the letter's cell is painted, not cleared then drawn
+            disc(&mut s, x, y, 19, BLACK, BLACK);
+        }
         if i == self.sel {
             disc(&mut s, x, y, 19, if self.dial()[i] == b'>' { RED } else { WHITE }, BLACK);
             centre(&mut s, x, y - 8, self.dial_label(i), if self.dial()[i] == b'>' { W } else { 0 });
@@ -704,7 +791,6 @@ impl Ui {
 
     fn draw_dial_centre(&self) {
         let mut s = Dot(self.api);
-        Surface::rect(&mut s, C - 60, 176, 120, 150, 0);
         let upper = self.shift || matches!(self.press, Some((_, _, true)));
         let mut b = [0u8; 4];
         let label = match self.dial()[self.sel] {
@@ -718,7 +804,18 @@ impl Ui {
         };
         let pitch = if label.len() == 1 { 8 } else { 3 };
         let h = 8 * pitch;
-        dots_centre(&mut s, C, C - h / 2 - 6, label, pitch, pitch - 1, if self.dial()[self.sel] == b'>' { RED.rgb565() } else { W });
+        let w = label.chars().count() as i32 * 8 * pitch;
+        let (x, y) = (C - w / 2, C - h / 2 - 6);
+        // painted over the last letter dot for dot (off dots black): no clear, no flicker; a change of size clears
+        if self.dial_pitch.get() != pitch {
+            Surface::rect(&mut s, C - 60, 176, 120, 112, 0);
+            self.dial_pitch.set(pitch);
+        } else {
+            Surface::rect(&mut s, C - 60, 176, x - (C - 60), 112, 0);
+            Surface::rect(&mut s, x + w, 176, C + 60 - x - w, 112, 0);
+        }
+        let c = if self.dial()[self.sel] == b'>' { RED.rgb565() } else { W };
+        cmf_wp2_ui::text::dots_opaque(&mut s, x, y, label, pitch, pitch - 1, c, 0);
         centre(&mut s, C, 296, "tap  hold: Aa", DIM);
     }
 
@@ -813,7 +910,7 @@ impl Ui {
             }
             _ => return,
         }
-        self.draw();
+        self.refresh();
     }
 
     fn crown(&mut self, d: i16) {
@@ -872,7 +969,7 @@ impl Ui {
             }
             Screen::Qwerty => return,
         }
-        self.draw();
+        self.refresh();
     }
 
     fn tap(&mut self, x: i32, y: i32) {
@@ -962,10 +1059,15 @@ fn bubble_h(msg: &Msg) -> i32 {
     }
 }
 
-fn draw_bubble(s: &mut Dot, m: &Model, msg: &Msg, top: i32) {
+fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
     if let Some(img) = msg.img.filter(|i| i.ok) {
         let (w, h) = img.size();
         let x = if msg.me { BUBBLE_X1 - w } else { BUBBLE_X0 };
+        surround(s, x, top, w, h, 0);
+        let rest = bubble_h(msg) - h;
+        if rest > 0 {
+            Surface::rect(s, 0, top + h, 466, rest, 0);
+        }
         let mut d = Decoder::new();
         if d.start(&img.header, x, top, img.header[5]) {
             d.feed(m.tokens(&img), &mut Rle(s.0));
@@ -986,6 +1088,11 @@ fn draw_bubble(s: &mut Dot, m: &Model, msg: &Msg, top: i32) {
     let (w, h) = (widest.max(24) + 32, n as i32 * LINE + 18);
     let x = if msg.me { BUBBLE_X1 - w } else { BUBBLE_X0 };
     let (fill, ink) = if msg.me { (WHITE, 0) } else { (CARD, W) };
+    surround(s, x, top, w, h, 20);
+    let rest = bubble_h(msg) - h;
+    if rest > 0 {
+        Surface::rect(s, 0, top + h, 466, rest, 0);
+    }
     rrect(s, x, top, w, h, 20, fill, BLACK);
     for (i, l) in ls.l[..n].iter().enumerate() {
         let c = if placeholder.is_empty() { ink } else { GREY };

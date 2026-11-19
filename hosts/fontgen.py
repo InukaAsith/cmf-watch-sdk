@@ -11,7 +11,7 @@ import argparse, pathlib
 from PIL import Image, ImageDraw, ImageFont
 
 OUT = pathlib.Path(__file__).resolve().parents[1] / "sdk/cmf-wp2-ui/src/inter.rs"
-CHARS = [chr(c) for c in range(0x20, 0x7F)] + [chr(c) for c in range(0xA0, 0x100)] + ["’", "“", "”", "…", "•"]
+CHARS = "".join(sorted(set([chr(c) for c in range(0x20, 0x7F)] + [chr(c) for c in range(0xA0, 0x100)] + ["’", "“", "”", "…", "•"])))
 # the cap top sits this many px below the y the caller gives (the old 16-px cells put caps at y + 2)
 CAP_AT = 2
 
