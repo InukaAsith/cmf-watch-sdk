@@ -2,6 +2,7 @@
 //! UI kit for cmf-watch-sdk apps. Everything draws through [`Surface`] (`rect` + `text`), so the same code runs on the
 //! watch ([`cmf_wp2_app::Api`]), in host tests ([`Fb`]) and in the simulator. Fixed point only: the target has no FPU.
 
+pub mod ask;
 pub mod color;
 pub mod draw;
 pub mod font;
