@@ -252,6 +252,10 @@ fn main(api: &'static Api) -> i32 {
     }
     ui.draw();
     let _ = api.send(b"R");
+    // the phone may still be starting (iOS relaunching CMFX loses the first ask): ask again every 3 s until it
+    // answers, at most 20 times
+    const RETRY_MS: u32 = 3000;
+    let mut retry: Option<(u32, u8)> = Some((api.now().wrapping_add(RETRY_MS), 20));
     let mut msg = [0u8; MSG_MAX];
     // an event read ahead while crown detents were merged
     let mut ahead: Option<cmf_wp2_app::Event> = None;
@@ -262,7 +266,8 @@ fn main(api: &'static Api) -> i32 {
             Some((_, t, false)) => Some(t.wrapping_add(HOLD_MS).wrapping_sub(now).min(HOLD_MS)),
             _ => None,
         };
-        let wait = [ui.motor.wait(), flash, hold].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let again = retry.map(|(t, _)| t.wrapping_sub(now).min(RETRY_MS));
+        let wait = [ui.motor.wait(), flash, hold, again].into_iter().flatten().min().unwrap_or(u32::MAX);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
             None => api.event(wait),
@@ -279,6 +284,12 @@ fn main(api: &'static Api) -> i32 {
             }
         }
         ui.motor.update();
+        if let Some((t, left)) = retry {
+            if api.now().wrapping_sub(t) as i32 >= 0 {
+                let _ = api.send(b"R");
+                retry = (left > 1).then(|| (api.now().wrapping_add(RETRY_MS), left - 1));
+            }
+        }
         if let Some((k, t)) = ui.flash {
             if api.now().wrapping_sub(t) as i32 >= 0 {
                 ui.flash = None;
@@ -338,6 +349,7 @@ fn main(api: &'static Api) -> i32 {
             }
             TOUCH_DOWN => ui.tap(e.x as i32, e.y as i32),
             MESSAGE => {
+                retry = None;
                 let (mut list, mut chat) = (false, false);
                 while let Some(m) = api.recv(&mut msg) {
                     match model().apply(m) {
