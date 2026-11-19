@@ -10,7 +10,7 @@ import argparse, asyncio, json, os, pathlib, re, sys, unicodedata, urllib.reques
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 SYSTEM = ("You answer on a small round smartwatch screen. Reply in plain text, at most 60 words, no markdown, "
           "no lists, no emoji.")
 PROMPTS = ["Fun fact", "Quick workout idea", "Explain black holes", "Dinner idea", "Motivate me"]
