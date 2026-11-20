@@ -165,13 +165,15 @@ class Demo:
 
 
 class Web:
-    """The Spotify Web API with a user token."""
+    """The Spotify Web API with a user token: the same calls and order as CMFX (ios/App/Hub/Spotify.swift), for
+    Spotify's February 2026 API (one library by URI, /playlists/{id}/items with `item`, search ≤ 10, no `product`
+    for development-mode apps)."""
 
     API = "https://api.spotify.com/v1"
 
     def __init__(self, token):
         self.token, self.st, self.view, self.playlists, self.devs, self.track = token, {}, [], [], [], None
-        self.art_url = None
+        self.art_url, self.context, self.shown, self.specials = None, None, "tracks", 0
 
     def call(self, method, path, body=None, query=None):
         url = self.API + path + ("?" + urllib.parse.urlencode(query) if query else "")
@@ -181,27 +183,51 @@ class Web:
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 raw = r.read()
-                return json.loads(raw) if raw else {}
+                try:
+                    return json.loads(raw) if raw else {}
+                except ValueError:
+                    return {}  # player commands answer 200 with a non-JSON body
         except urllib.error.HTTPError as e:
-            if e.code == 403:
+            try:
+                err = json.loads(e.read()).get("error", {})
+            except ValueError:
+                err = {}
+            msg, reason = str(err.get("message", "")), str(err.get("reason", ""))
+            if e.code == 404 and reason == "NO_ACTIVE_DEVICE":
+                raise LookupError("Open Spotify on a device") from e
+            if e.code == 403 and reason == "PREMIUM_REQUIRED":
                 raise PermissionError("Premium needed") from e
-            raise
+            if e.code == 403 and ("restriction violated" in msg.lower() or "cannot control device volume" in msg.lower()):
+                raise InterruptedError(msg) from e
+            raise RuntimeError(f"Spotify: {msg or e.code}") from e
+
+    def call_again(self, method, path, body=None, query=None):
+        """Some networks drop TLS connections now and then: twice more (POST only if it never connected)."""
+        for attempt in range(3):
+            try:
+                return self.call(method, path, body, query)
+            except urllib.error.URLError as e:
+                if isinstance(e, urllib.error.HTTPError) or attempt == 2:
+                    raise
+                if method == "POST" and "EOF" not in str(e) and "refused" not in str(e):
+                    raise
+                time.sleep(0.3 * (attempt + 1))
 
     async def run(self, *a, **k):
-        return await asyncio.get_running_loop().run_in_executor(None, lambda: self.call(*a, **k))
+        return await asyncio.get_running_loop().run_in_executor(None, lambda: self.call_again(*a, **k))
 
     def state(self):
-        p = self.call("GET", "/me/player") or {}
+        me = self.call_again("GET", "/me")
+        p = self.call_again("GET", "/me/player") or {}
         item = p.get("item") or {}
-        me = self.call("GET", "/me")
-        flags = (PLAYING if p.get("is_playing") else 0) | (PREMIUM if me.get("product") == "premium" else 0)
+        premium = me.get("product") not in ("free", "open")
+        flags = (PLAYING if p.get("is_playing") else 0) | (PREMIUM if premium else 0)
         flags |= SHUFFLE if p.get("shuffle_state") else 0
         if not item:
             flags |= IDLE
         self.track = item
-        if item.get("id"):
-            if self.call("GET", "/me/tracks/contains", query={"ids": item["id"]}) == [True]:
-                flags |= LIKED
+        if item.get("id") and self.call("GET", "/me/library/contains", query={"uris": f"spotify:track:{item['id']}"}) == [True]:
+            flags |= LIKED
         imgs = (item.get("album") or {}).get("images") or []
         self.art_url = imgs[-2]["url"] if len(imgs) > 1 else (imgs[0]["url"] if imgs else None)
         dev = p.get("device") or {}
@@ -215,59 +241,132 @@ class Web:
             return None
         return Image.open(io.BytesIO(urllib.request.urlopen(self.art_url, timeout=10).read()))
 
+    async def play_on_a_device(self, body=None):
+        devs = (await self.run("GET", "/me/player/devices")).get("devices", [])
+        if not devs:
+            raise LookupError("Open Spotify on a device")
+        d = next((d for d in devs if d["type"] == "Smartphone"), devs[0])
+        await self.run("PUT", "/me/player/play", body=body or {}, query={"device_id": d["id"]})
+
+    async def settle(self, playing):
+        """Spotify's player state lags a command by up to a second: wait until it shows `playing`."""
+        for _ in range(8):
+            await asyncio.sleep(0.25)
+            if bool((await self.run("GET", "/me/player") or {}).get("is_playing")) == playing:
+                return
+
     async def key(self, k):
         if k == "p":
-            await self.run("PUT", "/me/player/pause" if self.st.get("flags", 0) & PLAYING else "/me/player/play")
+            now = await self.run("GET", "/me/player") or {}
+            playing = bool(now.get("is_playing")) if now else bool(self.st.get("flags", 0) & PLAYING)
+            want = not playing
+            try:
+                await self.run("PUT", "/me/player/pause" if playing else "/me/player/play")
+            except InterruptedError:
+                want = playing
+                await self.run("PUT", "/me/player/play" if playing else "/me/player/pause")
+            except LookupError:
+                want = True
+                await self.play_on_a_device()
+            await self.settle(want)
         else:
-            await self.run("POST", "/me/player/next" if k == "n" else "/me/player/previous")
-        await asyncio.sleep(0.4)
+            try:
+                await self.run("POST", "/me/player/next" if k == "n" else "/me/player/previous")
+            except LookupError:
+                await self.play_on_a_device()
+            await asyncio.sleep(0.6)
         return True
 
     async def seek(self, pos):
         await self.run("PUT", "/me/player/seek", query={"position_ms": pos * 1000})
 
     async def volume(self, v):
-        await self.run("PUT", "/me/player/volume", query={"volume_percent": v})
+        dev = (await self.run("GET", "/me/player") or {}).get("device") or {}
+        if dev.get("supports_volume") is False:
+            return f"Set the volume on {dev.get('name') or 'the device'}"
+        try:
+            await self.run("PUT", "/me/player/volume", query={"volume_percent": v})
+        except InterruptedError:
+            return "This device's volume is set on it"
 
     async def like(self):
         tid = (self.track or {}).get("id")
         if not tid:
             return "Nothing playing"
-        liked = await self.run("GET", "/me/tracks/contains", query={"ids": tid}) == [True]
-        await self.run("DELETE" if liked else "PUT", "/me/tracks", query={"ids": tid})
+        uri = f"spotify:track:{tid}"
+        liked = await self.run("GET", "/me/library/contains", query={"uris": uri}) == [True]
+        await self.run("DELETE" if liked else "PUT", "/me/library", query={"uris": uri})
         return "Removed from Liked" if liked else "Liked"
 
     async def rows(self, kind):
         if kind in "PA":
             me = await self.run("GET", "/me")
-            items = (await self.run("GET", "/me/playlists", query={"limit": 24}))["items"]
+            items = (await self.run("GET", "/me/playlists", query={"limit": 24})).get("items", [])
             if kind == "A":
-                items = [p for p in items if p["owner"]["id"] == me["id"] or p.get("collaborative")]
+                items = [p for p in items if (p.get("owner") or {}).get("id") == me.get("id") or p.get("collaborative")]
             self.playlists = items
-            return [(p["name"], f'{p["tracks"]["total"]} songs', False) for p in items]
+            self.specials = 2 if kind == "P" else 0
+            lead = [("Up next", "Your queue", False), ("Liked Songs", "Your saved songs", False)] if kind == "P" else []
+
+            def sub(p):
+                total = (p.get("items") or p.get("tracks") or {}).get("total")
+                owner = (p.get("owner") or {}).get("display_name") or ""
+                return f"{total} songs" if total is not None else (f"by {owner}" if owner else "Playlist")
+            return lead + [(p["name"], sub(p), False) for p in items]
         if kind == "D":
-            self.devs = (await self.run("GET", "/me/player/devices"))["devices"]
+            self.devs = (await self.run("GET", "/me/player/devices")).get("devices", [])
             return [(d["name"], d["type"].title(), d["is_active"]) for d in self.devs]
         return []
 
-    async def tracks(self, i):
-        self.context = self.playlists[i]["uri"]
-        items = (await self.run("GET", f'/playlists/{self.playlists[i]["id"]}/tracks', query={"limit": 24}))["items"]
-        self.view = [it["track"] for it in items if it.get("track")]
+    def _rows(self, mark=True):
         now = (self.track or {}).get("id")
-        return [(t["name"], ", ".join(a["name"] for a in t["artists"]), t["id"] == now) for t in self.view]
+        return [(t["name"], ", ".join(a["name"] for a in t.get("artists", [])), mark and t.get("id") == now) for t in self.view]
+
+    async def tracks(self, i):
+        if self.specials == 2 and i == 0:
+            self.view, self.context, self.shown = (await self.run("GET", "/me/player/queue")).get("queue", [])[:24], None, "queue"
+            return self._rows(False)
+        if self.specials == 2 and i == 1:
+            me = await self.run("GET", "/me")
+            items = (await self.run("GET", "/me/tracks", query={"limit": 24})).get("items", [])
+            self.view = [it.get("item") or it.get("track") for it in items if it.get("item") or it.get("track")]
+            self.context, self.shown = f"spotify:user:{me['id']}:collection", "tracks"
+            return self._rows()
+        p = self.playlists[i - self.specials]
+        self.context = p["uri"]
+        try:
+            items = (await self.run("GET", f'/playlists/{p["id"]}/items', query={"limit": 24})).get("items", [])
+        except RuntimeError:
+            self.view, self.shown = [], "whole"
+            owner = (p.get("owner") or {}).get("display_name") or ""
+            return [("Play all", f"by {owner}" if owner else "Songs hidden by Spotify", False)]
+        self.shown = "tracks"
+        self.view = [it.get("item") or it.get("track") for it in items if it.get("item") or it.get("track")]
+        return self._rows()
 
     async def search(self, q):
-        self.context = None
-        r = await self.run("GET", "/search", query={"q": q, "type": "track", "limit": 20})
-        self.view = r["tracks"]["items"]
-        return [(t["name"], ", ".join(a["name"] for a in t["artists"]), False) for t in self.view]
+        self.context, self.shown = None, "tracks"
+        r = await self.run("GET", "/search", query={"q": q, "type": "track", "limit": 10})
+        self.view = (r.get("tracks") or {}).get("items", [])
+        return self._rows(False)
 
     async def play(self, i):
-        t = self.view[i]
-        body = {"context_uri": self.context, "offset": {"uri": t["uri"]}} if self.context else {"uris": [t["uri"]]}
-        await self.run("PUT", "/me/player/play", body=body)
-        await asyncio.sleep(0.5)
+        if self.shown == "whole":
+            body = {"context_uri": self.context}
+        elif self.shown == "queue":
+            for _ in range(i + 1):
+                await self.run("POST", "/me/player/next")
+                await asyncio.sleep(0.25)
+            await asyncio.sleep(0.4)
+            return
+        else:
+            t = self.view[i]
+            body = {"context_uri": self.context, "offset": {"uri": t["uri"]}} if self.context else {"uris": [t["uri"]]}
+        try:
+            await self.run("PUT", "/me/player/play", body=body)
+        except LookupError:
+            await self.play_on_a_device(body)
+        await self.settle(True)
 
     async def device(self, i):
         await self.run("PUT", "/me/player", body={"device_ids": [self.devs[i]["id"]], "play": True})
@@ -278,7 +377,7 @@ class Web:
         uri = (self.track or {}).get("uri")
         if not uri:
             return "Nothing playing"
-        await self.run("POST", f'/playlists/{p["id"]}/tracks', body={"uris": [uri]})
+        await self.run("POST", f'/playlists/{p["id"]}/items', body={"uris": [uri]})
         return f'Added to {p["name"]}'
 
 
@@ -327,7 +426,9 @@ async def main():
                     await src.seek(int.from_bytes(m[1:3], "little"))
                     await ch.send(now_message(src.state()))
                 elif m[:1] == b"v":
-                    await src.volume(m[1])
+                    said = await src.volume(m[1])
+                    if said:
+                        await note(said)
                 elif m == b"h":
                     await note(await src.like())
                     await ch.send(now_message(src.state()))
@@ -348,11 +449,11 @@ async def main():
                         await push()
                     elif kind == "A":
                         await note(await src.add(i))
-            except PermissionError as e:
+            except (PermissionError, LookupError) as e:
                 await note(str(e))
             except Exception as e:  # a failed call must not end the session
                 print("error:", e, flush=True)
-                await note("Spotify error")
+                await note(str(e)[:60] or "Spotify error")
 
 
 if __name__ == "__main__":
