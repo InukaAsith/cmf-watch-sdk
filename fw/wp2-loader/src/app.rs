@@ -1,4 +1,4 @@
-use crate::{hr, lv, media, motor, svc, ui};
+use crate::{gps, hr, lv, media, motor, svc, ui};
 use core::ptr::addr_of_mut;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use wp2_core::gfx;
@@ -114,6 +114,7 @@ pub fn stop_app() {
     stock!(K_THREAD_ABORT, fn(*mut u8))(addr_of_mut!(THREAD_BUF) as *mut u8);
     motor::off();
     hr::stop();
+    gps::stop();
     media::stop();
     crate::audio::stop();
     svc::stop();
@@ -204,7 +205,7 @@ extern "C" fn next_event(ev: *mut Event, timeout_ms: u32) -> bool {
     loop {
         POLLED_AT.store(millis(), Ordering::Relaxed);
         // straight to the app, not through QUEUE: the UI thread is its only producer
-        if let Some(e) = hr::due() {
+        if let Some(e) = hr::due().or_else(gps::due) {
             if !ev.is_null() {
                 unsafe { ev.write(e) };
             }
