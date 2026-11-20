@@ -10,7 +10,7 @@ use crate::rle::{self, Decoder};
 use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, BLACK, Rgb};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
-use cmf_wp2_ui::draw::{disc, ring, rrect};
+use cmf_wp2_ui::draw::{arc, disc, ring, rrect};
 use cmf_wp2_ui::geom::{chord, polar};
 use cmf_wp2_ui::haptic::{self, Motor};
 use cmf_wp2_ui::motion::isqrt;
@@ -280,6 +280,9 @@ const FEED_END: i32 = 384;
 const BUBBLE_X0: i32 = 76;
 const BUBBLE_X1: i32 = 390;
 const LINE: i32 = 25;
+/// A loading picture's bubble width, and the spinner's frame time.
+const SPIN_W: i32 = 64;
+const SPIN_MS: u32 = 70;
 /// Widest text line in a bubble, px.
 const TEXT_W: i32 = 262;
 const GAP: i32 = 10;
@@ -397,6 +400,8 @@ struct Ui {
     asked_n: usize,
     /// Notes: the kept list is shown, the phone has not answered yet
     syncing: bool,
+    /// a picture loading: the spinner's next frame and its angle
+    spin: (u32, u16),
 }
 
 fn main(api: &'static Api) -> i32 {
@@ -421,6 +426,7 @@ fn main(api: &'static Api) -> i32 {
         asked: [0; MSG_MAX],
         asked_n: 0,
         syncing: false,
+        spin: (0, 0),
     };
     if crate::PLAIN && kept().load(api) {
         // the last run's list at once, then the phone's
@@ -448,7 +454,15 @@ fn main(api: &'static Api) -> i32 {
         let hold = if ui.screen == Screen::Dial { ui.dial.hold_wait(now) } else { None };
         let again = retry.map(|(t, _)| t.wrapping_sub(now).min(RETRY_MS));
         let asked = ui.pending.map(|(t, _)| t.wrapping_add(ASK_AGAIN_MS).wrapping_sub(now).min(ASK_AGAIN_MS));
-        let wait = [ui.motor.wait(), flash, hold, again, asked].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let spin = ui.spinning().then(|| {
+            let due = ui.spin.0.wrapping_sub(now);
+            if due == 0 || due > SPIN_MS {
+                ui.spin_frame();
+                ui.spin.0 = now.wrapping_add(SPIN_MS);
+            }
+            SPIN_MS
+        });
+        let wait = [ui.motor.wait(), flash, hold, again, asked, spin].into_iter().flatten().min().unwrap_or(u32::MAX);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
             None => api.event(wait),
@@ -806,6 +820,35 @@ impl Ui {
     }
 
     /// Where the newest message ends: the feed's foot (chats), or a page's text from the top while it fits (notes).
+    fn spinning(&self) -> bool {
+        let m = model();
+        self.screen == Screen::Chat && m.msgs[..m.n_msgs].iter().any(|msg| msg.pic == 1)
+    }
+
+    /// The loading pictures' spinners, one step on (over the bubble the feed drew).
+    fn spin_frame(&mut self) {
+        let m = model();
+        self.spin.1 = self.spin.1.wrapping_add((65536 / 12) as u16);
+        let mut s = Dot(self.api);
+        let mut bottom = self.feed_bottom();
+        for i in (0..m.n_msgs).rev() {
+            let h = bubble_h(&m.msgs[i]);
+            let top = bottom - h;
+            if bottom < FEED_TOP {
+                break;
+            }
+            let msg = &m.msgs[i];
+            if msg.pic == 1 && top >= FEED_TOP && bottom <= FEED_END {
+                let cx = if msg.me { BUBBLE_X1 - SPIN_W / 2 } else { BUBBLE_X0 + SPIN_W / 2 };
+                let cy = top + (LINE + 18) / 2;
+                arc(&mut s, cx, cy, 9, 13, 0, 65536, Rgb(0x40, 0x40, 0x40), None, CARD);
+                arc(&mut s, cx, cy, 9, 13, self.spin.1, 65536 / 4, WHITE, None, CARD);
+            }
+            bottom = top - GAP;
+        }
+        self.api.show();
+    }
+
     fn feed_bottom(&self) -> i32 {
         let m = model();
         if crate::PLAIN {
@@ -1340,7 +1383,7 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
     }
     // a tap asks the phone for the picture
     let placeholder = match (msg.kind, msg.pic) {
-        (1 | 2, 1) => "Loading...",
+        (1 | 2, 1) => "",
         (1 | 2, 2) => "No picture",
         (1, _) => "Sticker: tap",
         (2, _) => "Photo: tap",
@@ -1349,7 +1392,7 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
     let ls = if placeholder.is_empty() { lines(msg) } else { Lines { l: [placeholder, "", "", "", "", "", "", ""], n: 1 } };
     let n = ls.n.max(1);
     let widest = ls.l[..n].iter().map(|l| font::width(l)).max().unwrap_or(0).min(TEXT_W);
-    let (w, h) = (widest.max(24) + 32, n as i32 * LINE + 18);
+    let (w, h) = (if msg.pic == 1 && matches!(msg.kind, 1 | 2) { SPIN_W } else { widest.max(24) + 32 }, n as i32 * LINE + 18);
     let x = if msg.me { BUBBLE_X1 - w } else { BUBBLE_X0 };
     let (fill, ink) = if msg.me { (WHITE, 0) } else { (CARD, W) };
     surround(s, x, top, w, h, 20);
