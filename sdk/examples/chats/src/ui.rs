@@ -23,6 +23,186 @@ cmf_wp2_app::app_icon!();
 
 static mut MODEL: Model = Model::new();
 
+// Notes: the list and the last notes opened, kept on the watch (one storage blob, STORE_MAX) and shown at once on
+// the next start, "Syncing..." until the phone answers. Kept as the phone's own messages, replayed through the model.
+const LIST_CAP: usize = 1300;
+const NOTE_CAP: usize = 900;
+const NOTES_KEPT: usize = 3;
+
+/// Messages, each after its length byte; what does not fit is left out (a long note keeps its first lines).
+struct Rec<const N: usize> {
+    b: [u8; N],
+    n: usize,
+    full: bool,
+}
+
+impl<const N: usize> Rec<N> {
+    const fn new() -> Self {
+        Rec { b: [0; N], n: 0, full: false }
+    }
+
+    fn clear(&mut self) {
+        self.n = 0;
+        self.full = false;
+    }
+
+    fn push(&mut self, m: &[u8]) {
+        if self.full || m.len() > 255 || self.n + 1 + m.len() > N {
+            self.full = true;
+            return;
+        }
+        self.b[self.n] = m.len() as u8;
+        self.b[self.n + 1..self.n + 1 + m.len()].copy_from_slice(m);
+        self.n += 1 + m.len();
+    }
+
+    fn set(&mut self, bytes: &[u8]) {
+        let n = bytes.len().min(N);
+        self.b[..n].copy_from_slice(&bytes[..n]);
+        self.n = n;
+        self.full = false;
+    }
+
+    fn each(&self, mut f: impl FnMut(&[u8])) {
+        let mut i = 0;
+        while i < self.n {
+            let len = self.b[i] as usize;
+            if i + 1 + len > self.n {
+                break;
+            }
+            f(&self.b[i + 1..i + 1 + len]);
+            i += 1 + len;
+        }
+    }
+
+    /// The first message (a note's `H id title`).
+    fn first(&self) -> &[u8] {
+        if self.n == 0 {
+            return &[];
+        }
+        let len = (self.b[0] as usize).min(self.n - 1);
+        &self.b[1..1 + len]
+    }
+}
+
+struct Kept {
+    list: Rec<LIST_CAP>,
+    notes: [Rec<NOTE_CAP>; NOTES_KEPT],
+    ids: [Option<u8>; NOTES_KEPT],
+    age: [u32; NOTES_KEPT],
+    clock: u32,
+    /// the slot the open note goes into
+    rec: Option<usize>,
+    dirty: bool,
+}
+
+static mut KEPT: Kept = Kept {
+    list: Rec::new(),
+    notes: [const { Rec::new() }; NOTES_KEPT],
+    ids: [None; NOTES_KEPT],
+    age: [0; NOTES_KEPT],
+    clock: 0,
+    rec: None,
+    dirty: false,
+};
+static mut STORE: [u8; cmf_wp2_app::STORE_MAX] = [0; cmf_wp2_app::STORE_MAX];
+
+fn kept() -> &'static mut Kept {
+    // SAFETY: one app thread
+    unsafe { &mut *core::ptr::addr_of_mut!(KEPT) }
+}
+
+impl Kept {
+    /// A message from the phone, recorded.
+    fn keep(&mut self, m: &[u8]) {
+        match m.first() {
+            Some(b'L') => {
+                self.list.clear();
+                self.list.push(m);
+            }
+            Some(b'C' | b'Q') => self.list.push(m),
+            Some(b'H') if m.len() >= 2 => {
+                let id = m[1];
+                let slot = (0..NOTES_KEPT).find(|&i| self.ids[i] == Some(id)).unwrap_or_else(|| {
+                    (0..NOTES_KEPT).min_by_key(|&i| if self.ids[i].is_none() { 0 } else { self.age[i] }).unwrap_or(0)
+                });
+                self.clock += 1;
+                self.ids[slot] = Some(id);
+                self.age[slot] = self.clock;
+                self.notes[slot].clear();
+                self.notes[slot].push(m);
+                self.rec = Some(slot);
+            }
+            Some(b'M' | b'A' | b'T') => {
+                if let Some(i) = self.rec {
+                    self.notes[i].push(m);
+                }
+            }
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    /// The kept note `id`, if its title is still the list's `name` (ids can change when the phone app restarts).
+    fn note(&self, id: u8, name: &str) -> Option<usize> {
+        (0..NOTES_KEPT).find(|&i| self.ids[i] == Some(id) && self.notes[i].first().get(2..) == Some(name.as_bytes()))
+    }
+
+    /// `K 1`, the list (u16 length, records), then per slot its id (255: none), length and records.
+    fn save(&mut self, api: &Api) {
+        if !self.dirty {
+            return;
+        }
+        // SAFETY: one app thread
+        let out = unsafe { &mut *core::ptr::addr_of_mut!(STORE) };
+        let mut n = 0;
+        let mut put = |b: &[u8], n: &mut usize| {
+            out[*n..*n + b.len()].copy_from_slice(b);
+            *n += b.len();
+        };
+        put(&[b'K', 1], &mut n);
+        put(&(self.list.n as u16).to_le_bytes(), &mut n);
+        put(&self.list.b[..self.list.n], &mut n);
+        for i in 0..NOTES_KEPT {
+            put(&[self.ids[i].unwrap_or(255)], &mut n);
+            put(&(self.notes[i].n as u16).to_le_bytes(), &mut n);
+            put(&self.notes[i].b[..self.notes[i].n], &mut n);
+        }
+        let _ = api.save(&out[..n]);
+        self.dirty = false;
+    }
+
+    /// What the last run kept; whether there was a list.
+    fn load(&mut self, api: &Api) -> bool {
+        // SAFETY: one app thread
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(STORE) };
+        let n = api.load(buf);
+        if n < 4 || buf[0] != b'K' || buf[1] != 1 {
+            return false;
+        }
+        let d = &buf[..n as usize];
+        let mut at = 2;
+        let take = |at: &mut usize| -> Option<&[u8]> {
+            let len = u16::from_le_bytes([*d.get(*at)?, *d.get(*at + 1)?]) as usize;
+            let b = d.get(*at + 2..*at + 2 + len)?;
+            *at += 2 + len;
+            Some(b)
+        };
+        let Some(list) = take(&mut at) else { return false };
+        self.list.set(list);
+        for i in 0..NOTES_KEPT {
+            let Some(&id) = d.get(at) else { break };
+            at += 1;
+            let Some(b) = take(&mut at) else { break };
+            self.ids[i] = (id != 255).then_some(id);
+            self.age[i] = i as u32;
+            self.notes[i].set(b);
+        }
+        self.clock = NOTES_KEPT as u32;
+        self.list.n > 0
+    }
+}
+
 /// Draws through the Api; body text in Inter (cmf_wp2_ui::font), not the 8×8 font.
 #[derive(Clone, Copy)]
 struct Dot(&'static Api);
@@ -215,6 +395,8 @@ struct Ui {
     thinking: bool,
     asked: [u8; MSG_MAX],
     asked_n: usize,
+    /// Notes: the kept list is shown, the phone has not answered yet
+    syncing: bool,
 }
 
 fn main(api: &'static Api) -> i32 {
@@ -238,7 +420,15 @@ fn main(api: &'static Api) -> i32 {
         thinking: false,
         asked: [0; MSG_MAX],
         asked_n: 0,
+        syncing: false,
     };
+    if crate::PLAIN && kept().load(api) {
+        // the last run's list at once, then the phone's
+        kept().list.each(|m| {
+            model().apply(m);
+        });
+        ui.syncing = true;
+    }
     ui.draw();
     let _ = api.send(b"R");
     // the phone may still be starting (iOS relaunching CMFX loses the first ask): ask again every 3 s until it
@@ -326,13 +516,21 @@ fn main(api: &'static Api) -> i32 {
                 ui.motor.off();
                 ui.dial.cancel();
                 match ui.screen {
-                    Screen::List => return 0,
+                    Screen::List => {
+                        if crate::PLAIN {
+                            kept().save(api);
+                        }
+                        return 0;
+                    }
                     Screen::Chat => ui.go(Screen::List),
                     Screen::Quick | Screen::Qwerty | Screen::Dial => ui.go(Screen::Chat),
                 }
             }
             PAUSE => {
                 ui.motor.off();
+                if crate::PLAIN {
+                    kept().save(api);
+                }
                 loop {
                     match api.event(u32::MAX) {
                         Some(e) if e.kind == RESUME => break,
@@ -360,10 +558,22 @@ fn main(api: &'static Api) -> i32 {
                 // any message: the phone is there (no asking again); Gemini's own words: the answer has started
                 ui.pending = None;
                 let mut answer = false;
-                let (mut list, mut chat) = (false, false);
+                let (mut list, mut chat, mut head) = (false, false, false);
+                if ui.syncing {
+                    // the phone answered: its list replaces the kept one
+                    ui.syncing = false;
+                    list = true;
+                }
                 while let Some(m) = api.recv(&mut msg) {
                     if m.first() == Some(&b'T') || (m.first() == Some(&b'A') && m.get(1) == Some(&0)) {
                         answer = true;
+                    }
+                    if crate::PLAIN {
+                        kept().keep(m);
+                    }
+                    if m.first() == Some(&b'P') {
+                        // the online dot is in the header
+                        head = true;
                     }
                     match model().apply(m) {
                         Effect::List => list = true,
@@ -378,6 +588,8 @@ fn main(api: &'static Api) -> i32 {
                     if ui.screen == Screen::Chat {
                         ui.draw();
                     }
+                } else if head && ui.screen == Screen::Chat {
+                    ui.draw();
                 } else if (list && ui.screen == Screen::List) || (chat && ui.screen == Screen::Chat) {
                     ui.refresh();
                 }
@@ -462,7 +674,11 @@ impl Ui {
 
     fn unread_line(&self, s: &mut Dot) {
         let m = model();
-        let unread = m.chats[..m.n_chats].iter().filter(|c| c.unread > 0).count();
+        if self.syncing {
+            centre(s, C, 70, "Syncing...", RED.rgb565());
+            return;
+        }
+        let unread = m.chats[..m.n_chats].iter().filter(|c| c.unread > 0 && c.unread != STATUS_ROW).count();
         if unread > 0 {
             let mut n = [0u8; 11];
             let t = cmf_wp2_ui::text::int(unread as i32, &mut n);
@@ -989,6 +1205,15 @@ impl Ui {
                 m.open = Some(id);
                 m.n_msgs = 0;
                 let _ = self.api.send(&[b'o', id]);
+                if crate::PLAIN && self.syncing {
+                    // the phone has not answered: the kept copy until it does
+                    let k = kept();
+                    if let Some(slot) = k.note(id, m.chats[i].name.as_str()) {
+                        k.notes[slot].each(|msg| {
+                            model().apply(msg);
+                        });
+                    }
+                }
                 self.motor.play(haptic::TICK);
                 self.go(Screen::Chat);
             }
