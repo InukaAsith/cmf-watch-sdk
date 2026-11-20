@@ -758,6 +758,7 @@ impl Ui {
 
     /// Once a second while playing: the progress moves on the watch alone.
     fn tick(&mut self) {
+        self.motor.update();
         let now = self.api.now();
         if self.screen == Screen::Dial && self.dial.tick(&mut self.s, now) == Act::Show {
             self.motor.play(haptic::TICK);
@@ -793,7 +794,8 @@ impl Ui {
     /// How long the next wait may be.
     fn wait(&self) -> u32 {
         let now = self.api.now();
-        let mut ms = u32::MAX;
+        // the motor's next step (a tap's tick ends after 20 ms)
+        let mut ms = self.motor.wait().unwrap_or(u32::MAX);
         if model().playing() {
             ms = 1000 - now.wrapping_sub(self.tick_at) % 1000;
         }
