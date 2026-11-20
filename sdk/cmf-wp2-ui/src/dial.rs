@@ -21,6 +21,8 @@ pub const NUMBERS: &[u8] = b"0123456789?!@'-:()+/&#";
 /// The letters' circle.
 const R: i32 = 204;
 const CELL: i32 = 19;
+/// A touch this far inside the letters' circle (or anywhere outside it) is on a letter: big targets on a small screen.
+const RIM_IN: i32 = 58;
 /// The bar under the middle.
 pub const BAR_Y: i32 = 312;
 const BAR_H: i32 = 40;
@@ -256,7 +258,7 @@ impl Dial {
             }
         }
         let (dx, dy) = (x - C, y - C);
-        if isqrt(dx * dx + dy * dy) > R - 34 {
+        if isqrt(dx * dx + dy * dy) > R - RIM_IN {
             let i = self.index_at(angle(dx, dy));
             self.press = Some((i, now, false));
             self.grab = true;
@@ -345,6 +347,12 @@ mod tests {
         assert_eq!(d.down(&mut s, x0 + 20, BAR_Y + 20, 0), Act::Key(Key::Del));
         assert_eq!(d.down(&mut s, C - PUNCT_DX, PUNCT_Y, 0), Act::Key(Key::Ch(b',')));
         assert_eq!(d.down(&mut s, C + PUNCT_DX, PUNCT_Y + 10, 0), Act::Key(Key::Ch(b'.')));
+        d.up(&mut s, C + PUNCT_DX, PUNCT_Y + 10);
+        // well inside the letters' circle: still the letter (D, at about 3 o'clock minus a bit)
+        let (lx, ly) = d.at(3);
+        let (ix, iy) = (C + (lx - C) * (R - 50) / R, C + (ly - C) * (R - 50) / R);
+        assert_eq!(d.down(&mut s, ix, iy, 0), Act::Show);
+        assert_eq!(d.up(&mut s, ix, iy), Act::Key(Key::Ch(b'd')));
     }
 
     #[test]
