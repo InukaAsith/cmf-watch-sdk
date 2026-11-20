@@ -1231,6 +1231,10 @@ impl Ui {
                         if (top..bottom).contains(&y) {
                             let _ = self.api.send(&[b't', i as u8]);
                             self.motor.play(haptic::TICK);
+                            if matches!(m.msgs[i].kind, 1 | 2) && m.msgs[i].img.is_none() {
+                                m.msgs[i].pic = 1;
+                                self.refresh();
+                            }
                             break;
                         }
                         bottom = top - GAP;
@@ -1335,9 +1339,11 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
         return;
     }
     // a tap asks the phone for the picture
-    let placeholder = match msg.kind {
-        1 => "Sticker: tap",
-        2 => "Photo: tap",
+    let placeholder = match (msg.kind, msg.pic) {
+        (1 | 2, 1) => "Loading...",
+        (1 | 2, 2) => "No picture",
+        (1, _) => "Sticker: tap",
+        (2, _) => "Photo: tap",
         _ => "",
     };
     let ls = if placeholder.is_empty() { lines(msg) } else { Lines { l: [placeholder, "", "", "", "", "", "", ""], n: 1 } };
