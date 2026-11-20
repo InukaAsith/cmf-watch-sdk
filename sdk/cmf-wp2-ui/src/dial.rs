@@ -1,6 +1,5 @@
 //! The rotary keyboard (WhatsApp, Notes, Gemini, Spotify search). Letters round the rim: the crown turns the
-//! selection; a tap on a letter types it; grab a letter, slide round the rim and let go: the letter let go on is
-//! typed. The middle types the picked letter (held: a capital), with `,` and `.` either side of it. Below:
+//! selection; a tap on a letter types it (the letter touched, wherever the finger lifts). The middle types the picked letter (held: a capital), with `,` and `.` either side of it. Below:
 //! delete, space, send.
 //!
 //! The app has no finger-move events (TOUCH_DOWN and TOUCH_UP only), so a slide counts from where the finger went
@@ -273,18 +272,10 @@ impl Dial {
 
     /// TOUCH_UP: the letter pressed types; a letter grabbed and slid round the rim types the one let go on.
     pub fn up(&mut self, s: &mut impl Surface, x: i32, y: i32) -> Act {
-        let (grab, press) = (core::mem::take(&mut self.grab), self.press.take());
-        let Some((mut i, _, upper)) = press else { return Act::None };
-        if grab {
-            let (dx, dy) = (x - C, y - C);
-            if isqrt(dx * dx + dy * dy) > 90 {
-                let i1 = self.index_at(angle(dx, dy));
-                if i1 != i {
-                    i = i1;
-                    self.select(s, i);
-                }
-            }
-        }
+        // the letter touched is the one typed, wherever the finger lifts (no sliding to another)
+        let _ = (x, y);
+        self.grab = false;
+        let Some((i, _, upper)) = self.press.take() else { return Act::None };
         let c = self.keys()[i];
         if c == b'#' {
             self.sym = !self.sym;
@@ -372,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn rim_tap_types_rim_slide_types_where_let_go() {
+    fn the_letter_touched_is_typed() {
         let mut px = fb();
         let mut s = Fb::new(&mut px);
         let mut d = Dial::new();
@@ -381,8 +372,9 @@ mod tests {
         assert_eq!(d.up(&mut s, x, y), Act::Key(Key::Ch(b'C')));
         let (x2, y2) = d.at(5);
         d.down(&mut s, x, y, 0);
-        assert_eq!(d.up(&mut s, x2, y2), Act::Key(Key::Ch(b'f')));
-        assert_eq!(d.sel, 5);
+        // the finger drifted to F before lifting: still C
+        assert_eq!(d.up(&mut s, x2, y2), Act::Key(Key::Ch(b'c')));
+        assert_eq!(d.sel, 2);
         // # switches to the numbers
         let i = LETTERS.len() - 1;
         let (hx, hy) = d.at(i);
