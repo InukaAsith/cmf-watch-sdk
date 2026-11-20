@@ -6,6 +6,7 @@ use crate::model::{Change, Model, LIKED, MAX_ROWS, PREMIUM};
 use crate::rle::{self, Decoder, HEADER};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
+use cmf_wp2_ui::dial::{Act, Dial, Key};
 use cmf_wp2_ui::draw::{arc, disc, ring, rrect};
 use cmf_wp2_ui::font::{self, centre, clip, fitted};
 use cmf_wp2_ui::geom::chord;
@@ -72,6 +73,8 @@ enum Screen {
     Now,
     List,
     Search,
+    /// search on the rotary keyboard (cmf_wp2_ui::dial)
+    Dial,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -81,6 +84,8 @@ enum K {
     Sym,
     Space,
     Go,
+    /// to the rotary keyboard
+    Dial,
 }
 
 struct Screen565(&'static Api);
@@ -121,6 +126,7 @@ struct Ui {
     pressed: Option<K>,
     down: Option<(i32, i32)>,
     motor: Motor,
+    dial: Dial,
 }
 
 impl Ui {
@@ -134,6 +140,7 @@ impl Ui {
             Screen::Now => self.draw_now(),
             Screen::List => self.draw_list(),
             Screen::Search => self.draw_search(),
+            Screen::Dial => self.draw_dial(),
         }
         self.api.show();
     }
@@ -469,8 +476,49 @@ impl Ui {
         each_key(sym, |k, _, _, _| self.draw_key(k, false));
     }
 
+    fn draw_dial(&mut self) {
+        self.draw_query();
+        let mut x = 60;
+        while x < 406 {
+            Surface::rect(&mut self.s, x, 168, 2, 2, DIM);
+            x += 8;
+        }
+        self.dial.draw(&mut self.s);
+    }
+
+    /// What the rotary keyboard said.
+    fn dial_act(&mut self, a: Act) {
+        match a {
+            Act::None => {}
+            Act::Show => {
+                self.motor.play(haptic::TICK);
+                self.api.show();
+            }
+            Act::Redraw => {
+                self.motor.play(haptic::TICK);
+                self.draw();
+            }
+            Act::Key(k) => {
+                self.motor.play(haptic::TICK);
+                self.type_key(match k {
+                    Key::Ch(c) => K::Ch(c),
+                    Key::Space => K::Space,
+                    Key::Del => K::Del,
+                    Key::Send => K::Go,
+                });
+                if self.screen == Screen::Dial {
+                    self.draw_query();
+                    self.dial.draw_centre(&mut self.s);
+                    self.api.show();
+                }
+            }
+        }
+    }
+
     fn draw_query(&mut self) {
-        Surface::rect(&mut self.s, 60, 70, 346, 90, 0);
+        // inside the dial's letters when it is up
+        let (half, max) = if self.screen == Screen::Dial { (100, 180) } else { (173, 300) };
+        Surface::rect(&mut self.s, C - half, 80, 2 * half, 80, 0);
         let q = core::str::from_utf8(&self.query[..self.n_query]).unwrap_or("");
         if q.is_empty() {
             centre(&mut self.s, C, 104, "Song, artist, album", DIM);
@@ -479,7 +527,7 @@ impl Ui {
         let w = font::width(q);
         // the end of a long query stays in view
         let mut start = 0;
-        while font::width(&q[start..]) > 300 {
+        while font::width(&q[start..]) > max {
             start += 1;
         }
         let shown = &q[start..];
@@ -511,6 +559,7 @@ impl Ui {
                 K::Sym => "123",
                 K::Space => "space",
                 K::Go => "Go",
+                K::Dial => "dial",
             };
             let ink = if pressed { 0 } else if k == K::Space { GREY } else { W };
             centre(s, x + w / 2, y + KH / 2 - 9, label, ink);
@@ -542,6 +591,12 @@ impl Ui {
                 }
             }
             K::Del => self.n_query = self.n_query.saturating_sub(1),
+            K::Dial => {
+                self.screen = Screen::Dial;
+                self.dial.shift = false;
+                self.dial.cancel();
+                return self.draw();
+            }
             K::Sym => {
                 self.sym = !self.sym;
                 return self.draw();
@@ -562,6 +617,10 @@ impl Ui {
                 self.screen = Screen::List;
                 return self.draw();
             }
+        }
+        if self.screen == Screen::Dial {
+            // the dial draws its own (dial_act)
+            return;
         }
         self.draw_query();
         self.draw_key(k, false);
@@ -585,10 +644,26 @@ impl Ui {
                     moved
                 }
                 Screen::Search => false,
+                Screen::Dial => {
+                    let a = self.dial.crown(&mut self.s, i32::from(e.delta), self.api.now());
+                    self.dial_act(a);
+                    false
+                }
             },
             TOUCH_DOWN => {
                 let (x, y) = (i32::from(e.x), i32::from(e.y));
                 self.down = Some((x, y));
+                if self.screen == Screen::Dial {
+                    if (70..160).contains(&y) && (x - C).abs() < 150 {
+                        // the typed text: back to the keys
+                        self.dial.cancel();
+                        self.screen = Screen::Search;
+                        return true;
+                    }
+                    let a = self.dial.down(&mut self.s, x, y, self.api.now());
+                    self.dial_act(a);
+                    return false;
+                }
                 if self.screen == Screen::Search {
                     // typed at once (as WhatsApp's keyboard): the key flashes until the next touch
                     if let Some(old) = self.pressed.take() {
@@ -606,11 +681,18 @@ impl Ui {
                 }
                 false
             }
+            TOUCH_UP if self.screen == Screen::Dial => {
+                self.down = None;
+                let a = self.dial.up(&mut self.s, i32::from(e.x), i32::from(e.y));
+                self.dial_act(a);
+                false
+            }
             TOUCH_UP => {
                 let Some((x, y)) = self.down.take() else { return false };
                 match self.screen {
                     Screen::Now => self.now_tap(x, y),
                     Screen::List => self.list_tap(x, y),
+                    Screen::Dial => {}
                     Screen::Search => {
                         if let Some(k) = self.pressed.take() {
                             self.draw_key(k, false);
@@ -677,6 +759,10 @@ impl Ui {
     /// Once a second while playing: the progress moves on the watch alone.
     fn tick(&mut self) {
         let now = self.api.now();
+        if self.screen == Screen::Dial && self.dial.tick(&mut self.s, now) == Act::Show {
+            self.motor.play(haptic::TICK);
+            self.api.show();
+        }
         if let Some(t) = self.toast_until {
             if now.wrapping_sub(t) < 1 << 31 {
                 self.toast_until = None;
@@ -713,6 +799,11 @@ impl Ui {
         }
         if let Some(t) = self.toast_until {
             ms = ms.min(t.wrapping_sub(now).min(2000));
+        }
+        if self.screen == Screen::Dial {
+            if let Some(h) = self.dial.hold_wait(now) {
+                ms = ms.min(h);
+            }
         }
         ms
     }
@@ -758,10 +849,11 @@ fn row(r: usize, sym: bool) -> ([(K, i32); 10], usize) {
             n + 1
         }
         _ => {
-            keys[0] = (K::Sym, 66);
-            keys[1] = (K::Space, 134);
-            keys[2] = (K::Go, 72);
-            3
+            keys[0] = (K::Sym, 62);
+            keys[1] = (K::Dial, 62);
+            keys[2] = (K::Space, 108);
+            keys[3] = (K::Go, 66);
+            4
         }
     };
     (keys, n)
@@ -797,6 +889,7 @@ fn main(api: &'static Api) -> i32 {
         pressed: None,
         down: None,
         motor: Motor::new(api),
+        dial: Dial::new(),
     };
     ui.draw();
     ui.send(b"R");

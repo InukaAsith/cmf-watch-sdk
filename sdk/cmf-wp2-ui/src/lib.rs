@@ -4,6 +4,7 @@
 
 pub mod ask;
 pub mod color;
+pub mod dial;
 pub mod draw;
 pub mod font;
 mod inter;

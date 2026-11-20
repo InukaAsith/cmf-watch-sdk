@@ -8,8 +8,12 @@
 //!   (rle.rs), kept in a pool until the next `H`.
 //! - `T text…` more text for the last message (a streamed answer).
 //! - `N id` a new message in chat id (buzz). `Q idx text…` quick reply idx.
+//! - `M`/`A`'s `me` byte: bit 0 ours; bits 1–2 for ours its state: 0 sent, 1 delivered, 2 read. `S idx state` a
+//!   new state for message idx. `P online` the open chat's contact is online (1) or not (0); `H` resets it.
+//! - A `C` row with `unread` 255 is a status line ("Syncing..."), not a chat: drawn in red, not opened.
 //!
-//! Watch → phone: `R` ready, `o id` open chat, `s id text…` send.
+//! Watch → phone: `R` ready, `o id` open chat, `s id text…` send, `t idx` a message tapped (Notes ticks a
+//! reminder; WhatsApp sends a sticker's or a photo's picture).
 
 use crate::rle::HEADER;
 use cmf_wp2_ui::text::fit;
@@ -17,6 +21,8 @@ use cmf_wp2_ui::text::fit;
 pub const MAX_CHATS: usize = 12;
 pub const MAX_MSGS: usize = 12;
 pub const MAX_QUICK: usize = 6;
+/// `C`'s unread for a status row
+pub const STATUS_ROW: u8 = 255;
 pub const POOL: usize = 24 * 1024;
 
 #[derive(Clone, Copy)]
@@ -76,6 +82,8 @@ impl Img {
 #[derive(Clone, Copy)]
 pub struct Msg {
     pub me: bool,
+    /// ours: 0 sent, 1 delivered, 2 read
+    pub state: u8,
     pub kind: u8,
     pub text: Str<120>,
     pub img: Option<Img>,
@@ -100,10 +108,12 @@ pub struct Model {
     used: usize,
     pub quick: [Str<24>; MAX_QUICK],
     pub n_quick: usize,
+    /// the open chat's contact is online
+    pub online: bool,
 }
 
 const CHAT: Chat = Chat { id: 0, unread: 0, name: Str::EMPTY, preview: Str::EMPTY };
-const MSG: Msg = Msg { me: false, kind: 0, text: Str::EMPTY, img: None };
+const MSG: Msg = Msg { me: false, state: 0, kind: 0, text: Str::EMPTY, img: None };
 
 impl Model {
     pub const fn new() -> Self {
@@ -118,6 +128,7 @@ impl Model {
             used: 0,
             quick: [Str::EMPTY; MAX_QUICK],
             n_quick: 0,
+            online: false,
         }
     }
 
@@ -132,16 +143,17 @@ impl Model {
 
     /// Our own reply, shown at once (the phone confirms nothing).
     pub fn append_local(&mut self, text: &[u8]) {
-        self.push(true, 0, text);
+        self.push(1, 0, text);
     }
 
-    fn push(&mut self, me: bool, kind: u8, text: &[u8]) {
+    fn push(&mut self, me: u8, kind: u8, text: &[u8]) {
         if self.n_msgs == MAX_MSGS {
             self.msgs.copy_within(1.., 0);
             self.n_msgs -= 1;
         }
         let m = &mut self.msgs[self.n_msgs];
-        m.me = me;
+        m.me = me & 1 != 0;
+        m.state = me >> 1 & 3;
         m.kind = kind;
         m.text.set(text);
         m.img = None;
@@ -172,6 +184,7 @@ impl Model {
             }
             b'H' if !a.is_empty() => {
                 self.open = Some(a[0]);
+                self.online = false;
                 self.title.set(&a[1..]);
                 self.n_msgs = 0;
                 self.used = 0;
@@ -183,7 +196,8 @@ impl Model {
                     return Effect::None;
                 }
                 let msg = &mut self.msgs[idx];
-                msg.me = a[1] != 0;
+                msg.me = a[1] & 1 != 0;
+                msg.state = a[1] >> 1 & 3;
                 msg.kind = a[2];
                 msg.text.set(&a[3..]);
                 msg.img = None;
@@ -191,7 +205,19 @@ impl Model {
                 on_open(self)
             }
             b'A' if a.len() >= 2 => {
-                self.push(a[0] != 0, a[1], &a[2..]);
+                self.push(a[0], a[1], &a[2..]);
+                on_open(self)
+            }
+            b'S' if a.len() == 2 => {
+                let idx = a[0] as usize;
+                if idx >= self.n_msgs {
+                    return Effect::None;
+                }
+                self.msgs[idx].state = a[1] & 3;
+                on_open(self)
+            }
+            b'P' if a.len() == 1 => {
+                self.online = a[0] != 0;
                 on_open(self)
             }
             b'i' if a.len() == 1 + HEADER && a[1] == b'I' => {
@@ -345,6 +371,23 @@ mod tests {
         m.apply(b"THello");
         m.apply(b"T world");
         assert_eq!(m.msgs[0].text.as_str(), "Hello world");
+    }
+
+    #[test]
+    fn states_and_online() {
+        let mut m = model();
+        m.apply(&[b'H', 3, b'S']);
+        m.apply(&[b'M', 0, 1 | 1 << 1, 0, b'h', b'i']);
+        m.apply(&[b'A', 0, 0, b'y', b'o']);
+        assert!(m.msgs[0].me && m.msgs[0].state == 1);
+        assert!(!m.msgs[1].me && m.msgs[1].state == 0);
+        assert_eq!(m.apply(&[b'S', 0, 2]), Effect::Chat);
+        assert_eq!(m.msgs[0].state, 2);
+        assert_eq!(m.apply(&[b'S', 5, 2]), Effect::None);
+        m.apply(&[b'P', 1]);
+        assert!(m.online);
+        m.apply(&[b'H', 4, b'T']);
+        assert!(!m.online);
     }
 
     #[test]
