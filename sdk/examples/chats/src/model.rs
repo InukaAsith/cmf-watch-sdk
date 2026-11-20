@@ -87,6 +87,8 @@ pub struct Msg {
     pub kind: u8,
     pub text: Str<120>,
     pub img: Option<Img>,
+    /// a picture asked for: 0 not, 1 loading, 2 none came
+    pub pic: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,7 +115,7 @@ pub struct Model {
 }
 
 const CHAT: Chat = Chat { id: 0, unread: 0, name: Str::EMPTY, preview: Str::EMPTY };
-const MSG: Msg = Msg { me: false, state: 0, kind: 0, text: Str::EMPTY, img: None };
+const MSG: Msg = Msg { me: false, state: 0, kind: 0, text: Str::EMPTY, img: None, pic: 0 };
 
 impl Model {
     pub const fn new() -> Self {
@@ -245,8 +247,15 @@ impl Model {
                 Effect::None
             }
             b'e' if a.len() == 1 => {
-                if let Some(img) = self.msgs.get_mut(a[0] as usize).and_then(|m| m.img.as_mut()) {
-                    img.ok = true;
+                // `e` alone (no `i` before it, or a gap dropped it): the phone has no picture
+                if let Some(m) = self.msgs.get_mut(a[0] as usize) {
+                    match m.img.as_mut() {
+                        Some(img) => {
+                            img.ok = true;
+                            m.pic = 0;
+                        }
+                        None => m.pic = 2,
+                    }
                 }
                 on_open(self)
             }

@@ -1,7 +1,7 @@
 //! The rotary keyboard (WhatsApp, Notes, Gemini, Spotify search). Letters round the rim: the crown turns the
-//! selection, a tap on a letter types it, a slide along the rim lands on the letter under the finger at lift. A grip
-//! circle inside: slide round it and lift, the letters turn by as much. The middle types the picked letter (held:
-//! a capital). Below, a bar: `,` delete, space, send, `.`.
+//! selection; a tap on a letter types it; grab a letter, slide round the rim and let go: the letter let go on is
+//! typed. The middle types the picked letter (held: a capital), with `,` and `.` either side of it. Below:
+//! delete, space, send.
 //!
 //! The app has no finger-move events (TOUCH_DOWN and TOUCH_UP only), so a slide counts from where the finger went
 //! down to where it came up.
@@ -21,13 +21,15 @@ pub const NUMBERS: &[u8] = b"0123456789?!@'-:()+/&#";
 /// The letters' circle.
 const R: i32 = 204;
 const CELL: i32 = 19;
-/// The grip circle.
-const GRIP_R: i32 = 158;
 /// The bar under the middle.
 pub const BAR_Y: i32 = 312;
 const BAR_H: i32 = 40;
-const BAR: [(u8, i32); 5] = [(b',', 36), (b'<', 48), (b' ', 96), (b'>', 52), (b'.', 36)];
-const GAP: i32 = 6;
+const BAR: [(u8, i32); 3] = [(b'<', 60), (b' ', 124), (b'>', 60)];
+const GAP: i32 = 8;
+/// `,` and `.` beside the middle letter: their x offset from the centre, radius.
+const PUNCT_DX: i32 = 100;
+const PUNCT_R: i32 = 26;
+const PUNCT_Y: i32 = C - 6;
 /// Top of the middle (typed text above).
 const MID_Y: i32 = 176;
 /// Held this long: a capital.
@@ -43,7 +45,6 @@ const W: u16 = 0xFFFF;
 const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
 const GREY: u16 = rgb565(0x80, 0x80, 0x80);
 const DIM: u16 = rgb565(0x3A, 0x3A, 0x3A);
-const GRIP: u16 = rgb565(0x5A, 0x5A, 0x5A);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Key {
@@ -71,8 +72,8 @@ pub struct Dial {
     pub sel: usize,
     /// the letter that types at lift: index, when the finger went down, whether the hold made it a capital
     press: Option<(usize, u32, bool)>,
-    /// where a slide began: its angle, and whether on the letters (else on the grip)
-    grab: Option<(u16, bool)>,
+    /// a letter grabbed on the rim
+    grab: bool,
     acc: i32,
     at: u32,
     gap: i32,
@@ -87,7 +88,7 @@ impl Default for Dial {
 
 impl Dial {
     pub const fn new() -> Self {
-        Dial { sym: false, shift: true, sel: 0, press: None, grab: None, acc: 0, at: 0, gap: 400, pitch: Cell::new(0) }
+        Dial { sym: false, shift: true, sel: 0, press: None, grab: false, acc: 0, at: 0, gap: 400, pitch: Cell::new(0) }
     }
 
     fn keys(&self) -> &'static [u8] {
@@ -134,12 +135,9 @@ impl Dial {
     }
 
     pub fn draw(&self, s: &mut impl Surface) {
-        // the grip: two arcs between the typed text and the bar
-        for k in 0..96u32 {
-            let (x, y) = polar(GRIP_R, (k * 65536 / 96) as u16);
-            if (MID_Y + 2..BAR_Y - 14).contains(&y) {
-                s.rect(x - 2, y - 2, 4, 4, GRIP);
-            }
+        for (dx, label) in [(-PUNCT_DX, ","), (PUNCT_DX, ".")] {
+            disc(s, C + dx, PUNCT_Y, PUNCT_R, KEY, BLACK);
+            font::centre(s, C + dx, PUNCT_Y - 12, label, W);
         }
         self.draw_bar(s);
         for i in 0..self.keys().len() {
@@ -155,10 +153,8 @@ impl Dial {
             rrect(s, bx, BAR_Y, w, BAR_H, BAR_H / 2, if send { RED } else { KEY }, BLACK);
             let label = match k {
                 b' ' => "space",
-                b'<' => "del",
-                b'>' => "send",
-                b',' => ",",
-                _ => ".",
+                b'<' => "<",
+                _ => ">",
             };
             font::centre(s, bx + w / 2, BAR_Y + 9, label, W);
             bx += w + GAP;
@@ -244,30 +240,28 @@ impl Dial {
     /// TOUCH_DOWN: a bar key types at once; a letter is picked; the middle and the grip wait for the lift.
     pub fn down(&mut self, s: &mut impl Surface, x: i32, y: i32, now: u32) -> Act {
         self.press = None;
-        self.grab = None;
+        self.grab = false;
         if let Some(k) = Self::bar_key(x, y) {
             return Act::Key(match k {
                 b'<' => Key::Del,
                 b'>' => Key::Send,
-                b' ' => Key::Space,
-                c => {
-                    self.shift = false;
-                    Key::Ch(c)
-                }
+                _ => Key::Space,
             });
         }
+        for (dx, c) in [(-PUNCT_DX, b','), (PUNCT_DX, b'.')] {
+            let (ex, ey) = (x - C - dx, y - PUNCT_Y);
+            if ex * ex + ey * ey <= (PUNCT_R + 8) * (PUNCT_R + 8) {
+                self.shift = false;
+                return Act::Key(Key::Ch(c));
+            }
+        }
         let (dx, dy) = (x - C, y - C);
-        let r = isqrt(dx * dx + dy * dy);
-        let a = angle(dx, dy);
-        if r > R - 34 {
-            let i = self.index_at(a);
+        if isqrt(dx * dx + dy * dy) > R - 34 {
+            let i = self.index_at(angle(dx, dy));
             self.press = Some((i, now, false));
-            self.grab = Some((a, true));
+            self.grab = true;
             self.select(s, i);
             return Act::Show;
-        }
-        if r >= 120 {
-            self.grab = Some((a, false));
         }
         if (MID_Y..BAR_Y - 6).contains(&y) {
             self.press = Some((self.sel, now, false));
@@ -275,28 +269,20 @@ impl Dial {
         Act::None
     }
 
-    /// TOUCH_UP: a slide moves the selection (nothing typed); else the pressed letter types.
+    /// TOUCH_UP: the letter pressed types; a letter grabbed and slid round the rim types the one let go on.
     pub fn up(&mut self, s: &mut impl Surface, x: i32, y: i32) -> Act {
-        let (grab, press) = (self.grab.take(), self.press.take());
-        if let Some((a0, rim)) = grab {
+        let (grab, press) = (core::mem::take(&mut self.grab), self.press.take());
+        let Some((mut i, _, upper)) = press else { return Act::None };
+        if grab {
             let (dx, dy) = (x - C, y - C);
-            let a1 = angle(dx, dy);
-            if rim {
-                let i1 = self.index_at(a1);
-                if isqrt(dx * dx + dy * dy) > 90 && press.is_some_and(|p| p.0 != i1) {
-                    self.select(s, i1);
-                    return Act::Show;
-                }
-            } else {
-                let n = self.keys().len() as i32;
-                let k = turned(a0, a1, n);
-                if k != 0 {
-                    self.select(s, (self.sel as i32 + k).rem_euclid(n) as usize);
-                    return Act::Show;
+            if isqrt(dx * dx + dy * dy) > 90 {
+                let i1 = self.index_at(angle(dx, dy));
+                if i1 != i {
+                    i = i1;
+                    self.select(s, i);
                 }
             }
         }
-        let Some((i, _, upper)) = press else { return Act::None };
         let c = self.keys()[i];
         if c == b'#' {
             self.sym = !self.sym;
@@ -332,14 +318,8 @@ impl Dial {
     /// The finger's lift will never come (the screen changed).
     pub fn cancel(&mut self) {
         self.press = None;
-        self.grab = None;
+        self.grab = false;
     }
-}
-
-/// Letters turned by a slide from angle `a0` to `a1` (`n` letters round), rounded; a half turn at most each way.
-fn turned(a0: u16, a1: u16, n: i32) -> i32 {
-    let d = a1.wrapping_sub(a0) as i16 as i32;
-    (d * n + if d >= 0 { 32768 } else { -32768 }) / 65536
 }
 
 #[cfg(test)]
@@ -352,21 +332,9 @@ mod tests {
     }
 
     #[test]
-    fn a_slide_turns_by_its_angle() {
-        let n = LETTERS.len() as i32;
-        assert_eq!(turned(0, 0, n), 0);
-        assert_eq!(turned(0, (65536 / n) as u16, n), 1);
-        assert_eq!(turned((65536 / n) as u16 * 3, 0, n), -3);
-        // a sixth of a letter is no turn
-        assert_eq!(turned(0, (65536 / n / 6) as u16, n), 0);
-        // over 12 o'clock
-        assert_eq!(turned(65000, 1500, n), 1);
-    }
-
-    #[test]
     fn bar_keys() {
         let x0 = Dial::bar_x0();
-        assert_eq!(Dial::bar_key(x0 + 20, BAR_Y + 20), Some(b','));
+        assert_eq!(Dial::bar_key(x0 + 20, BAR_Y + 20), Some(b'<'));
         assert_eq!(Dial::bar_key(C, BAR_Y + 20), Some(b' '));
         assert_eq!(Dial::bar_key(C, BAR_Y - 40), None);
         let mut px = fb();
@@ -374,7 +342,9 @@ mod tests {
         let mut d = Dial::new();
         assert_eq!(d.down(&mut s, C, BAR_Y + 20, 0), Act::Key(Key::Space));
         assert_eq!(d.up(&mut s, C, BAR_Y + 20), Act::None);
-        assert_eq!(d.down(&mut s, x0 + 20, BAR_Y + 20, 0), Act::Key(Key::Ch(b',')));
+        assert_eq!(d.down(&mut s, x0 + 20, BAR_Y + 20, 0), Act::Key(Key::Del));
+        assert_eq!(d.down(&mut s, C - PUNCT_DX, PUNCT_Y, 0), Act::Key(Key::Ch(b',')));
+        assert_eq!(d.down(&mut s, C + PUNCT_DX, PUNCT_Y + 10, 0), Act::Key(Key::Ch(b'.')));
     }
 
     #[test]
@@ -394,22 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn grip_slide_turns_without_typing() {
-        let mut px = fb();
-        let mut s = Fb::new(&mut px);
-        let mut d = Dial::new();
-        d.shift = false;
-        // down on the grip at 9 o'clock (left), up at 12 o'clock: a quarter turn clockwise
-        d.down(&mut s, C - GRIP_R, C, 0);
-        assert_eq!(d.up(&mut s, C, C - GRIP_R), Act::Show);
-        assert_eq!(d.sel, LETTERS.len() / 4);
-        // a tap on the grip in the middle band types
-        d.down(&mut s, C - GRIP_R, C + 20, 0);
-        assert!(matches!(d.up(&mut s, C - GRIP_R, C + 20), Act::Key(Key::Ch(_))));
-    }
-
-    #[test]
-    fn rim_tap_types_rim_slide_picks() {
+    fn rim_tap_types_rim_slide_types_where_let_go() {
         let mut px = fb();
         let mut s = Fb::new(&mut px);
         let mut d = Dial::new();
@@ -418,7 +373,7 @@ mod tests {
         assert_eq!(d.up(&mut s, x, y), Act::Key(Key::Ch(b'C')));
         let (x2, y2) = d.at(5);
         d.down(&mut s, x, y, 0);
-        assert_eq!(d.up(&mut s, x2, y2), Act::Show);
+        assert_eq!(d.up(&mut s, x2, y2), Act::Key(Key::Ch(b'f')));
         assert_eq!(d.sel, 5);
         // # switches to the numbers
         let i = LETTERS.len() - 1;
