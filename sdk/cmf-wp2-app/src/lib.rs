@@ -32,11 +32,15 @@ pub const MEDIA: u8 = 10;
 /// differential), `y` = satellites in use. Read the position with [`Api::gps_fix`] (loader of 2026-11-19).
 pub const GPS: u8 = 11;
 
-/// [`Api::media_key`] commands, as the stock music controls send them. No volume.
+/// [`Api::media_key`] commands, as the stock music controls send them.
 pub const MEDIA_PLAY: u8 = 1;
 pub const MEDIA_PAUSE: u8 = 2;
 pub const MEDIA_PREV: u8 = 3;
 pub const MEDIA_NEXT: u8 = 4;
+/// One step of the phone's media volume, as the stock volume popup sends it (its crown sends one per six detents).
+/// The loaders of 2026-11-16 to 2026-11-19 answer `-22`: check the result and fall back.
+pub const MEDIA_VOLUME_UP: u8 = 5;
+pub const MEDIA_VOLUME_DOWN: u8 = 6;
 
 /// SENSOR records for `lv_submit` (docs/abi-1.4.md, "Heart rate"); statics, so they lie in the app block.
 #[doc(hidden)]
@@ -276,9 +280,10 @@ impl Api {
         Some(GpsFix::from_bytes(b[4..].try_into().unwrap()))
     }
 
-    /// Sends a music command to the phone ([`MEDIA_PLAY`], [`MEDIA_PAUSE`], [`MEDIA_PREV`], [`MEDIA_NEXT`]), as the
-    /// stock music controls do. `0`; `-19` when the phone is not linked or has no media; `-22` for another value
-    /// and on a loader older than 2026-11-16. Waits for the loader's UI tick: with the panel dark it returns once it
+    /// Sends a music command to the phone ([`MEDIA_PLAY`], [`MEDIA_PAUSE`], [`MEDIA_PREV`], [`MEDIA_NEXT`],
+    /// [`MEDIA_VOLUME_UP`], [`MEDIA_VOLUME_DOWN`]), as the stock music controls do. `0`; `-19` when the phone is not
+    /// linked or has no media; `-22` for another value, on a loader older than 2026-11-16, and for the volume
+    /// commands on the loaders of 2026-11-16 to 2026-11-19. Waits for the loader's UI tick: with the panel dark it returns once it
     /// is lit again.
     pub fn media_key(&self, cmd: u8) -> i32 {
         if self.abi_minor < 2 {
@@ -591,6 +596,7 @@ mod tests {
         api.lv_submit = echo;
         // [0x16, 1, 0, 0, 4]
         assert_eq!(api.media_key(MEDIA_NEXT), 0x16 + 2 + 5 * 4);
+        assert_eq!(api.media_key(MEDIA_VOLUME_DOWN), 0x16 + 2 + 5 * 6);
         // [0x17, 5, 0, 0, 1, 3, 0, 0x34, 0x12]
         assert_eq!(api.media_bind(Some(lv::Obj(3)), Some(lv::Obj(0x1234))), 0x17 + 10 + 5 + 6 * 3 + 8 * 0x34 + 9 * 0x12);
         assert_eq!(api.media_unbind(), 0x17 + 10);
