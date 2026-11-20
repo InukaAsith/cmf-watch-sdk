@@ -5,14 +5,15 @@
 //! turns the selection, a tap on the middle types it, a tap on the rim types that letter). Taps are TOUCH_DOWN (its
 //! position is the reliable one). The button goes back (own_back), and leaves the app from the list.
 
-use crate::model::{Effect, Model, Msg, MAX_MSGS};
+use crate::model::{Effect, Model, Msg, MAX_MSGS, STATUS_ROW};
 use crate::rle::{self, Decoder};
 use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, BLACK, Rgb};
+use cmf_wp2_ui::dial::{Act, Dial, Key};
 use cmf_wp2_ui::draw::{disc, ring, rrect};
 use cmf_wp2_ui::geom::{chord, polar};
 use cmf_wp2_ui::haptic::{self, Motor};
-use cmf_wp2_ui::motion::{angle, isqrt};
+use cmf_wp2_ui::motion::isqrt;
 use cmf_wp2_ui::font::{self, centre, clip, fitted, wrap};
 use cmf_wp2_ui::text::{dots, dots_centre, fit};
 use cmf_wp2_ui::{C, Surface};
@@ -86,6 +87,7 @@ const W: u16 = 0xFFFF;
 const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
 const GREY: u16 = rgb565(0x80, 0x80, 0x80);
 const DIM: u16 = rgb565(0x3A, 0x3A, 0x3A);
+const GREEN: Rgb = Rgb(0x25, 0xD3, 0x66);
 
 // --- list
 const HEAD_H: i32 = 96;
@@ -105,11 +107,7 @@ const BTN_Y: i32 = 424;
 /// Dial letters per crown detent, in 1/100s: a slow turn, a fast spin (ui.crown).
 /// Moved more than this between down and up: a drag, not a tap.
 const DRAG: i32 = 14;
-const DIAL_SLOW: i32 = 17;
-const DIAL_FAST: i32 = 60;
 /// The space bar under the dial's centre letter: top and height.
-const SPACE_Y: i32 = 312;
-const SPACE_H: i32 = 40;
 const BTN_X: [i32; 3] = [C - 72, C, C + 72];
 // --- quick replies
 const Q_TOP: i32 = 100;
@@ -120,11 +118,7 @@ const KH: i32 = 58;
 const ROW_Y: [i32; 4] = [184, 242, 300, 358];
 // --- dial
 /// The two dials: `#` on the rim switches between them.
-const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ.?_<>#";
-const NUMBERS: &[u8] = b"0123456789.,?!@'-:()+_<>#";
 /// Held this long, a dial letter types as a capital.
-const HOLD_MS: u32 = 450;
-const DIAL_R: i32 = 204;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
@@ -208,18 +202,11 @@ struct Ui {
     n_typed: usize,
     sym: bool,
     shift: bool,
-    sel: usize,
     /// a key drawn pressed, to draw plain again at this time
     flash: Option<(K, u32)>,
-    /// a dial letter under the finger: index, when it went down, whether the hold made it a capital
-    press: Option<(usize, u32, bool)>,
+    /// the rotary keyboard (cmf_wp2_ui::dial)
+    dial: Dial,
     motor: Motor,
-    /// crown detents since the dial last moved a letter
-    crown_acc: i32,
-    /// when the last crown detent came (its speed)
-    crown_at: u32,
-    /// the detent gap averaged, ms
-    crown_gap: i32,
     /// where a touch on a scrolling screen went down
     down: Option<(i32, i32)>,
     /// Gemini: a question sent, no answer yet: when, and whether it was sent again
@@ -228,8 +215,6 @@ struct Ui {
     thinking: bool,
     asked: [u8; MSG_MAX],
     asked_n: usize,
-    /// the dial letter's dot pitch as last drawn
-    dial_pitch: core::cell::Cell<i32>,
 }
 
 fn main(api: &'static Api) -> i32 {
@@ -245,19 +230,14 @@ fn main(api: &'static Api) -> i32 {
         n_typed: 0,
         sym: false,
         shift: true,
-        sel: 0,
         flash: None,
-        press: None,
+        dial: Dial::new(),
         motor: Motor::new(api),
-        crown_acc: 0,
-        crown_at: 0,
-        crown_gap: 400,
         down: None,
         pending: None,
         thinking: false,
         asked: [0; MSG_MAX],
         asked_n: 0,
-        dial_pitch: core::cell::Cell::new(0),
     };
     ui.draw();
     let _ = api.send(b"R");
@@ -275,10 +255,7 @@ fn main(api: &'static Api) -> i32 {
     loop {
         let now = api.now();
         let flash = ui.flash.map(|(_, t)| t.wrapping_sub(now).min(1000));
-        let hold = match ui.press {
-            Some((_, t, false)) => Some(t.wrapping_add(HOLD_MS).wrapping_sub(now).min(HOLD_MS)),
-            _ => None,
-        };
+        let hold = if ui.screen == Screen::Dial { ui.dial.hold_wait(now) } else { None };
         let again = retry.map(|(t, _)| t.wrapping_sub(now).min(RETRY_MS));
         let asked = ui.pending.map(|(t, _)| t.wrapping_add(ASK_AGAIN_MS).wrapping_sub(now).min(ASK_AGAIN_MS));
         let wait = [ui.motor.wait(), flash, hold, again, asked].into_iter().flatten().min().unwrap_or(u32::MAX);
@@ -334,25 +311,20 @@ fn main(api: &'static Api) -> i32 {
                 }
             }
         }
-        if let Some((i, t, false)) = ui.press {
-            if api.now().wrapping_sub(t) >= HOLD_MS {
-                // held: the letter becomes a capital, shown in the middle
-                ui.press = Some((i, t, true));
-                ui.motor.play(haptic::TICK);
-                ui.draw_dial_centre();
-                api.show();
-            }
+        if ui.screen == Screen::Dial && ui.dial.tick(&mut Dot(api), api.now()) == Act::Show {
+            // held: the letter becomes a capital, shown in the middle
+            ui.motor.play(haptic::TICK);
+            api.show();
         }
         let Some(e) = e else { continue };
         match e.kind {
             TOUCH_UP if ui.screen == Screen::Dial => {
-                if let Some((i, _, upper)) = ui.press.take() {
-                    ui.dial_type(i, upper);
-                }
+                let a = ui.dial.up(&mut Dot(api), e.x as i32, e.y as i32);
+                ui.dial_act(a);
             }
             BUTTON => {
                 ui.motor.off();
-                ui.press = None;
+                ui.dial.cancel();
                 match ui.screen {
                     Screen::List => return 0,
                     Screen::Chat => ui.go(Screen::List),
@@ -451,6 +423,8 @@ impl Ui {
                 self.sym = false;
                 self.shift = self.n_typed == 0;
                 self.flash = None;
+                self.dial.shift = self.shift;
+                self.dial.cancel();
             }
             Screen::List => {}
         }
@@ -515,21 +489,25 @@ impl Ui {
                 continue;
             }
             let c = &m.chats[i];
+            // a status line (Syncing...): red, no badge
+            let status = c.unread == STATUS_ROW;
+            let unread = if status { 0 } else { c.unread };
             surround(&mut s, x0, y, x1 - x0, CARD_H, CARD_H / 2);
             rrect(&mut s, x0, y, x1 - x0, CARD_H, CARD_H / 2, CARD, BLACK);
             let (ax, ay) = (x0 + 46, y + CARD_H / 2);
-            ring(&mut s, ax, ay, 25, 27, if c.unread > 0 { WHITE } else { Rgb(0x70, 0x70, 0x70) }, CARD);
+            ring(&mut s, ax, ay, 25, 27, if status { RED } else if unread > 0 { WHITE } else { Rgb(0x70, 0x70, 0x70) }, CARD);
             let mut b = [0u8; 4];
             let ch = c.name.as_str().chars().next().unwrap_or('?').to_ascii_uppercase();
             dots_centre(&mut s, ax, ay - 12, ch.encode_utf8(&mut b), 3, 2, W);
             let tx = x0 + 86;
-            let right = x1 - if c.unread > 0 { 52 } else { 24 };
-            fitted(&mut s, tx, y + 16, c.name.as_str(), right - tx, if c.unread > 0 { W } else { SOFT });
+            let right = x1 - if unread > 0 { 52 } else { 24 };
+            let ink = if status { RED.rgb565() } else if unread > 0 { W } else { SOFT };
+            fitted(&mut s, tx, y + 16, c.name.as_str(), right - tx, ink);
             fitted(&mut s, tx, y + 46, c.preview.as_str(), x1 - 30 - tx, GREY);
-            if c.unread > 0 {
+            if unread > 0 {
                 disc(&mut s, x1 - 32, y + 26, 13, RED, CARD);
                 let mut n = [0u8; 11];
-                centre(&mut s, x1 - 32, y + 18, cmf_wp2_ui::text::int(c.unread.min(9) as i32, &mut n), W);
+                centre(&mut s, x1 - 32, y + 18, cmf_wp2_ui::text::int(unread.min(9) as i32, &mut n), W);
             }
         }
         let end = LIST_TOP + m.n_chats as i32 * PITCH - self.list_scroll;
@@ -587,6 +565,11 @@ impl Ui {
         }
         let (shown, _) = cmf_wp2_ui::text::clip(fit(&up[..n], 24), 9);
         heading(&mut s, 26, shown, 3);
+        if m.online {
+            // online: a green dot before the name
+            let w = shown.chars().count() as i32 * 24;
+            disc(&mut s, C - w / 2 - 16, 37, 7, GREEN, BLACK);
+        }
         rule(&mut s, 66);
         Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
         self.chat_buttons(&mut s);
@@ -838,109 +821,46 @@ impl Ui {
 
     // --- rotary dial
 
-    fn dial(&self) -> &'static [u8] {
-        if self.sym { NUMBERS } else { LETTERS }
-    }
-
-    fn dial_at(&self, i: usize) -> (i32, i32) {
-        // from 12 o'clock, clockwise
-        let a = (49152u32 + (i as u32 * 65536) / self.dial().len() as u32) as u16;
-        polar(DIAL_R, a)
-    }
-
-    fn dial_label(&self, i: usize) -> &'static str {
-        let d = self.dial();
-        match d[i] {
-            b'#' if self.sym => "ab",
-            b'#' => "12",
-            _ => core::str::from_utf8(&d[i..i + 1]).unwrap_or("?"),
-        }
-    }
-
-    fn draw_dial_cell(&self, i: usize) {
-        let mut s = Dot(self.api);
-        let (x, y) = self.dial_at(i);
-        if i != self.sel {
-            // the selection's disc goes; the letter's cell is painted, not cleared then drawn
-            disc(&mut s, x, y, 19, BLACK, BLACK);
-        }
-        if i == self.sel {
-            disc(&mut s, x, y, 19, if self.dial()[i] == b'>' { RED } else { WHITE }, BLACK);
-            centre(&mut s, x, y - 8, self.dial_label(i), if self.dial()[i] == b'>' { W } else { 0 });
-        } else {
-            let c = match self.dial()[i] {
-                b'>' => RED.rgb565(),
-                b'#' => W,
-                b'0'..=b'9' | b'A'..=b'Z' => SOFT,
-                _ => GREY,
-            };
-            centre(&mut s, x, y - 8, self.dial_label(i), c);
-        }
-    }
-
-    fn draw_dial_centre(&self) {
-        let mut s = Dot(self.api);
-        let upper = self.shift || matches!(self.press, Some((_, _, true)));
-        let mut b = [0u8; 4];
-        let label = match self.dial()[self.sel] {
-            b'_' => "SPC",
-            b'<' => "DEL",
-            b'>' => "SEND",
-            b'#' if self.sym => "ABC",
-            b'#' => "123",
-            c if c.is_ascii_alphabetic() && !upper => (c.to_ascii_lowercase() as char).encode_utf8(&mut b),
-            _ => self.dial_label(self.sel),
-        };
-        let pitch = if label.len() == 1 { 8 } else { 3 };
-        let h = 8 * pitch;
-        let w = label.chars().count() as i32 * 8 * pitch;
-        let (x, y) = (C - w / 2, C - h / 2 - 6);
-        // painted over the last letter dot for dot (off dots black): no clear, no flicker; a change of size clears
-        if self.dial_pitch.get() != pitch {
-            Surface::rect(&mut s, C - 60, 176, 120, 112, 0);
-            self.dial_pitch.set(pitch);
-        } else {
-            Surface::rect(&mut s, C - 60, 176, x - (C - 60), 112, 0);
-            Surface::rect(&mut s, x + w, 176, C + 60 - x - w, 112, 0);
-        }
-        let c = if self.dial()[self.sel] == b'>' { RED.rgb565() } else { W };
-        cmf_wp2_ui::text::dots_opaque(&mut s, x, y, label, pitch, pitch - 1, c, 0);
-        centre(&mut s, C, 280, "tap  hold: Aa", DIM);
-    }
-
     fn draw_dial(&self) {
         let mut s = Dot(self.api);
         rule(&mut s, 170);
         self.draw_typed(110, 2, 14);
-        rrect(&mut s, C - 64, SPACE_Y, 128, SPACE_H, SPACE_H / 2, Rgb(0x2a, 0x2a, 0x2a), BLACK);
-        centre(&mut s, C, SPACE_Y + 9, "space", W);
-        for i in 0..self.dial().len() {
-            self.draw_dial_cell(i);
-        }
-        self.draw_dial_centre();
+        self.dial.draw(&mut s);
     }
 
-    fn dial_type(&mut self, i: usize, upper: bool) {
-        self.motor.play(haptic::TICK);
-        match self.dial()[i] {
-            b'>' => return self.send_typed(),
-            b'#' => {
-                // the other dial
-                self.sym = !self.sym;
-                self.sel = 0;
-                return self.draw();
+    /// What the keyboard said: typed into the text here (sentence capitals kept), or sent.
+    fn dial_act(&mut self, a: Act) {
+        match a {
+            Act::None => {}
+            Act::Show => {
+                self.motor.play(haptic::TICK);
+                self.api.show();
             }
-            b'<' => self.type_key(K::Del),
-            b'_' => self.type_key(K::Space),
-            c => {
-                let c = if self.shift || upper { c } else { c.to_ascii_lowercase() };
-                self.shift = false;
-                self.type_key(K::Ch(c));
+            Act::Redraw => {
+                self.motor.play(haptic::TICK);
+                self.draw();
+            }
+            Act::Key(k) => {
+                self.motor.play(haptic::TICK);
+                match k {
+                    Key::Send => return self.send_typed(),
+                    Key::Del => self.type_key(K::Del),
+                    Key::Space => {
+                        self.shift = false;
+                        self.type_key(K::Space);
+                    }
+                    Key::Ch(c) => {
+                        // already in its case
+                        self.shift = false;
+                        self.type_key(K::Ch(c));
+                    }
+                }
+                self.dial.shift = self.shift;
+                self.redraw_typed();
+                self.dial.draw_centre(&mut Dot(self.api));
+                self.api.show();
             }
         }
-        self.redraw_typed();
-        self.draw_dial_centre();
-        self.api.show();
     }
 
     // --- sending
@@ -1038,31 +958,10 @@ impl Ui {
                 self.quick_scroll = next;
             }
             Screen::Dial => {
-                // dynamic speed: each detent adds a fraction of a letter (in 1/100s) that grows smoothly with the
-                // turn's speed, from 1/4 letter when slow (gap >= 220 ms) to 1.5 letters when spun (gap <= 30 ms); the
-                // gap is averaged over the last detents so the speed ramps instead of jumping. A turn back starts over.
-                let now = self.api.now();
-                let gap = now.wrapping_sub(self.crown_at).min(400) as i32;
-                self.crown_at = now;
-                self.crown_gap = (self.crown_gap + gap) / 2;
-                let g = self.crown_gap.clamp(30, 220);
-                let gain = DIAL_SLOW + (DIAL_FAST - DIAL_SLOW) * (220 - g) / 190;
-                if (self.crown_acc > 0) != (d > 0) {
-                    self.crown_acc = 0;
+                if self.dial.crown(&mut Dot(self.api), d, self.api.now()) == Act::Show {
+                    self.motor.play(haptic::TICK);
+                    self.api.show();
                 }
-                self.crown_acc += d * gain;
-                if self.crown_acc.abs() < 100 {
-                    return;
-                }
-                let step = self.crown_acc / 100;
-                self.crown_acc %= 100;
-                let old = self.sel;
-                self.sel = (self.sel as i32 + step).rem_euclid(self.dial().len() as i32) as usize;
-                self.motor.play(haptic::TICK);
-                self.draw_dial_cell(old);
-                self.draw_dial_cell(self.sel);
-                self.draw_dial_centre();
-                self.api.show();
                 return;
             }
             Screen::Qwerty => return,
@@ -1082,6 +981,9 @@ impl Ui {
                     return;
                 }
                 let i = i as usize;
+                if m.chats[i].unread == STATUS_ROW {
+                    return;
+                }
                 let id = m.chats[i].id;
                 m.chats[i].unread = 0;
                 m.open = Some(id);
@@ -1127,28 +1029,8 @@ impl Ui {
             }
             Screen::Qwerty => self.qwerty_tap(x, y),
             Screen::Dial => {
-                let (dx, dy) = (x - C, y - C);
-                let r = isqrt(dx * dx + dy * dy);
-                if r > DIAL_R - 34 {
-                    // the letter under the finger: nearest by angle
-                    let a = angle(dx, dy).wrapping_sub(49152) as u32;
-                    let n = self.dial().len() as u32;
-                    let i = ((a * n + 32768) / 65536 % n) as usize;
-                    let old = self.sel;
-                    self.sel = i;
-                    self.draw_dial_cell(old);
-                    self.draw_dial_cell(i);
-                    self.press = Some((i, self.api.now(), false));
-                    self.draw_dial_centre();
-                    self.api.show();
-                } else if (SPACE_Y - 6..SPACE_Y + SPACE_H + 6).contains(&y) && (x - C).abs() < 80 {
-                    // the space bar: types a space, the selection stays
-                    if let Some(i) = self.dial().iter().position(|&c| c == b'_') {
-                        self.press = Some((i, self.api.now(), false));
-                    }
-                } else if (176..SPACE_Y - 6).contains(&y) {
-                    self.press = Some((self.sel, self.api.now(), false));
-                }
+                let a = self.dial.down(&mut Dot(self.api), x, y, self.api.now());
+                self.dial_act(a);
             }
         }
     }
@@ -1227,9 +1109,10 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
         }
         return;
     }
+    // a tap asks the phone for the picture
     let placeholder = match msg.kind {
-        1 => "Sticker",
-        2 => "Photo",
+        1 => "Sticker: tap",
+        2 => "Photo: tap",
         _ => "",
     };
     let ls = if placeholder.is_empty() { lines(msg) } else { Lines { l: [placeholder, "", "", "", "", "", "", ""], n: 1 } };
@@ -1247,6 +1130,12 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
     for (i, l) in ls.l[..n].iter().enumerate() {
         let c = if placeholder.is_empty() { ink } else { GREY };
         fitted(s, x + 16, top + 8 + i as i32 * LINE, l, TEXT_W, c);
+    }
+    if msg.me && !crate::ASSISTANT {
+        // at the top, left of our bubble: . delivered, .. read
+        for k in 0..msg.state.min(2) as i32 {
+            disc(s, x - 10 - k * 12, top + 10, 4, WHITE, BLACK);
+        }
     }
 }
 
