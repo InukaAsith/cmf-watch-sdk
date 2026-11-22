@@ -26,15 +26,32 @@ import WebKit
     /// A site's simple screen (Simple): what it lists, read once it is there (3 s at most), thumbnails fetched.
     func simplePage(_ site: Simple.Site) async -> [String: Any] {
         var items: [Simple.Item] = []
-        for _ in 0..<15 {
-            items = Simple.items(await js(Simple.script(site)) ?? "[]")
-            if !items.isEmpty { break }
-            try? await Task.sleep(for: .milliseconds(200))
+        let feed = web.url.map(Simple.isFeed) ?? false
+        if feed {
+            // Instagram builds only the posts near the view: walked down in steps, the posts gathered on the way
+            var got: [URL: Simple.Item] = [:], order: [URL] = []
+            for k in 0..<18 {
+                _ = await js("window.scrollTo(0, \(k * 450))")
+                try? await Task.sleep(for: .milliseconds(k == 0 ? 800 : 450))
+                for it in Simple.items(await js(Simple.feedScript) ?? "[]") where !it.byline.isEmpty {
+                    if got[it.link] == nil { order.append(it.link) }
+                    got[it.link] = it
+                }
+                if order.count >= 3 { break }
+            }
+            items = order.compactMap { got[$0] }
+            _ = await js("window.scrollTo(0, 0)")
+        } else {
+            for _ in 0..<15 {
+                items = Simple.items(await js(Simple.script(site)) ?? "[]")
+                if !items.isEmpty { break }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
         }
-        let thumbs = await Simple.thumbs(items, site: site)
+        let thumbs = await Simple.thumbs(items, site: site, feed: feed)
         let q = web.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?
             .first { $0.name == "search_query" || $0.name == "q" }?.value } ?? ""
-        let sc = Simple.screen(site, query: q, items: items, thumbs: thumbs)
+        let sc = Simple.screen(site, query: q, items: items, thumbs: thumbs, feed: feed, tab: web.url.flatMap(Simple.tab))
         simple = (site, sc)
         let boxes = [(x: sc.field.x, y: sc.field.y, w: sc.field.w, h: sc.field.h, kind: UInt8(1))]
             + sc.rows.prefix(150).map { (x: $0.x, y: $0.y, w: $0.w, h: $0.h, kind: UInt8(0)) }
@@ -192,7 +209,9 @@ import WebKit
         for _ in 0..<60 where await js("document.readyState") == "loading" {
             try? await Task.sleep(for: .milliseconds(100))
         }
-        try? await Task.sleep(for: .milliseconds(400))
+        // Google's results are in its HTML: no settling time
+        let google = web.url.map(BrowserProto.isGoogleSearch) ?? false
+        try? await Task.sleep(for: .milliseconds(google ? 60 : 400))
     }
 
     nonisolated func webView(_ v: WKWebView, didStartProvisionalNavigation n: WKNavigation!) {
@@ -255,9 +274,10 @@ import WebKit
         box.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
         web.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
         _ = await js("window.scrollTo(0, 0)")
-        try? await Task.sleep(for: .milliseconds(150))
-        // its images in (lazy ones told to load: all of the tall page is in view), 1.5 s at most
-        for _ in 0..<15 where (Int(await js(BrowserProto.imagesPending(tall)) ?? "0") ?? 0) > 0 {
+        let google = web.url.map(BrowserProto.isGoogleSearch) ?? false
+        try? await Task.sleep(for: .milliseconds(google ? 60 : 150))
+        // its images in (lazy ones told to load: all of the tall page is in view), 1.5 s at most (Google: 0.5 s)
+        for _ in 0..<(google ? 5 : 15) where (Int(await js(BrowserProto.imagesPending(tall)) ?? "0") ?? 0) > 0 {
             try? await Task.sleep(for: .milliseconds(100))
         }
         try? await Task.sleep(for: .milliseconds(100))
