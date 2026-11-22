@@ -152,6 +152,12 @@ async def start_screen(ch, route, a):
             await ch.send(b"E" + "Searching\u2026".encode())
             for x in places(FOUND):
                 await ch.send(x)
+        elif m == b"C" and driving:
+            print("stopped from the watch", flush=True)
+            driving.cancel()
+            driving = None
+            for x in places(RECENT):
+                await ch.send(x)
         elif m[:1] == b"S" and len(m) == 3 and not driving:
             print(f"start {m[1]} {'walking' if m[2] else 'roads'}", flush=True)
             await ch.send(b"E" + "Finding a route\u2026".encode())

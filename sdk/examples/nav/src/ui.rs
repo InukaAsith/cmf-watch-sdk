@@ -7,9 +7,13 @@ use crate::state::{Effect, Nav};
 use crate::view::{self, ZOOMS};
 use crate::start::{Screen, Start, Tap};
 use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
+use cmf_wp2_ui::color::{Rgb, BLACK};
 use cmf_wp2_ui::dial::Act;
+use cmf_wp2_ui::draw::{disc, line};
 use cmf_wp2_ui::haptic::{self, Motor};
-use cmf_wp2_ui::Surface;
+use cmf_wp2_ui::{Surface, C};
+
+const WHITE: Rgb = Rgb(0xFF, 0xFF, 0xFF);
 
 cmf_wp2_app::entry!(main);
 cmf_wp2_app::app_icon!();
@@ -33,7 +37,12 @@ struct Ui {
     due: bool,
     /// no route on: where to (start.rs)
     start: Start,
+    /// the ✕ tapped once: red, the next tap on it stops the route (any other tap: not)
+    armed: bool,
 }
+
+/// The ✕ at the bottom: stops the route (tapped twice), or leaves the arrival.
+const STOP_X: (i32, i32, i32) = (C, 444, 17);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drawn {
@@ -47,7 +56,7 @@ enum Drawn {
 const FRAME_MS: u32 = 80;
 
 fn main(api: &'static Api) -> i32 {
-    let mut ui = Ui { api, map: false, zoom: 2, motor: Motor::new(api), drawn: Drawn::Other, shown_at: 0, due: false, start: Start::new() };
+    let mut ui = Ui { api, map: false, zoom: 2, motor: Motor::new(api), drawn: Drawn::Other, shown_at: 0, due: false, start: Start::new(), armed: false };
     api.keep_screen_on(true);
     ui.draw();
     let _ = api.send(b"R");
@@ -149,7 +158,25 @@ fn main(api: &'static Api) -> i32 {
                     ui.draw();
                 }
             }
+            TOUCH_DOWN if ui.on_x(e.x.into(), e.y.into()) => {
+                ui.motor.play(haptic::TICK);
+                if ui.armed || nav().arrived {
+                    // the phone stops too (an arrival is over there already); then where to next
+                    if !nav().arrived {
+                        let _ = api.send(b"C");
+                    }
+                    ui.ended();
+                } else {
+                    ui.armed = true;
+                    ui.draw_x();
+                    ui.shown();
+                }
+            }
             TOUCH_DOWN => {
+                if ui.armed {
+                    ui.armed = false;
+                    ui.draw_x();
+                }
                 ui.map = !ui.map;
                 ui.motor.play(haptic::TICK);
                 ui.draw();
@@ -183,7 +210,12 @@ fn main(api: &'static Api) -> i32 {
                             ui.motor.play(view::THERE);
                             redraw = true;
                         }
-                        Effect::Pos | Effect::Reroute => redraw = true,
+                        // while no route is on, route points need no frame each (no flashing start screen)
+                        Effect::Pos | Effect::Reroute => redraw |= nav().active,
+                        Effect::Ended => {
+                            ui.ended();
+                            continue;
+                        }
                         Effect::None => {}
                     }
                 }
@@ -215,6 +247,7 @@ impl Ui {
         match (self.drawn, now) {
             (Drawn::Turn(a), Drawn::Turn(b)) if a == b => {
                 view::turn_live(self.api, n);
+                self.draw_x();
                 return self.shown();
             }
             (Drawn::Map(pos, heading, zoom), Drawn::Map(..)) => {
@@ -225,6 +258,7 @@ impl Ui {
                 (n.pos, n.heading) = (p, h);
                 view::map(self.api, n, ZOOMS[self.zoom]);
                 self.drawn = now;
+                self.draw_x();
                 return self.shown();
             }
             _ => {}
@@ -240,7 +274,39 @@ impl Ui {
         } else {
             view::turn(self.api, n);
         }
+        if n.active {
+            self.draw_x();
+        }
         self.shown();
+    }
+
+    fn on_x(&self, x: i32, y: i32) -> bool {
+        let (cx, cy, r) = STOP_X;
+        nav().active && (x - cx).abs() <= r + 22 && (y - cy).abs() <= r + 18
+    }
+
+    /// The ✕: dark, or red once tapped (tap again to stop).
+    fn draw_x(&mut self) {
+        let mut s = self.api;
+        let (cx, cy, r) = STOP_X;
+        let red = Rgb(0xD7, 0x19, 0x21);
+        let fill = if self.armed { red } else { Rgb(0x2A, 0x2A, 0x2A) };
+        disc(&mut s, cx, cy, r, fill, BLACK);
+        let k = 6;
+        line(&mut s, cx - k, cy - k, cx + k, cy + k, 3, WHITE, fill);
+        line(&mut s, cx - k, cy + k, cx + k, cy - k, 3, WHITE, fill);
+    }
+
+    /// The route is over: the start screen, the recent places asked for.
+    fn ended(&mut self) {
+        nav().end();
+        self.armed = false;
+        self.map = false;
+        self.motor.off();
+        while self.start.back() {}
+        self.drawn = Drawn::Other;
+        let _ = self.api.send(b"R");
+        self.draw();
     }
 
     /// What the keyboard did: a letter into the words (only they and the middle redrawn), or the search sent.

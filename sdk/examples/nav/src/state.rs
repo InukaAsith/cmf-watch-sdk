@@ -61,6 +61,8 @@ pub enum Effect {
     Pos,
     Arrived,
     Reroute,
+    /// The route was stopped (on the phone, or the ✕ here): back to the start screen.
+    Ended,
 }
 
 pub struct Nav {
@@ -105,6 +107,15 @@ impl Nav {
             rerouting: false,
             buzzed: 0,
         }
+    }
+
+    /// No route on (stopped here or on the phone).
+    pub fn end(&mut self) {
+        self.active = false;
+        self.arrived = false;
+        self.rerouting = false;
+        self.n_pts = 0;
+        self.buzzed = 0;
     }
 
     pub fn street(&self) -> &str {
@@ -172,6 +183,10 @@ impl Nav {
                 self.rerouting = true;
                 Effect::Reroute
             }
+            b'Z' => {
+                self.end();
+                Effect::Ended
+            }
             _ => Effect::None,
         }
     }
@@ -224,6 +239,19 @@ mod tests {
         assert_eq!(n.apply(&v(1, 20)), Effect::Turn { buzz: 0 });
         // the next step starts over
         assert_eq!(n.apply(&v(2, 180)), Effect::Turn { buzz: 1 });
+    }
+
+    #[test]
+    fn stopped() {
+        let mut n = Box::new(Nav::new());
+        n.apply(&v(1, 450));
+        n.apply(b"W");
+        assert!(n.active && n.arrived);
+        assert_eq!(n.apply(b"Z"), Effect::Ended);
+        assert!(!n.active && !n.arrived && n.n_pts == 0);
+        // a new route's first turn: on again
+        assert_eq!(n.apply(&v(0, 300)), Effect::Turn { buzz: 0 });
+        assert!(n.active);
     }
 
     #[test]
