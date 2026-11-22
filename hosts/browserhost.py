@@ -14,7 +14,7 @@ import argparse, asyncio, json, math, pathlib, subprocess, sys, urllib.parse
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from PIL import Image, ImageDraw  # noqa: E402
-from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
+from wp2apps.channel import Channel, NoApp, SimChannel, send_when_open  # noqa: E402
 import pixhost  # noqa: E402
 
 PAGE = [
@@ -99,9 +99,7 @@ def url_for(typed):
     return "https://www.google.com/search?q=" + urllib.parse.quote_plus(t)
 
 
-async def web(ch):
-    tool = Tool()
-    await tool.start()
+async def web(ch, tool):
     st = {"url": None, "links": [], "history": [], "page": False, "recent": [], "video": None}
 
     async def frames():
@@ -221,6 +219,8 @@ async def web(ch):
             if c in (b"T", b"V", b"L", b"S"):
                 await asyncio.sleep(1.5 if c == b"T" else 0)
                 await watch_video()
+        except NoApp:
+            raise
         except Exception as e:  # keep serving: one bad page must not end the test
             print("error:", e, flush=True)
             await ch.send(b"!Couldn't load that")
@@ -236,8 +236,15 @@ async def main():
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
         await send_when_open(ch, b"!")
         if a.web:
-            await web(ch)
-            return
+            tool = Tool()
+            await tool.start()
+            # the app closed: wait for it to open again, a fresh start
+            while True:
+                try:
+                    await web(ch, tool)
+                except NoApp:
+                    print("app closed: waiting for it", flush=True)
+                    await send_when_open(ch, b"!")
         video = None
         while True:
             m = (await ch.recv()).data
