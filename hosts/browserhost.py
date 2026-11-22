@@ -88,6 +88,10 @@ class Tool:
 
     async def ask(self, line):
         async with self.lock:
+            if self.p.returncode is not None:
+                # it died: a fresh one (its cookies are on disk)
+                print("browser tool restarted", flush=True)
+                await self.start()
             self.p.stdin.write(line.encode() + b"\n")
             await self.p.stdin.drain()
             return json.loads(await self.p.stdout.readline() or b"{}")

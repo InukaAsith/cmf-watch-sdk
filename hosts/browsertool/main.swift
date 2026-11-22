@@ -7,7 +7,7 @@ import AppKit
 import Foundation
 import WebKit
 
-@MainActor final class Tool: NSObject, WKNavigationDelegate {
+@MainActor final class Tool: NSObject, WKNavigationDelegate, NSWindowDelegate {
     static let side: CGFloat = 360
     let window: NSWindow
     let web: WKWebView
@@ -25,6 +25,9 @@ import WebKit
         super.init()
         web.navigationDelegate = self
         window.contentView = web
+        // the close button hides it again (closing would free the window the watch's pages are drawn in)
+        window.isReleasedWhenClosed = false
+        window.delegate = self
         window.alphaValue = 0.02
         window.ignoresMouseEvents = true
         window.level = .floating
@@ -60,6 +63,11 @@ import WebKit
             web.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
             NSApp.setActivationPolicy(.prohibited)
         }
+    }
+
+    nonisolated func windowShouldClose(_ w: NSWindow) -> Bool {
+        MainActor.assumeIsolated { show(false) }
+        return false
     }
 
     func js(_ s: String) async -> String? {
