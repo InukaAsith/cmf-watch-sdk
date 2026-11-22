@@ -312,7 +312,9 @@ async def web(ch, tool):
                     st["url"] = None
                     await ch.send(b"Z")
             elif c == b"V" and len(m) == 2:
-                st["page"] = m[1] == 1
+                # 0 text, 1 page view drawn, 2 page view as a picture
+                st["page"] = m[1] >= 1
+                await tool.ask("picture " + ("1" if m[1] == 2 else "0"))
                 if st["url"]:
                     await open_(st["url"], push=False)
             elif c == b"T" and len(m) == 5:

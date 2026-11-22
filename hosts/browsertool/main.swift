@@ -267,6 +267,10 @@ import WebKit
     func page() async -> [String: Any] {
         simple = nil
         if let u = web.url, let site = Simple.site(for: u) { return await simplePage(site) }
+        if let u = web.url, BrowserProto.isGoogleSearch(u) {
+            // plain results (udm=14): a button for the full ones, with Google's AI Overview
+            _ = await js(BrowserProto.overviewButton)
+        }
         let full = Double(await js(BrowserProto.pageHeight) ?? "") ?? Double(Self.side)
         let tall = min(max(full, Double(Self.side)), Double(Self.side) * 12)
         // laid out tall at the watch's width (the window as tall; shown or not), then back as it was
@@ -306,7 +310,7 @@ import WebKit
         for i in 0..<(w * h) { (rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]) = (px[4 * i], px[4 * i + 1], px[4 * i + 2]) }
         // drawn on the watch as it is laid out; a fancy page (or BROWSERTOOL_PICTURE): its picture
         var drawn: (messages: [Data], height: Int)?
-        if ProcessInfo.processInfo.environment["BROWSERTOOL_PICTURE"] == nil, let lay = layout {
+        if ProcessInfo.processInfo.environment["BROWSERTOOL_PICTURE"] == nil, !pictureMode, let lay = layout {
             drawn = Layout.messages(json: lay, rgb: rgb, pw: w, ph: h, cssWidth: Double(Self.side), cssHeight: tall)
         }
         let (msgs, came) = drawn ?? Rle.longPicture(rgb: rgb, width: w, height: h, scale: 2)
@@ -374,6 +378,8 @@ import WebKit
     /// A playing video's frame, 155 px (the page's picture when the video won't give its pixels), as the watch's picture.
     /// the video's coder (VideoCoder): a new one for each video (or a new shape)
     var coder: VideoCoder?
+    /// page view as a picture (the watch's picture mode)
+    var pictureMode = false
     var coderSize = ""
 
     /// The playing video's next frame for the watch (VideoCoder: the part that changed, few colours); `msgs` empty
@@ -474,6 +480,10 @@ import WebKit
         case "ua":
             // the browser's name to sites (the cookies' browser: a session moved from Chrome stays signed in as Chrome)
             web.customUserAgent = arg.isEmpty ? nil : arg
+            return [:]
+        case "picture":
+            // page view as a picture of the page (the watch's mode button), not drawn
+            pictureMode = arg == "1"
             return [:]
         case "vkey":
             // the watch drew over the picture (paused sign): a whole frame next

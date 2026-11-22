@@ -135,6 +135,8 @@ struct Ui {
     keys_from: Screen,
     /// a tap in page view waits for the phone's answer (since `tap_at`): a spinner
     tapping: bool,
+    /// page view as a picture of the page (the mode button: default → picture → text → default)
+    pmode: bool,
     tap_at: u32,
     /// the video player: its title, where it is (s), paused, a frame on the panel
     vtitle: [u8; 80],
@@ -171,6 +173,7 @@ fn main(api: &'static Api) -> i32 {
         pscroll: 0,
         keys_from: Screen::Start,
         tapping: false,
+        pmode: false,
         tap_at: 0,
         vtitle: [0; 80],
         n_vtitle: 0,
@@ -650,11 +653,18 @@ impl Ui {
         disc(&mut s, cx - w / 2 + 24, y + 19, 5, CARD, Rgb(0x80, 0x80, 0x80));
         Surface::rect(&mut s, cx - w / 2 + 29, y + 25, 3, 7, GREY);
         font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search or address", w - 56, GREY);
-        // the round button: reader view's lines (from page view), page view's frame (from reader view)
+        // the round button, the mode it goes to: a photo (picture, from drawn), lines (text, from picture), a page's
+        // frame (drawn, from text)
         let (cx, y, w, h) = SWITCH;
         disc(&mut s, cx, y + h / 2, w / 2, WHITE, BLACK);
         let (x0, cy) = (cx - 11, y + h / 2);
-        if self.screen == Screen::Page {
+        if self.screen == Screen::Page && !self.pmode {
+            Surface::rect(&mut s, x0, cy - 9, 22, 18, 0);
+            Surface::rect(&mut s, x0 + 3, cy - 6, 16, 12, 0xFFFF);
+            Surface::rect(&mut s, x0 + 4, cy + 1, 6, 4, 0);
+            Surface::rect(&mut s, x0 + 9, cy - 2, 6, 7, 0);
+            disc(&mut s, x0 + 15, cy - 3, 2, RED, WHITE);
+        } else if self.screen == Screen::Page {
             for (k, len) in [22, 22, 14].into_iter().enumerate() {
                 Surface::rect(&mut s, x0, cy - 8 + 7 * k as i32, len, 3, 0);
             }
@@ -878,10 +888,19 @@ impl Ui {
         self.motor.play(haptic::TICK);
         if self.screen == Screen::Reader {
             self.screen = Screen::Page;
+            self.pmode = false;
             self.pictured = false;
             self.n_note = 0;
             self.send(b"V\x01");
+        } else if !self.pmode {
+            // a picture of the page: page view still, the phone sends it again
+            self.pmode = true;
+            self.pictured = false;
+            self.video = false;
+            self.set_note(b"Loading\xE2\x80\xA6");
+            self.send(b"V\x02");
         } else {
+            self.pmode = false;
             self.screen = Screen::Reader;
             self.video = false;
             self.send(b"V\x00");
