@@ -333,6 +333,18 @@ import WebKit
             return await section(from: 0)
         }
         do {
+            // the watch's font in the page (once a page): its text measured as the watch draws it
+            if let f = Self.watchFont, await js("window.__wf ? 1 : 0") != "1" {
+                _ = await js("""
+                (() => { const s = document.createElement('style');
+                  s.textContent = "@font-face { font-family: '__watch'; src: url(data:font/ttf;base64,\(f)); font-weight: 100 900; }";
+                  document.head.appendChild(s); return document.fonts.load("500 16px __watch").then(() => 1); })()
+                """)
+                for _ in 0..<20 where await js("document.fonts.check('500 16px __watch') ? 1 : 0") != "1" {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                _ = await js("window.__wf = document.fonts.check('500 16px __watch'); 1")
+            }
             _ = await js(Self.watchText)
             try? await Task.sleep(for: .milliseconds(50))
         }
@@ -572,16 +584,17 @@ import WebKit
       // collapsed sections open (Wikipedia's on phones): the whole article
       document.querySelectorAll('[hidden="until-found"]').forEach(e => e.removeAttribute('hidden'));
       document.querySelectorAll('.collapsible-heading,.mf-collapsible-heading').forEach(e => e.setAttribute('aria-expanded', 'true'));
-      const sp = document.createElement('span');
-      sp.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:100px -apple-system,Helvetica,Arial,sans-serif';
-      sp.textContent = 'the quick brown fox jumps over the lazy dog. The Quick, 2025';
-      document.body.appendChild(sp);
-      const per = sp.getBoundingClientRect().width / sp.textContent.length / 100; sp.remove();
-      const fs = (8.1 / per).toFixed(2) + 'px';
+      // the watch's font: Inter Medium, 20 panel px (15.45 page px at 360 wide)
+      const fs = (20 * 360 / 466).toFixed(2) + 'px';
+      const fam = window.__wf ? '__watch' : '-apple-system,Helvetica,Arial,sans-serif';
       const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); const done = new Set(); let n;
       while ((n = tw.nextNode())) { const e = n.parentElement; if (!e || done.has(e) || !n.data.trim()) continue; done.add(e);
         const st = getComputedStyle(e); if (/icon|symbol|material|awesome/i.test(st.fontFamily)) continue;
-        e.style.setProperty('font-family', '-apple-system,Helvetica,Arial,sans-serif', 'important');
+        // (the watch's bold is its medium a pixel over: as wide)
+        if ((parseInt(st.fontWeight) || 400) >= 600) e.dataset.wb = '1';
+        e.style.setProperty('font-family', fam, 'important');
+        e.style.setProperty('font-weight', '500', 'important');
+        e.style.setProperty('font-style', 'normal', 'important');
         e.style.setProperty('font-size', fs, 'important');
         e.style.setProperty('line-height', '19px', 'important');
         e.style.setProperty('letter-spacing', '0', 'important'); }
@@ -591,6 +604,14 @@ import WebKit
         if (r.width * r.height > innerWidth * innerHeight * 0.25) e.style.setProperty('display', 'none', 'important'); }
       return 1; })()
     """
+
+    /// Inter (the watch's font is baked from it: hosts/fontgen.py), base64: BROWSER_FONT or runs/font/Inter.ttf
+    static let watchFont: String? = {
+        let env = ProcessInfo.processInfo.environment["BROWSER_FONT"]
+        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+        let path = env ?? exe.appendingPathComponent("../runs/font/Inter.ttf").path
+        return (try? Data(contentsOf: URL(fileURLWithPath: path)))?.base64EncodedString()
+    }()
 
     static let phoneUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1"
 
