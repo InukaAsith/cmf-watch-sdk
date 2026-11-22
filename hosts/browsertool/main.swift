@@ -7,7 +7,11 @@ import AppKit
 import Foundation
 import WebKit
 
-@MainActor final class Tool: NSObject, WKNavigationDelegate, NSWindowDelegate {
+@MainActor final class Tool: NSObject, WKNavigationDelegate, NSWindowDelegate, NSTextFieldDelegate {
+    /// shown to sign in by hand: an address bar over the page
+    var shown = false
+    let bar = NSTextField(frame: .zero)
+    let box = NSView(frame: .zero)
     static let side: CGFloat = 360
     let window: NSWindow
     let web: WKWebView
@@ -28,7 +32,15 @@ import WebKit
                           backing: .buffered, defer: false)
         super.init()
         web.navigationDelegate = self
-        window.contentView = web
+        window.contentView = box
+        box.addSubview(web)
+        bar.placeholderString = "Address or search, then Enter"
+        bar.isHidden = true
+        bar.delegate = self
+        bar.target = self
+        bar.action = #selector(go)
+        box.addSubview(bar)
+        box.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
         // the close button hides it again (closing would free the window the watch's pages are drawn in)
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -40,7 +52,35 @@ import WebKit
 
     /// Shown as an ordinary window (SIGUSR1) to sign in by hand: its cookies stay in this browser's store and the
     /// watch's pages use them. SIGUSR2 hides it again.
+    @objc func go() {
+        let t = bar.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return }
+        web.load(URLRequest(url: BrowserProto.url(for: t)))
+    }
+
+    nonisolated func webView(_ v: WKWebView, didFinish n: WKNavigation!) {
+        Task { @MainActor in
+            self.done()
+            if self.shown, let u = v.url, self.window.firstResponder != self.bar.currentEditor() { self.bar.stringValue = u.absoluteString }
+        }
+    }
+
+    /// The shown window's layout: the bar on top, the page under it.
+    func lay() {
+        let (w, h): (CGFloat, CGFloat) = shown ? (420, 760) : (Self.side, Self.side)
+        window.setContentSize(NSSize(width: w, height: h))
+        box.frame = NSRect(x: 0, y: 0, width: w, height: h)
+        if shown {
+            bar.frame = NSRect(x: 6, y: h - 30, width: w - 12, height: 24)
+            web.frame = NSRect(x: 0, y: 0, width: w, height: h - 36)
+        } else {
+            web.frame = NSRect(x: 0, y: 0, width: w, height: h)
+        }
+    }
+
     func show(_ on: Bool) {
+        shown = on
+        bar.isHidden = !on
         if on {
             NSApp.setActivationPolicy(.regular)
             window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
@@ -48,8 +88,8 @@ import WebKit
             window.alphaValue = 1
             window.ignoresMouseEvents = false
             window.level = .normal
-            window.setContentSize(NSSize(width: 420, height: 760))
-            web.frame = NSRect(x: 0, y: 0, width: 420, height: 760)
+            lay()
+            bar.stringValue = web.url?.absoluteString ?? ""
             window.center()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -62,9 +102,8 @@ import WebKit
             window.alphaValue = 0.02
             window.ignoresMouseEvents = true
             window.level = .floating
-            window.setContentSize(NSSize(width: Self.side, height: Self.side))
+            lay()
             window.setFrameOrigin(.zero)
-            web.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
             NSApp.setActivationPolicy(.prohibited)
         }
     }
@@ -114,7 +153,6 @@ import WebKit
         for c in w { c.resume() }
     }
 
-    nonisolated func webView(_ v: WKWebView, didFinish n: WKNavigation!) { Task { @MainActor in self.done() } }
     nonisolated func webView(_ v: WKWebView, didFail n: WKNavigation!, withError e: Error) { Task { @MainActor in self.done() } }
     nonisolated func webView(_ v: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
         Task { @MainActor in self.committed = true; self.done() }
@@ -154,7 +192,9 @@ import WebKit
     func page() async -> [String: Any] {
         let full = Double(await js(BrowserProto.pageHeight) ?? "") ?? Double(Self.side)
         let tall = min(max(full, Double(Self.side)), Double(Self.side) * 12)
+        // laid out tall at the watch's width (the window as tall; shown or not), then back as it was
         window.setContentSize(NSSize(width: Self.side, height: tall))
+        box.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
         web.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
         _ = await js("window.scrollTo(0, 0)")
         try? await Task.sleep(for: .milliseconds(150))
@@ -169,8 +209,7 @@ import WebKit
         c.rect = web.bounds
         c.snapshotWidth = 233
         let img = try? await web.takeSnapshot(configuration: c)
-        window.setContentSize(NSSize(width: Self.side, height: Self.side))
-        web.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
+        lay()
         guard let img, let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return ["msgs": hex([BrowserProto.note("No picture")])]
         }
