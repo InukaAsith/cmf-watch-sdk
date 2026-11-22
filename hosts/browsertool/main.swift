@@ -493,9 +493,24 @@ import WebKit
         var rows: [[Double]] = []
         var top = max(0, y0), end = false
         lay()
+        // an app still building its page (a feed's shell, one screen tall): 3 s for it to grow
+        if y0 == 0 {
+            for _ in 0..<15 where (Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0) <= vh + 20 {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
         for i in 0..<steps {
             let want = top + Double(i) * vh
-            let got = Double(await js("window.scrollTo(0, \(want)); \(Self.playButtons); scrollY") ?? "") ?? want
+            var got = Double(await js("window.scrollTo(0, \(want)); \(Self.playButtons); scrollY") ?? "") ?? want
+            if got + 1 < want {
+                // at the bottom: an endless page (a feed) adds more a moment after it is reached; 3 s for it
+                let h0 = Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0
+                for _ in 0..<15 {
+                    try? await Task.sleep(for: .milliseconds(200))
+                    if (Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0) > h0 + 50 { break }
+                }
+                got = Double(await js("window.scrollTo(0, \(want)); \(Self.playButtons); scrollY") ?? "") ?? got
+            }
             if i == 0 { top = got }
             if top > 0 || i > 0 { _ = await js(Self.hideFixed) }
             try? await Task.sleep(for: .milliseconds(i == 0 ? 150 : 120))
@@ -537,6 +552,7 @@ import WebKit
         sectionHeight = Double(h) * vh / Double(w)
         sectioned = true
         let full = Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0
+        if end { pending = pending.filter { $0.y < top + Double(rgb.count / (3 * w)) * vh / Double(w) } }
         var (msgs, came) = Rle.longPicture(rgb: rgb, width: w, height: h, scale: 2)
         // what the watch keeps (a busy picture fills its store early): the next part from there
         let short = came < h * 2
@@ -636,9 +652,22 @@ import WebKit
         let top = lastMode == "picture" && sectioned ? Int(sectionTop * 466 / Double(Self.side)) : 0
         let r = await js(BrowserProto.tapScript(x: x, y: y + top, side: Double(Self.side)))
         if r == "2" { return ["field": true] }
-        try? await Task.sleep(for: .milliseconds(800))
-        await waitLoad()
-        if await js(BrowserProto.pageState) == before { return ["msgs": hex([BrowserProto.unchanged])] }
+        // what the tap does may start late (a script's navigation, an app's own routing): watched for 4 s, not
+        // judged after a fixed wait
+        var changed = false
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(200))
+            if web.isLoading || !committed { await waitLoad(); changed = true; break }
+            if await js(BrowserProto.pageState) != before {
+                // a page of its own routing: let it settle
+                try? await Task.sleep(for: .milliseconds(600))
+                await waitLoad()
+                changed = true
+                break
+            }
+        }
+        let after = await js(BrowserProto.pageState)
+        if !changed || after == before { return ["msgs": hex([BrowserProto.unchanged])] }
         // the same page changed (a menu, a section opened): from where the watch is
         if lastMode == "picture", sectioned, let s = before?.split(separator: "|").first, web.url?.absoluteString == String(s) {
             return await section(from: sectionTop)
