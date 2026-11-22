@@ -142,12 +142,12 @@ struct Ui {
     keys_from: Screen,
     /// a tap in page view waits for the phone's answer (since `tap_at`): a spinner
     tapping: bool,
-    /// page view as a picture of the page (the mode button: default → picture → text → default)
-    pmode: bool,
     /// the page has more below (1), above (2) what came; the watch's drawn view isn't for this site (4)
     more: u8,
     /// the next part asked for (one at a time)
     asking: bool,
+    /// the next part is coming: the last one's picture stays on the panel till the new one's first screen
+    holding: bool,
     /// the last search or address typed: shown in the bottom bar
     searched: [u8; 64],
     n_searched: usize,
@@ -189,9 +189,9 @@ fn main(api: &'static Api) -> i32 {
         pscroll: 0,
         keys_from: Screen::Start,
         tapping: false,
-        pmode: false,
         more: 0,
         asking: false,
+        holding: false,
         searched: [0; 64],
         n_searched: 0,
         tap_at: 0,
@@ -391,6 +391,11 @@ impl Ui {
                 if self.video && self.screen == Screen::Page { Got::Drew } else { Got::None }
             }
             // the page just begun: where the view starts on it, what more there is
+            // the part all came: what more there is
+            Some(b'y') if m.len() == 2 && self.screen == Screen::Page && !self.video => {
+                self.more = m[1];
+                Got::None
+            }
             Some(b'y') if m.len() == 4 && self.screen == Screen::Page && !self.video => {
                 self.pscroll = i32::from(u16::from_le_bytes([m[1], m[2]]));
                 self.more = m[3];
@@ -420,15 +425,15 @@ impl Ui {
                         self.pictured = false;
                         self.more = 0;
                         // the next part of the same page: what is on screen stays till it is there
-                        if core::mem::replace(&mut self.asking, false) { Got::None } else { Got::Redraw }
+                        self.holding = core::mem::replace(&mut self.asking, false);
+                        if self.holding { Got::None } else { Got::Redraw }
                     }
                     // the page shown whole once its first screen came (the ring round the edge fills till then);
                     // then what comes in view is drawn
                     long::Got::Band(y0, y1) => {
                         if !self.pictured {
-                            // all of the first screen: something below it came (the page's own colour, one entry the
-                            // page tall, comes first: no measure)
-                            if y0 >= (self.pscroll + 466).min(long().height) {
+                            // all of the view came (a picture's bands, top down): shown at once
+                            if long().came() >= (self.pscroll + 466).min(long().height) || y0 >= self.pscroll + 466 {
                                 self.pictured = true;
                                 self.n_note = 0;
                                 return Got::Redraw;
@@ -534,12 +539,13 @@ impl Ui {
                     self.shown();
                     return;
                 }
-                if !self.pictured {
+                if self.pictured {
+                    self.holding = false;
+                    self.draw_long();
+                } else if !self.holding {
                     Surface::rect(&mut s, 0, 0, 466, 466, 0);
                     let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
                     centre_fit(&mut s, C, 222, t, 320, GREY);
-                } else {
-                    self.draw_long();
                 }
                 self.draw_switch();
                 if self.loading() {
@@ -689,7 +695,7 @@ impl Ui {
         if end < 466 {
             Surface::rect(&mut s, 0, end.max(0), 466, 466 - end.max(0), 0);
             if l.done != 0 && end < 360 {
-                let t = if came < l.height { "That's all that fits on the watch" } else { "End of the page" };
+                let t = if self.more & 1 != 0 { "Scroll on for more" } else { "End of the page" };
                 centre_fit(&mut s, C, end.max(0) + 30, t, 300, GREY);
             }
         }
@@ -718,22 +724,17 @@ impl Ui {
         let (cx, y, w, h) = SWITCH;
         disc(&mut s, cx, y + h / 2, w / 2, WHITE, BLACK);
         let (x0, cy) = (cx - 11, y + h / 2);
-        if self.screen == Screen::Page && !self.pmode && self.more & 4 == 0 {
+        if self.screen == Screen::Page {
+            for (k, len) in [22, 22, 14].into_iter().enumerate() {
+                Surface::rect(&mut s, x0, cy - 8 + 7 * k as i32, len, 3, 0);
+            }
+        } else {
+            // the page's picture: a photo
             Surface::rect(&mut s, x0, cy - 9, 22, 18, 0);
             Surface::rect(&mut s, x0 + 3, cy - 6, 16, 12, 0xFFFF);
             Surface::rect(&mut s, x0 + 4, cy + 1, 6, 4, 0);
             Surface::rect(&mut s, x0 + 9, cy - 2, 6, 7, 0);
             disc(&mut s, x0 + 15, cy - 3, 2, RED, WHITE);
-        } else if self.screen == Screen::Page {
-            for (k, len) in [22, 22, 14].into_iter().enumerate() {
-                Surface::rect(&mut s, x0, cy - 8 + 7 * k as i32, len, 3, 0);
-            }
-        } else {
-            Surface::rect(&mut s, x0, cy - 9, 22, 3, 0);
-            Surface::rect(&mut s, x0, cy + 6, 22, 3, 0);
-            Surface::rect(&mut s, x0, cy - 9, 3, 18, 0);
-            Surface::rect(&mut s, x0 + 19, cy - 9, 3, 18, 0);
-            Surface::rect(&mut s, x0 + 6, cy - 3, 10, 6, rgb565(0xD7, 0x19, 0x21));
         }
     }
 
@@ -983,21 +984,13 @@ impl Ui {
     /// Reader ⇄ page view.
     fn switch(&mut self) {
         self.motor.play(haptic::TICK);
+        // two views: the page's picture, its text
         if self.screen == Screen::Reader {
             self.screen = Screen::Page;
-            self.pmode = false;
             self.pictured = false;
             self.n_note = 0;
             self.send(b"V\x01");
-        } else if !self.pmode && self.more & 4 == 0 {
-            // a picture of the page: page view still, the phone sends it again
-            self.pmode = true;
-            self.pictured = false;
-            self.video = false;
-            self.set_note(b"Loading\xE2\x80\xA6");
-            self.send(b"V\x02");
         } else {
-            self.pmode = false;
             self.screen = Screen::Reader;
             self.video = false;
             self.send(b"V\x00");

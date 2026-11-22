@@ -20,65 +20,6 @@ import WebKit
     var committed = true
     /// how the last page went to the watch (debugging)
     var lastMode = ""
-    /// the simple screen on the watch (YouTube, Instagram): its site, where its search bar and rows are
-    var simple: (site: Simple.Site, screen: Simple.Screen)?
-
-    /// A site's simple screen (Simple): what it lists, read once it is there (3 s at most), thumbnails fetched.
-    /// the feed walked so far (its step, 450 px each) and the posts sent: the next ones come on "more"
-    var feedStep = 0
-    var feedSeen: Set<URL> = []
-
-    /// The feed's next posts (endless, as the app's): from where the last ones ended.
-    func simpleMore() async -> [String: Any] {
-        guard let (site, _) = simple, web.url.map(Simple.isFeed) ?? false else { return ["msgs": hex([BrowserProto.unchanged])] }
-        return await simplePage(site)
-    }
-
-    func simplePage(_ site: Simple.Site) async -> [String: Any] {
-        var items: [Simple.Item] = []
-        let feed = web.url.map(Simple.isFeed) ?? false
-        var more = false
-        if feed {
-            // Instagram builds only the posts near the view: walked down in steps, the posts gathered on the way
-            var got: [URL: Simple.Item] = [:], order: [URL] = []
-            let from = feedStep
-            for k in from..<(from + 24) {
-                feedStep = k + 1
-                _ = await js("window.scrollTo(0, \(k * 450))")
-                try? await Task.sleep(for: .milliseconds(k == 0 ? 800 : 450))
-                for it in Simple.items(await js(Simple.feedScript) ?? "[]") where !it.byline.isEmpty && !feedSeen.contains(it.link) {
-                    if got[it.link] == nil { order.append(it.link) }
-                    got[it.link] = it
-                }
-                if order.count >= 3 { break }
-            }
-            items = order.compactMap { got[$0] }
-            feedSeen.formUnion(order)
-            more = !items.isEmpty
-        } else {
-            for _ in 0..<15 {
-                items = Simple.items(await js(Simple.script(site)) ?? "[]")
-                if !items.isEmpty { break }
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-        }
-        let thumbs = await Simple.thumbs(items, site: site, feed: feed)
-        let q = web.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?
-            .first { $0.name == "search_query" || $0.name == "q" }?.value } ?? ""
-        let sc = Simple.screen(site, query: q, items: items, thumbs: thumbs, feed: feed, tab: web.url.flatMap(Simple.tab))
-        simple = (site, sc)
-        let boxes = [(x: sc.field.x, y: sc.field.y, w: sc.field.w, h: sc.field.h, kind: UInt8(1))]
-            + sc.rows.prefix(150).map { (x: $0.x, y: $0.y, w: $0.w, h: $0.h, kind: UInt8(0)) }
-        lastMode = "simple"
-        var msgs = sc.messages
-        if more, let j = msgs.firstIndex(where: { $0.first == UInt8(ascii: "J") }) {
-            // more posts below (the watch asks when it gets to the end)
-            var y = Data([UInt8(ascii: "y")]); y.le(UInt16(0)); y.append(1)
-            msgs.insert(y, at: j + 1)
-        }
-        return ["msgs": hex(msgs + BrowserProto.boxes(boxes)), "url": web.url?.absoluteString ?? "", "mode": lastMode]
-    }
-
     override init() {
         let c = WKWebViewConfiguration()
         c.websiteDataStore = .default()
@@ -320,65 +261,25 @@ import WebKit
 
     /// The whole page (as much as the watch keeps): laid out tall, one picture, its tappable places in page px.
     func page() async -> [String: Any] {
-        simple = nil
-        sectioned = false
-        feedStep = 0
-        feedSeen = []
-        if let u = web.url, let site = Simple.site(for: u) { return await simplePage(site) }
         if let u = web.url, BrowserProto.isGoogleSearch(u) {
             // plain results (udm=14): a button for the full ones, with Google's AI Overview
             _ = await js(BrowserProto.overviewButton)
         }
-        if pictureMode || !Self.drawnHere(web.url) || ProcessInfo.processInfo.environment["BROWSERTOOL_PICTURE"] != nil {
-            return await section(from: 0)
-        }
-        do {
-            // the watch's font in the page (once a page): its text measured as the watch draws it
-            if let f = Self.watchFont, await js("window.__wf ? 1 : 0") != "1" {
-                _ = await js("""
-                (() => { const s = document.createElement('style');
-                  s.textContent = "@font-face { font-family: '__watch'; src: url(data:font/ttf;base64,\(f)); font-weight: 100 900; }";
-                  document.head.appendChild(s); return document.fonts.load("500 16px __watch").then(() => 1); })()
-                """)
-                for _ in 0..<20 where await js("document.fonts.check('500 16px __watch') ? 1 : 0") != "1" {
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                _ = await js("window.__wf = document.fonts.check('500 16px __watch'); 1")
-            }
-            _ = await js(Self.watchText)
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        let full = Double(await js(BrowserProto.pageHeight) ?? "") ?? Double(Self.side)
-        let tall = min(max(full, Double(Self.side)), Double(Self.side) * 12)
-        // laid out tall at the watch's width (the window as tall; shown or not), then back as it was
-        window.setContentSize(NSSize(width: Self.side, height: tall))
-        box.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
-        web.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
-        _ = await js("window.scrollTo(0, 0)")
-        let google = web.url.map(BrowserProto.isGoogleSearch) ?? false
-        try? await Task.sleep(for: .milliseconds(google ? 60 : 150))
-        // its images in (lazy ones told to load: all of the tall page is in view), 1.5 s at most (Google: 0.5 s)
-        for _ in 0..<(google ? 5 : 15) where (Int(await js(BrowserProto.imagesPending(tall)) ?? "0") ?? 0) > 0 {
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-        try? await Task.sleep(for: .milliseconds(100))
-        pending = Self.marks(await js(Self.markPending))
-        pendingTall = tall
-        let layout = await js(Layout.script(width: Double(Self.side), height: tall))
-        let rows = (await js(BrowserProto.pageBoxes)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[Double]] } ?? []
-        let c = WKSnapshotConfiguration()
-        c.rect = web.bounds
-        c.snapshotWidth = 233
-        let img = try? await web.takeSnapshot(configuration: c)
         lay()
-        guard let img, let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return ["msgs": hex([BrowserProto.note("No picture")])]
-        }
-        if let dir = ProcessInfo.processInfo.environment["BROWSERTOOL_DUMP"], let t = img.tiffRepresentation,
-           let png = NSBitmapImageRep(data: t)?.representation(using: .png, properties: [:]) {
-            try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("page-\(Int(Date().timeIntervalSince1970 * 10) % 100000).png"))
-        }
-        let (w, h) = (233, max(1, Int(233 * tall / Double(Self.side))))
+        pics.reset()
+        await pics.section(from: 0, emit: emit)
+        lastMode = "picture"
+        return ["msgs": [String](), "url": web.url?.absoluteString ?? "", "mode": lastMode]
+    }
+
+    /// The page as pictures (HubKit PagePictures): the view at the watch's width, a screen square.
+    lazy var pics = PagePictures(side: Double(Self.side), js: { [unowned self] in await self.js($0) }) { [unowned self] rect, w in
+        let c = WKSnapshotConfiguration()
+        c.rect = rect
+        c.snapshotWidth = NSNumber(value: w)
+        guard let img = try? await self.web.takeSnapshot(configuration: c),
+              let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let h = max(1, Int((Double(w) * rect.height / rect.width).rounded()))
         var px = [UInt8](repeating: 0, count: w * h * 4)
         px.withUnsafeMutableBytes { b in
             let ctx = CGContext(data: b.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
@@ -387,223 +288,27 @@ import WebKit
         }
         var rgb = [UInt8](repeating: 0, count: w * h * 3)
         for i in 0..<(w * h) { (rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]) = (px[4 * i], px[4 * i + 1], px[4 * i + 2]) }
-        // drawn on the watch as it is laid out; a fancy page (or BROWSERTOOL_PICTURE): its picture
-        var drawn: (messages: [Data], height: Int)?
-        if ProcessInfo.processInfo.environment["BROWSERTOOL_PICTURE"] == nil, !pictureMode, Self.drawnHere(web.url),
-           let lay = layout {
-            drawn = Layout.messages(json: lay, rgb: rgb, pw: w, ph: h, cssWidth: Double(Self.side), cssHeight: tall, always: true)
-        }
-        let (msgs, came) = drawn ?? Rle.longPicture(rgb: rgb, width: w, height: h, scale: 2)
-        lastMode = drawn == nil ? "picture" : "drawn"
-        let k = 466 / Double(Self.side)
-        let boxes = rows.compactMap { r -> (x: Int, y: Int, w: Int, h: Int, kind: UInt8)? in
-            guard r.count == 5, Int(r[1] * k) < came else { return nil }
-            return (Int(r[0] * k), Int(r[1] * k), Int(r[2] * k), Int(r[3] * k), UInt8(r[4]))
-        }
-        return ["msgs": hex(msgs + BrowserProto.boxes(boxes)), "url": web.url?.absoluteString ?? "", "mode": lastMode]
+        return (rgb, h)
     }
 
-    /// Pictures on the page not loaded when it was sent (a striped stand-in on the watch): id, page css x y w h
-    var pending: [(id: Int, x: Double, y: Double, w: Double, h: Double)] = []
-    /// the drawn page's laid-out height then (its pictures are where that layout put them)
-    var pendingTall = 0.0
-
-    /// Marks each picture that isn't in yet (`data-wp`, stripes in its place); answers them as [[id, x, y, w, h]].
-    static let markPending = """
-    (() => { const out = []; let n = window.__wpn || 0;
-      for (const e of document.querySelectorAll('img')) { if (e.complete && e.naturalWidth > 0) continue;
-        const r = e.getBoundingClientRect(); if (r.width < 16 || r.height < 16) continue;
-        if (!e.dataset.wp) e.dataset.wp = String(++n);
-        e.style.setProperty('background', 'repeating-linear-gradient(45deg,#6a6a6a 0 6px,#8a8a8a 6px 12px)', 'important');
-        out.push([+e.dataset.wp, r.left + scrollX, r.top + scrollY, r.width, r.height]); }
-      window.__wpn = n; return JSON.stringify(out); })()
-    """
-
-    static func marks(_ json: String?) -> [(id: Int, x: Double, y: Double, w: Double, h: Double)] {
-        let a = (json.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[Double]] }) ?? []
-        return a.filter { $0.count == 5 }.map { (Int($0[0]), $0[1], $0[2], $0[3], $0[4]) }
+    /// Part of an answer, out now (the host sends it to the watch at once): {"part": [hex…]}
+    func emit(_ msgs: [Data]) async {
+        guard !msgs.isEmpty, let d = try? JSONSerialization.data(withJSONObject: ["part": hex(msgs)]) else { return }
+        FileHandle.standardOutput.write(d + Data("\n".utf8))
     }
 
-    /// The marked pictures that came in since: each as a picture in its place on the watch's page (drawn over the
-    /// stand-in). None: {"msgs": []}; "left" how many are still out.
-    func late() async -> [String: Any] {
-        guard !pending.isEmpty else { return ["msgs": [String](), "left": 0] }
-        let ids = pending.map { String($0.id) }.joined(separator: ",")
-        let inNow = await js("JSON.stringify([\(ids)].filter(i => { const e = document.querySelector('[data-wp=\"' + i + '\"]'); return e && e.complete && e.naturalWidth > 0; }))") ?? "[]"
-        let got = Set(((try? JSONSerialization.jsonObject(with: Data(inNow.utf8))) as? [Int]) ?? [])
-        let ready = pending.filter { got.contains($0.id) }
-        guard !ready.isEmpty else { return ["msgs": [String](), "left": pending.count] }
-        pending.removeAll { got.contains($0.id) }
-        _ = await js("document.querySelectorAll('[data-wp]').forEach(e => { if (e.complete && e.naturalWidth > 0) e.style.removeProperty('background'); }); 1")
-        let k = 466 / Double(Self.side), px = 233 / Double(Self.side)
-        var out: [Data] = []
-        // drawn: the tall layout again (where the stand-ins were); a picture page: its part, from its top
-        let drawn = lastMode == "drawn"
-        if drawn {
-            window.setContentSize(NSSize(width: Self.side, height: pendingTall))
-            box.frame = NSRect(x: 0, y: 0, width: Self.side, height: pendingTall)
-            web.frame = NSRect(x: 0, y: 0, width: Self.side, height: pendingTall)
-            _ = await js("window.scrollTo(0, 0)")
-            try? await Task.sleep(for: .milliseconds(80))
-        }
-        for p in ready {
-            var top = 0.0
-            if !drawn {
-                guard sectioned, p.y >= sectionTop, p.y < sectionTop + sectionHeight else { continue }
-                top = Double(await js("window.scrollTo(0, \(max(0, p.y - 20))); scrollY") ?? "") ?? 0
-                try? await Task.sleep(for: .milliseconds(60))
-            }
-            let c = WKSnapshotConfiguration()
-            c.rect = NSRect(x: p.x, y: p.y - top, width: p.w, height: p.h)
-            let w = max(2, Int(p.w * px)), h = max(2, Int(p.h * px))
-            c.snapshotWidth = NSNumber(value: w)
-            guard let img = try? await web.takeSnapshot(configuration: c),
-                  let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
-            var raw = [UInt8](repeating: 0, count: w * h * 4)
-            raw.withUnsafeMutableBytes { b in
-                let ctx = CGContext(data: b.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-            }
-            var rgb = [UInt8](); rgb.reserveCapacity(w * h * 3)
-            for i in 0..<(w * h) { rgb += [raw[4 * i], raw[4 * i + 1], raw[4 * i + 2]] }
-            let (palette, idx) = Quantize.refined(rgb: rgb, colours: 16)
-            let pal = (palette + Array(repeating: (0, 0, 0), count: max(0, 16 - palette.count))).prefix(16)
-                .map { Rle.rgb565($0.0, $0.1, $0.2) }
-            let y0 = drawn ? p.y : p.y - sectionTop
-            let hdr = Rle.header(width: w, height: h, scale: 2, x0: Int16(clamping: Int(p.x * k)), y0: Int16(clamping: Int(y0 * k)),
-                                 palette: pal)
-            out += Rle.messages(header: hdr, tokens: Rle.tokens(idx, width: w, height: h))
-        }
-        if drawn { lay() }
-        return ["msgs": hex(out), "left": pending.count]
-    }
-
-    /// picture pages: the part of the real page sent (its top and height, page css px), more below it, above it
-    var sectionTop = 0.0, sectionHeight = 0.0
-    var sectioned = false
-
-    /// A picture page in parts: the real page scrolled (so lazy and endless pages load as they would), a screen at a
-    /// time, `steps` screens stitched into one picture from `y0`. Headers that stay on screen (fixed, sticky) show in
-    /// the first screen of the page only. Each video gets a play button (a tap plays it on the watch's player).
-    /// Then `y scroll:u16 flags:u8` after `J` (flags: 1 more below, 2 more above, 4 not drawn here).
-    func section(from y0: Double, scroll: Int = 0) async -> [String: Any] {
-        let vh = Double(Self.side), steps = 6, w = 233
-        var rgb: [UInt8] = []
-        var rows: [[Double]] = []
-        var top = max(0, y0), end = false
-        lay()
-        // an app still building its page (a feed's shell, one screen tall): 3 s for it to grow
-        if y0 == 0 {
-            for _ in 0..<15 where (Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0) <= vh + 20 {
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-        }
-        for i in 0..<steps {
-            let want = top + Double(i) * vh
-            var got = Double(await js("window.scrollTo(0, \(want)); \(Self.playButtons); scrollY") ?? "") ?? want
-            if got + 1 < want {
-                // at the bottom: an endless page (a feed) adds more a moment after it is reached; 3 s for it
-                let h0 = Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0
-                for _ in 0..<15 {
-                    try? await Task.sleep(for: .milliseconds(200))
-                    if (Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0) > h0 + 50 { break }
-                }
-                got = Double(await js("window.scrollTo(0, \(want)); \(Self.playButtons); scrollY") ?? "") ?? got
-            }
-            if i == 0 { top = got }
-            if top > 0 || i > 0 { _ = await js(Self.hideFixed) }
-            try? await Task.sleep(for: .milliseconds(i == 0 ? 150 : 120))
-            for _ in 0..<6 where (Int(await js(BrowserProto.imagesPending(vh)) ?? "0") ?? 0) > 0 {
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            // web fonts in (text in one is blank till it loads), 1.5 s at most
-            for _ in 0..<15 where await js("document.fonts.status") == "loading" {
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            if i == 0 { pending = [] }
-            pending += Self.marks(await js(Self.markPending)).filter { p in !pending.contains { $0.id == p.id } }
-            let at = Double(await js("scrollY") ?? "") ?? got
-            // the page ended: only what is below the last screen
-            let already = i == 0 ? 0 : Int(((top + Double(i) * vh) - at) / vh * Double(w))
-            if at + 1 < top + Double(i) * vh, already >= w { end = true; break }
-            let c = WKSnapshotConfiguration()
-            c.rect = web.bounds
-            c.snapshotWidth = NSNumber(value: w)
-            guard let img = try? await web.takeSnapshot(configuration: c),
-                  let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { break }
-            var px = [UInt8](repeating: 0, count: w * w * 4)
-            px.withUnsafeMutableBytes { b in
-                let ctx = CGContext(data: b.baseAddress, width: w, height: w, bitsPerComponent: 8, bytesPerRow: w * 4,
-                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: w))
-            }
-            for y in max(0, already)..<w {
-                for x in 0..<w { let p = 4 * (y * w + x); rgb += [px[p], px[p + 1], px[p + 2]] }
-            }
-            let shift = at - top
-            let found = (await js(BrowserProto.pageBoxes)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[Double]] } ?? []
-            rows += found.filter { $0.count == 5 && $0[1] >= Double(already) * vh / Double(w) - 1 && $0[1] < vh }
-                .map { [$0[0], $0[1] + shift, $0[2], $0[3], $0[4]] }
-            if at + 1 < top + Double(i) * vh { end = true; break }
-        }
-        let h = rgb.count / (3 * w)
-        sectionTop = top
-        sectionHeight = Double(h) * vh / Double(w)
-        sectioned = true
-        let full = Double(await js("document.documentElement.scrollHeight") ?? "") ?? 0
-        if end { pending = pending.filter { $0.y < top + Double(rgb.count / (3 * w)) * vh / Double(w) } }
-        var (msgs, came) = Rle.longPicture(rgb: rgb, width: w, height: h, scale: 2)
-        // what the watch keeps (a busy picture fills its store early): the next part from there
-        let short = came < h * 2
-        sectionHeight = Double(came / 2) * vh / Double(w)
-        let below = short || (!end && top + sectionHeight + 4 < full)
-        var y = Data([UInt8(ascii: "y")])
-        y.le(UInt16(clamping: scroll))
-        y.append((below ? 1 : 0) | (top > 0 ? 2 : 0) | (Self.drawnHere(web.url) ? 0 : 4))
-        msgs.insert(y, at: 1)
-        let k = 466 / vh
-        var seen = Set<[Int]>()
-        let boxes = rows.compactMap { r -> (x: Int, y: Int, w: Int, h: Int, kind: UInt8)? in
-            let b = (Int(r[0] * k), Int(r[1] * k), Int(r[2] * k), Int(r[3] * k))
-            guard b.1 < came, seen.insert([b.0, b.1, b.2, b.3]).inserted else { return nil }
-            return (b.0, b.1, b.2, b.3, UInt8(r[4]))
-        }
-        lastMode = "picture"
-        return ["msgs": hex(msgs + BrowserProto.boxes(boxes)), "url": web.url?.absoluteString ?? "", "mode": lastMode]
-    }
-
-    /// The next part of a picture page (`dir` 1 down, -1 up), its first screen what the watch shows now.
+    /// The next part of the page (`dir` 1 down, -1 up).
     func more(_ dir: Int) async -> [String: Any] {
-        if simple != nil { return await simpleMore() }
-        guard sectioned else { return ["msgs": hex([BrowserProto.unchanged])] }
-        // the watch shows the last 300 px (going down) or the first (going up): the new part keeps them in view
-        let keep = 300 * Double(Self.side) / 466
-        if dir > 0 { return await section(from: sectionTop + sectionHeight - keep) }
-        let y0 = max(0, sectionTop - sectionHeight + keep)
-        return await section(from: y0, scroll: Int((sectionTop - y0) * 466 / Double(Self.side)))
+        lay()
+        guard await pics.more(dir, emit: emit) else { return ["msgs": hex([BrowserProto.unchanged])] }
+        return ["msgs": [String](), "url": web.url?.absoluteString ?? "", "mode": "picture"]
     }
 
-    /// Headers and bars that stay on screen, hidden (not to repeat down the stitched picture); their room kept.
-    static let hideFixed = """
-    (() => { for (const e of document.querySelectorAll('body *')) { const p = getComputedStyle(e).position;
-      if (p == 'fixed' || p == 'sticky') e.style.setProperty('visibility', 'hidden', 'important'); } return 1; })()
-    """
-
-    /// A play button on each video (it plays on a tap: the watch's player), its moving pictures still; on the page,
-    /// so it is in the picture. Videos that play by themselves (muted) don't go to the player.
-    static let playButtons = """
-    (() => { document.querySelectorAll('.__wpb').forEach(e => e.remove());
-      for (const v of document.querySelectorAll('video')) { const r = v.getBoundingClientRect();
-        if (r.width < 40 || r.height < 30) continue;
-        const b = document.createElement('div'); b.className = '__wpb';
-        const d = Math.min(64, r.width / 3, r.height / 2);
-        b.style.cssText = `position:absolute;z-index:2147483647;pointer-events:none;left:${r.left + scrollX + r.width / 2 - d / 2}px;top:${r.top + scrollY + r.height / 2 - d / 2}px;width:${d}px;height:${d}px;border-radius:50%;background:rgba(0,0,0,.7);border:2px solid #fff;box-sizing:border-box`;
-        const t = document.createElement('div');
-        t.style.cssText = `position:absolute;left:${d * 0.38}px;top:${d * 0.27}px;width:0;height:0;border-style:solid;border-width:${d * 0.22}px 0 ${d * 0.22}px ${d * 0.34}px;border-color:transparent transparent transparent #fff`;
-        b.appendChild(t); document.body.appendChild(b); }
-      return 1; })()
-    """
+    /// Pictures that came in since the part was sent.
+    func late() async -> [String: Any] {
+        let (m, left) = await pics.late()
+        return ["msgs": hex(m), "left": left]
+    }
 
     func screenPage() async -> [String: Any] {
         let boxScript = """
@@ -639,18 +344,8 @@ import WebKit
 
     /// A tap at page px: a field brings the keyboard; the page changed (a link, a section opened): all of it again.
     func tapPage(_ x: Int, _ y: Int) async -> [String: Any] {
-        if let (_, sc) = simple {
-            // the simple screen: its search bar, its rows
-            let f = sc.field
-            if (f.x...f.x + f.w).contains(x), (f.y...f.y + f.h).contains(y) { return ["field": true] }
-            if let r = sc.rows.first(where: { ($0.x...$0.x + $0.w).contains(x) && ($0.y...$0.y + $0.h).contains(y) }) {
-                return ["open": r.link.absoluteString]
-            }
-            return ["msgs": hex([BrowserProto.unchanged])]
-        }
         let before = await js(BrowserProto.pageState)
-        let top = lastMode == "picture" && sectioned ? Int(sectionTop * 466 / Double(Self.side)) : 0
-        let r = await js(BrowserProto.tapScript(x: x, y: y + top, side: Double(Self.side)))
+        let r = await js(BrowserProto.tapScript(x: x, y: y + pics.tapTop, side: Double(Self.side)))
         if r == "2" { return ["field": true] }
         // what the tap does may start late (a script's navigation, an app's own routing): watched for 4 s, not
         // judged after a fixed wait
@@ -669,8 +364,10 @@ import WebKit
         let after = await js(BrowserProto.pageState)
         if !changed || after == before { return ["msgs": hex([BrowserProto.unchanged])] }
         // the same page changed (a menu, a section opened): from where the watch is
-        if lastMode == "picture", sectioned, let s = before?.split(separator: "|").first, web.url?.absoluteString == String(s) {
-            return await section(from: sectionTop)
+        if pics.active, let s = before?.split(separator: "|").first, web.url?.absoluteString == String(s) {
+            lay()
+            await pics.section(from: pics.top, emit: emit)
+            return ["msgs": [String](), "url": web.url?.absoluteString ?? "", "mode": "picture"]
         }
         return await page()
     }
@@ -678,57 +375,11 @@ import WebKit
     /// A playing video's frame, 155 px (the page's picture when the video won't give its pixels), as the watch's picture.
     /// the video's coder (VideoCoder): a new one for each video (or a new shape)
     var coder: VideoCoder?
-    /// The sites the watch draws (their text sharp in its font); the rest come as a picture of the page.
-    static func drawnHere(_ u: URL?) -> Bool {
-        let h = (u?.host ?? "").lowercased()
-        return ["google.", "youtube.com", "instagram.com", "fandom.com", "wikipedia.org", "wikimedia.org", "wiktionary.org"]
-            .contains { h.contains($0) }
-    }
-
-    /// Before a drawn page is laid out: its text as wide as the watch draws it (about 10.5 panel px a character, 8.1
-    /// of the page's at 360 wide; one size, as the watch has one), so lines wrap where the watch's do and nothing
-    /// runs into the next; icon fonts left alone. Banners over the page (an app's "get the app", a cookie wall) gone.
-    static let watchText = """
-    (() => { if (window.__wt) return 0; window.__wt = 1;
-      // collapsed sections open (Wikipedia's on phones): the whole article
-      document.querySelectorAll('[hidden="until-found"]').forEach(e => e.removeAttribute('hidden'));
-      document.querySelectorAll('.collapsible-heading,.mf-collapsible-heading').forEach(e => e.setAttribute('aria-expanded', 'true'));
-      // the watch's font: Inter Medium, 20 panel px (15.45 page px at 360 wide)
-      const fs = (20 * 360 / 466).toFixed(2) + 'px';
-      const fam = window.__wf ? '__watch' : '-apple-system,Helvetica,Arial,sans-serif';
-      const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); const done = new Set(); let n;
-      while ((n = tw.nextNode())) { const e = n.parentElement; if (!e || done.has(e) || !n.data.trim()) continue; done.add(e);
-        const st = getComputedStyle(e); if (/icon|symbol|material|awesome/i.test(st.fontFamily)) continue;
-        // (the watch's bold is its medium a pixel over: as wide)
-        if ((parseInt(st.fontWeight) || 400) >= 600) e.dataset.wb = '1';
-        e.style.setProperty('font-family', fam, 'important');
-        e.style.setProperty('font-weight', '500', 'important');
-        e.style.setProperty('font-style', 'normal', 'important');
-        e.style.setProperty('font-size', fs, 'important');
-        e.style.setProperty('line-height', '19px', 'important');
-        e.style.setProperty('letter-spacing', '0', 'important'); }
-      for (const e of document.querySelectorAll('body *')) { const st = getComputedStyle(e);
-        if (st.position != 'fixed' && st.position != 'sticky') continue;
-        const r = e.getBoundingClientRect();
-        if (r.width * r.height > innerWidth * innerHeight * 0.25) e.style.setProperty('display', 'none', 'important'); }
-      return 1; })()
-    """
-
-    /// Inter (the watch's font is baked from it: hosts/fontgen.py), base64: BROWSER_FONT or runs/font/Inter.ttf
-    static let watchFont: String? = {
-        let env = ProcessInfo.processInfo.environment["BROWSER_FONT"]
-        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
-        let path = env ?? exe.appendingPathComponent("../runs/font/Inter.ttf").path
-        return (try? Data(contentsOf: URL(fileURLWithPath: path)))?.base64EncodedString()
-    }()
-
     static let phoneUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1"
 
     /// the browser's name to YouTube (the cookies' browser), nil: Safari's own
     var chromeUA: String?
 
-    /// page view as a picture (the watch's picture mode)
-    var pictureMode = false
     var coderSize = ""
 
     /// The playing video's next frame for the watch (VideoCoder: the part that changed, few colours); `msgs` empty
@@ -772,10 +423,6 @@ import WebKit
     }
 
     func type(_ t: String) async -> [String: Any] {
-        if let (site, _) = simple {
-            await load(Simple.search(site, t))
-            return await page()
-        }
         let s = String(data: try! JSONSerialization.data(withJSONObject: [t]), encoding: .utf8)!.dropFirst().dropLast()
         _ = await js("""
         (() => { const f = document.activeElement; if (!f) return;
@@ -834,8 +481,7 @@ import WebKit
             web.customUserAgent = arg.isEmpty ? nil : arg
             return [:]
         case "picture":
-            // page view as a picture of the page (the watch's mode button), not drawn
-            pictureMode = arg == "1"
+            // (an older host's mode button: page view is always its picture now)
             return [:]
         case "vkey":
             // the watch drew over the picture (paused sign): a whole frame next
