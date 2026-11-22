@@ -9,7 +9,8 @@
 //! Phone → watch (and page.rs): `!text` what it is doing or why it couldn't; `H idx title` a recent page for the
 //! start screen; `Z` no page before this one; `K` a text field was tapped in page view (the keyboard up); `M 0|1` a
 //! video is playing (its frames: `I`/`D`…/`E`, examples/pixview rle.rs, drawn as they come); page view's page:
-//! `J h`, its bands, `j` (long.rs); `Y` a tap changed nothing; `A n`, `a first (x y w h:i16 kind)…` the page's
+//! `J h`, its bands, `j` (long.rs: shown once all of it came, a spinner till then, so it scrolls without waits);
+//! `G` go to page view (a page with no text, a video page); `Y` a tap changed nothing; `A n`, `a first (x y w h:i16 kind)…` the page's
 //! tappable places, page px (links 0, fields 1, buttons 2): a tap goes to the nearest one within reach, outlined.
 //! Watch → phone: `R` ready; `Q text` a search or an address; `O idx` a recent page; `L idx` a link; `B` back;
 //! `V 0|1` reader or page view; `T x:u16 y:u16` a tap on the page view, page px (from the page's top); `W text`
@@ -77,7 +78,12 @@ const WHITE: Rgb = Rgb(0xFF, 0xFF, 0xFF);
 const TOP: i32 = 64;
 const BOT: i32 = 398;
 /// The round button at the bottom: reader ⇄ page view.
-const SWITCH: (i32, i32, i32, i32) = (C, 406, 120, 44);
+/// The bottom bar in reader and page view: the search box (left), the Page / Text button (right): centre x, top, w, h.
+const SEARCH: (i32, i32, i32, i32) = (C - 46, 396, 148, 44);
+const SWITCH: (i32, i32, i32, i32) = (C + 78, 396, 84, 44);
+/// The spinner's dots round its middle (radius 34), clockwise from the top.
+const SPIN: [(i32, i32); 12] =
+    [(0, -34), (17, -29), (29, -17), (34, 0), (29, 17), (17, 29), (0, 34), (-17, 29), (-29, 17), (-34, 0), (-29, -17), (-17, -29)];
 /// Start: the pill, the recent rows.
 const WHERE: (i32, i32, i32) = (96, 56, 270);
 const ROWS_Y: i32 = 190;
@@ -125,6 +131,8 @@ struct Ui {
     video: bool,
     /// page view's scroll, panel px
     pscroll: i32,
+    /// where the keyboard was opened from (back returns there)
+    keys_from: Screen,
     /// page view's tappable places: x, y (page px), w, h, kind
     boxes: [(i16, i16, i16, i16, u8); BOXES],
     n_boxes: usize,
@@ -151,6 +159,7 @@ fn main(api: &'static Api) -> i32 {
         pictured: false,
         video: false,
         pscroll: 0,
+        keys_from: Screen::Start,
         boxes: [(0, 0, 0, 0, 0); BOXES],
         n_boxes: 0,
         shown_at: 0,
@@ -162,6 +171,10 @@ fn main(api: &'static Api) -> i32 {
     loop {
         let typing = ui.screen == Screen::Keys && ui.keys.rotary;
         let hold = typing.then(|| ui.keys.dial.hold_wait(api.now())).flatten();
+        // a spinner turns while something loads
+        if ui.loading() {
+            ui.due = true;
+        }
         let pace = ui.due.then(|| FRAME_MS.saturating_sub(api.now().wrapping_sub(ui.shown_at)));
         let w = [ui.motor.wait(), hold, pace].into_iter().flatten().min().unwrap_or(u32::MAX);
         let e = api.event(w);
@@ -309,6 +322,16 @@ impl Ui {
                 if was && !self.video && self.screen == Screen::Page { Got::Redraw } else { Got::None }
             }
             Some(b'Y') if self.screen == Screen::Page => Got::Redraw,
+            Some(b'G') => {
+                // page view, whether asked or not: no text here, or a video
+                if self.screen != Screen::Keys {
+                    self.screen = Screen::Page;
+                }
+                self.pictured = false;
+                self.video = false;
+                self.n_note = 0;
+                Got::Redraw
+            }
             Some(b'J' | b'j') | Some(b'I' | b'D' | b'E') if self.screen == Screen::Page && !self.video => {
                 match long().message(m) {
                     long::Got::Begin => {
@@ -317,24 +340,13 @@ impl Ui {
                         self.pictured = false;
                         Got::None
                     }
-                    long::Got::Band(y0, y1) => {
-                        let first = !self.pictured;
-                        if first {
-                            // the first band: the loading words go
-                            self.pictured = true;
-                            self.n_note = 0;
-                            let mut s = self.api;
-                            Surface::rect(&mut s, 0, 0, 466, 466, 0);
-                        }
-                        let (top, bot) = (y0 - self.pscroll, y1 - self.pscroll);
-                        if bot > 0 && top < 466 {
-                            long().draw(&mut self.pic, &mut Screen565(self.api), self.pscroll, top.max(0), bot.min(466));
-                            Got::Drew
-                        } else {
-                            Got::None
-                        }
+                    // kept, not drawn: the spinner shows how much came; the page once all of it has
+                    long::Got::Band(..) => Got::None,
+                    long::Got::Done => {
+                        self.pictured = true;
+                        self.n_note = 0;
+                        Got::Redraw
                     }
-                    long::Got::Done => Got::Drew,
                     long::Got::None => Got::None,
                 }
             }
@@ -381,7 +393,7 @@ impl Ui {
         match self.screen {
             Screen::Start => return false,
             Screen::Keys if self.field => self.screen = Screen::Page,
-            Screen::Keys => self.screen = Screen::Start,
+            Screen::Keys => self.screen = self.keys_from,
             Screen::Reader | Screen::Page => {
                 self.send(b"B");
                 self.set_note(b"Going back\xE2\x80\xA6");
@@ -408,10 +420,14 @@ impl Ui {
             }
             Screen::Reader => self.draw_reader(),
             Screen::Page => {
-                if !self.pictured {
+                if !self.pictured && !self.video {
                     Surface::rect(&mut s, 0, 0, 466, 466, 0);
-                    let t = if self.n_note > 0 { self.note() } else { "Loading the page\u{2026}" };
-                    centre_fit(&mut s, C, 222, t, 320, GREY);
+                    if self.loading() {
+                        self.draw_spinner();
+                    } else {
+                        let t = if self.n_note > 0 { self.note() } else { "Nothing to show" };
+                        centre_fit(&mut s, C, 222, t, 320, GREY);
+                    }
                 } else if !self.video {
                     self.draw_long();
                 }
@@ -448,8 +464,12 @@ impl Ui {
         let title = if p.n_blocks == 0 && self.n_note > 0 { "" } else { p.title() };
         centre_fit(&mut s, C, 28, title, 240, GREY);
         if p.n_blocks == 0 {
-            let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
-            centre_fit(&mut s, C, 222, t, 320, GREY);
+            if self.loading() {
+                self.draw_spinner();
+            } else {
+                let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
+                centre_fit(&mut s, C, 222, t, 320, GREY);
+            }
         }
         let x0 = C - page::WIDTH / 2;
         for l in &p.lines[..p.n_lines] {
@@ -477,6 +497,53 @@ impl Ui {
         self.draw_switch();
     }
 
+    /// Something on its way: page view's page (till all of it came), or the reader's text.
+    fn loading(&self) -> bool {
+        match self.screen {
+            // an error note ("Couldn't load") stops it
+            Screen::Page => !self.pictured && !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
+            // a note that ends "…" is under way ("Loading…"); others ("Couldn't load") are not
+            Screen::Reader => page().n_blocks == 0 && self.note[..self.n_note].ends_with(b"\xE2\x80\xA6"),
+            _ => false,
+        }
+    }
+
+    /// A turning ring of dots and what is loading (how much of a page came).
+    fn draw_spinner(&self) {
+        let mut s = self.api;
+        let (cx, cy) = (C, 196);
+        let head = (self.api.now() / FRAME_MS) as usize % SPIN.len();
+        for (i, &(dx, dy)) in SPIN.iter().enumerate() {
+            // brightest at the head, fading behind it
+            let age = (head + SPIN.len() - i) % SPIN.len();
+            let v = 255u32.saturating_sub(age as u32 * 22).max(40) as u8;
+            let c = if age == 0 { RED } else { Rgb(v, v, v) };
+            disc(&mut s, cx + dx, cy + dy, 6, c, BLACK);
+        }
+        let l = long();
+        let mut buf = [0u8; 40];
+        let t: &str = if self.n_note > 0 {
+            self.note()
+        } else if self.screen == Screen::Page && l.height > 0 {
+            let pc = (l.came() * 100 / l.height).clamp(0, 99) as u32;
+            let mut n = 0;
+            for &b in b"Loading the page " {
+                buf[n] = b;
+                n += 1;
+            }
+            if pc >= 10 {
+                buf[n] = b'0' + (pc / 10) as u8;
+                n += 1;
+            }
+            buf[n] = b'0' + (pc % 10) as u8;
+            buf[n + 1] = b'%';
+            core::str::from_utf8(&buf[..n + 2]).unwrap_or("")
+        } else {
+            "Loading\u{2026}"
+        };
+        centre_fit(&mut s, C, 262, t, 320, GREY);
+    }
+
     /// Page view's page where it is scrolled to; below what came, black (and why, at the end).
     fn draw_long(&mut self) {
         let mut s = self.api;
@@ -497,25 +564,42 @@ impl Ui {
         }
     }
 
-    /// The round button: "Page" in reader view, "Text" in page view (a video: its sound is on the phone).
+    /// The bottom bar: the search box, and the round button: "Page" in reader view, "Text" in page view.
     fn draw_switch(&self) {
         let mut s = self.api;
+        let (cx, y, w, h) = SEARCH;
+        rrect(&mut s, cx - w / 2, y, w, h, h / 2, CARD, BLACK);
+        // a magnifier, then the words
+        disc(&mut s, cx - w / 2 + 24, y + 19, 8, Rgb(0x80, 0x80, 0x80), CARD);
+        disc(&mut s, cx - w / 2 + 24, y + 19, 5, CARD, Rgb(0x80, 0x80, 0x80));
+        Surface::rect(&mut s, cx - w / 2 + 29, y + 25, 3, 7, GREY);
+        font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search", w - 56, GREY);
         let (cx, y, w, h) = SWITCH;
-        let label = match self.screen {
-            Screen::Page if self.video => "Text (sound on phone)",
-            Screen::Page => "Text",
-            _ => "Page",
-        };
-        let w = if self.video && self.screen == Screen::Page { w + 110 } else { w };
+        let label = if self.screen == Screen::Page { "Text" } else { "Page" };
         rrect(&mut s, cx - w / 2, y, w, h, h / 2, WHITE, BLACK);
-        centre_fit(&mut s, cx, y + h / 2 - 12, label, w - 20, 0);
+        centre_fit(&mut s, cx, y + h / 2 - 12, label, w - 16, 0);
+    }
+
+    fn on_search(&self, x: i32, y: i32) -> bool {
+        let (cx, top, w, h) = SEARCH;
+        matches!(self.screen, Screen::Reader | Screen::Page) && (top - 8..top + h + 12).contains(&y) && (x - cx).abs() <= w / 2 + 4
+    }
+
+    /// The search box: the keyboard, back to here if left.
+    fn search(&mut self) {
+        self.motor.play(haptic::TICK);
+        self.field = false;
+        self.keys_from = self.screen;
+        self.keys.open("Search or address");
+        self.screen = Screen::Keys;
+        self.draw();
     }
 
     // --- input
 
     fn on_switch(&self, x: i32, y: i32) -> bool {
         let (cx, top, w, h) = SWITCH;
-        matches!(self.screen, Screen::Reader | Screen::Page) && (top - 8..top + h + 12).contains(&y) && (x - cx).abs() <= w / 2 + 10
+        matches!(self.screen, Screen::Reader | Screen::Page) && (top - 8..top + h + 12).contains(&y) && (x - cx).abs() <= w / 2 + 4
     }
 
     fn touch_down(&mut self, e: Event) {
@@ -605,6 +689,7 @@ impl Ui {
             Screen::Reader if dragged => self.scroll_by(-dy),
             Screen::Page if dragged => self.page_scroll(-dy),
             _ if self.on_switch(x, y) => self.switch(),
+            _ if self.on_search(x, y) => self.search(),
             Screen::Reader => self.reader_tap(y),
             Screen::Page => {
                 self.motor.play(haptic::TICK);
@@ -652,6 +737,7 @@ impl Ui {
         if (wy - 8..wy + wh + 8).contains(&y) && (x - C).abs() <= ww / 2 + 8 {
             self.motor.play(haptic::TICK);
             self.field = false;
+            self.keys_from = Screen::Start;
             self.keys.open("Search or address");
             self.screen = Screen::Keys;
             return self.draw();

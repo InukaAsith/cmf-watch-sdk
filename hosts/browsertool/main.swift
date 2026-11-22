@@ -31,6 +31,37 @@ import WebKit
         window.orderFrontRegardless()
     }
 
+    /// Shown as an ordinary window (SIGUSR1) to sign in by hand: its cookies stay in this browser's store and the
+    /// watch's pages use them. SIGUSR2 hides it again.
+    func show(_ on: Bool) {
+        if on {
+            NSApp.setActivationPolicy(.regular)
+            window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+            window.title = "Watch browser: sign in here"
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.level = .normal
+            window.setContentSize(NSSize(width: 420, height: 760))
+            web.frame = NSRect(x: 0, y: 0, width: 420, height: 760)
+            window.center()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            // nothing open yet: Google's sign-in (YouTube's too), from where any site can be reached
+            if web.url == nil {
+                web.load(URLRequest(url: URL(string: "https://accounts.google.com/ServiceLogin?continue=https://m.youtube.com/")!))
+            }
+        } else {
+            window.styleMask = .borderless
+            window.alphaValue = 0.02
+            window.ignoresMouseEvents = true
+            window.level = .floating
+            window.setContentSize(NSSize(width: Self.side, height: Self.side))
+            window.setFrameOrigin(.zero)
+            web.frame = NSRect(x: 0, y: 0, width: Self.side, height: Self.side)
+            NSApp.setActivationPolicy(.prohibited)
+        }
+    }
+
     func js(_ s: String) async -> String? {
         await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
             web.evaluateJavaScript(s) { r, _ in c.resume(returning: r.map { "\($0)" }) }
@@ -77,7 +108,7 @@ import WebKit
         let final = resp.url ?? u
         var p = Reader.parse(String(decoding: d, as: UTF8.self), base: final)
         if p.title.isEmpty { p.title = final.host ?? "Page" }
-        if p.blocks.isEmpty { p.blocks = [.init(kind: Reader.para, link: nil, text: "No text here: try page view.")] }
+        if p.blocks.isEmpty { return ["empty": true, "url": final.absoluteString] }
         return ["msgs": hex(Reader.messages(p)), "links": p.links.map(\.absoluteString), "url": final.absoluteString]
     }
 
@@ -278,6 +309,19 @@ import WebKit
             let r = await js("[...document.querySelectorAll('video')].some(v => !v.paused && !v.ended && v.readyState > 2)")
             return ["playing": r == "1" || r == "true"]
         case "frame": return await frame()
+        case "load":
+            if let u = URL(string: arg), web.url != u { await load(u) }
+            return [:]
+        case "play":
+            // a video page: its video started once the player is there
+            for _ in 0..<12 {
+                if await js(BrowserProto.playScript) == "1" { break }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            try? await Task.sleep(for: .seconds(2))
+            return [:]
+        case "isvideo":
+            return ["video": URL(string: arg).map(BrowserProto.isVideo) ?? false]
         case "stop":
             _ = await js("document.querySelectorAll('video,audio').forEach(v => v.pause())")
             return [:]
@@ -299,12 +343,21 @@ import WebKit
     }
 }
 
+nonisolated(unsafe) var sources: [DispatchSourceSignal] = []
+
 func hex(_ m: [Data]) -> [String] { m.map { $0.map { String(format: "%02x", $0) }.joined() } }
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 Task { @MainActor in
     let tool = Tool()
+    for (sig, on) in [(SIGUSR1, true), (SIGUSR2, false)] {
+        signal(sig, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+        src.setEventHandler { MainActor.assumeIsolated { tool.show(on) } }
+        src.resume()
+        sources.append(src)
+    }
     while let line = await Task.detached(operation: { readLine() }).value {
         let out = await tool.run(line)
         let d = try! JSONSerialization.data(withJSONObject: out)

@@ -72,7 +72,10 @@ def build_tool():
     srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji")]
     if not out.exists() or any(p.stat().st_mtime > out.stat().st_mtime for p in srcs):
         out.parent.mkdir(exist_ok=True)
-        subprocess.run(["swiftc", "-O", "-swift-version", "5", "-o", str(out), *map(str, srcs)], check=True)
+        # built beside it, then swapped in: macOS won't start a signed binary rewritten in place while it runs
+        tmp = out.with_name("browsertool.tmp")
+        subprocess.run(["swiftc", "-O", "-swift-version", "5", "-o", str(tmp), *map(str, srcs)], check=True)
+        tmp.replace(out)
     return out
 
 
@@ -144,10 +147,27 @@ async def web(ch, tool):
             st["links"] = r["links"]
         await send(r.get("msgs", []))
 
+    async def to_page(u):
+        # page view by itself: the watch is told, the page sent whole
+        st["page"] = True
+        await ch.send(b"G")
+        await answer(await tool.ask("page " + u))
+
     async def open_(u, push=True):
         if push and st["url"]:
             st["history"].append(st["url"])
         st["url"] = u
+        if (await tool.ask("isvideo " + u)).get("video"):
+            # a video: page view, played, straight to its frames (the page's picture once it stops)
+            st["page"] = True
+            await ch.send(b"G")
+            await tool.ask("load " + u)
+            await tool.ask("play")
+            if (await tool.ask("playing")).get("playing"):
+                st["video"] = asyncio.create_task(frames())
+            else:
+                await answer(await tool.ask("page -"))
+            return
         if st["page"]:
             await answer(await tool.ask("page " + u))
             return
@@ -161,6 +181,10 @@ async def web(ch, tool):
             return
         await ch.send(("!Loading " + (urllib.parse.urlsplit(u).hostname or "the page") + "\u2026").encode())
         r = await tool.ask("reader " + u)
+        if r.get("empty"):
+            # no text here: page view
+            await to_page(r.get("url") or u)
+            return
         await answer(r)
         host = urllib.parse.urlsplit(st["url"]).hostname or ""
         if "google." not in host and "duckduckgo" not in host and st["url"] not in st["recent"]:
@@ -233,11 +257,14 @@ async def main():
     ap.add_argument("--video", action="store_true")
     ap.add_argument("--web", action="store_true", help="the real web, from this Mac")
     a = ap.parse_args()
+    tool = None
+    if a.web:
+        # up before the watch app opens: its window can be shown to sign in (kill -USR1)
+        tool = Tool()
+        await tool.start()
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
         await send_when_open(ch, b"!")
         if a.web:
-            tool = Tool()
-            await tool.start()
             # the app closed: wait for it to open again, a fresh start
             while True:
                 try:
