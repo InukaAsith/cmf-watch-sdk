@@ -79,6 +79,8 @@ const FRAME_MS: u32 = 80;
 
 fn main(api: &'static Api) -> i32 {
     let mut ui = Ui { api, map: false, zoom: 2, motor: Motor::new(api), drawn: Drawn::Other, shown_at: 0, due: false, start: Start::new(), armed: false, map_id: 0, map_asked: None, map_up: false };
+    // the button is ours: back from the keyboard or the list (else the loader stops the app a second later)
+    api.own_back(true);
     api.keep_screen_on(true);
     ui.draw();
     let _ = api.send(b"R");
