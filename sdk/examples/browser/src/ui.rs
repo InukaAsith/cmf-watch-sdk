@@ -26,7 +26,7 @@ use crate::rle::{self, Decoder, Status};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::dial::Act;
-use cmf_wp2_ui::draw::{disc, rrect};
+use cmf_wp2_ui::draw::{arc, disc, rrect};
 use cmf_wp2_ui::font;
 use cmf_wp2_ui::haptic::{self, Motor};
 use cmf_wp2_ui::text::dots_centre;
@@ -82,11 +82,8 @@ const TOP: i32 = 64;
 const BOT: i32 = 398;
 /// The round button at the bottom: reader ⇄ page view.
 /// The bottom bar in reader and page view: the search box (left), the Page / Text button (right): centre x, top, w, h.
-const SEARCH: (i32, i32, i32, i32) = (C - 46, 396, 148, 44);
-const SWITCH: (i32, i32, i32, i32) = (C + 78, 396, 84, 44);
-/// The spinner's dots round its middle (radius 34), clockwise from the top.
-const SPIN: [(i32, i32); 12] =
-    [(0, -34), (17, -29), (29, -17), (34, 0), (29, 17), (17, 29), (0, 34), (-17, 29), (-29, 17), (-34, 0), (-29, -17), (-17, -29)];
+const SEARCH: (i32, i32, i32, i32) = (C - 26, 394, 196, 46);
+const SWITCH: (i32, i32, i32, i32) = (C + 100, 394, 46, 46);
 /// Start: the pill, the recent rows.
 const WHERE: (i32, i32, i32) = (96, 56, 270);
 const ROWS_Y: i32 = 190;
@@ -388,14 +385,12 @@ impl Ui {
                         Got::None
                     }
                     // the page once its first screen came; then each band drawn if in view
+                    // drawn as it comes (the ring round the edge fills)
                     long::Got::Band(y0, y1) => {
                         if !self.pictured {
-                            if long().came() >= 466.min(long().height) {
-                                self.pictured = true;
-                                self.n_note = 0;
-                                return Got::Redraw;
-                            }
-                            Got::None
+                            self.pictured = true;
+                            self.n_note = 0;
+                            Got::Redraw
                         } else if y1 > self.pscroll && y0 < self.pscroll + 466 {
                             Got::Redraw
                         } else {
@@ -495,16 +490,15 @@ impl Ui {
                 }
                 if !self.pictured {
                     Surface::rect(&mut s, 0, 0, 466, 466, 0);
-                    if self.loading() {
-                        self.draw_spinner();
-                    } else {
-                        let t = if self.n_note > 0 { self.note() } else { "Nothing to show" };
-                        centre_fit(&mut s, C, 222, t, 320, GREY);
-                    }
-                } else if !self.video {
+                    let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
+                    centre_fit(&mut s, C, 222, t, 320, GREY);
+                } else {
                     self.draw_long();
                 }
                 self.draw_switch();
+                if self.loading() {
+                    self.draw_ring();
+                }
             }
         }
         self.shown();
@@ -537,12 +531,8 @@ impl Ui {
         let title = if p.n_blocks == 0 && self.n_note > 0 { "" } else { p.title() };
         centre_fit(&mut s, C, 28, title, 240, GREY);
         if p.n_blocks == 0 {
-            if self.loading() {
-                self.draw_spinner();
-            } else {
-                let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
-                centre_fit(&mut s, C, 222, t, 320, GREY);
-            }
+            let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
+            centre_fit(&mut s, C, 222, t, 320, GREY);
         }
         let x0 = C - page::WIDTH / 2;
         for l in &p.lines[..p.n_lines] {
@@ -565,12 +555,12 @@ impl Ui {
         if p.n_blocks > 0 && self.n_note > 0 {
             // what the phone is doing (loading a link): over the text's top
             rrect(&mut s, C - 150, TOP - 8, 300, 36, 18, CARD, BLACK);
-            centre_fit(&mut s, C + 12, TOP, self.note(), 240, W);
-            if self.loading() {
-                self.spin_small(C - 124, TOP + 10);
-            }
+            centre_fit(&mut s, C, TOP, self.note(), 270, W);
         }
         self.draw_switch();
+        if self.loading() {
+            self.draw_ring();
+        }
     }
 
     /// Something on its way: page view's page (till all of it came), or the reader's text.
@@ -591,34 +581,18 @@ impl Ui {
         }
     }
 
-    /// A turning ring of dots and what is loading (how much of a page came).
-    fn draw_spinner(&self) {
-        self.spin_at(196);
-        self.spinner_words();
-    }
-
-    /// The spinner's dots round (C, cy).
-    fn spin_at(&self, cy: i32) {
+    /// The loading ring round the panel's edge (as Maps'): a turning arc while waiting, filling as the page comes.
+    fn draw_ring(&self) {
         let mut s = self.api;
-        let cx = C;
-        let head = (self.api.now() / FRAME_MS) as usize % SPIN.len();
-        for (i, &(dx, dy)) in SPIN.iter().enumerate() {
-            // brightest at the head, fading behind it
-            let age = (head + SPIN.len() - i) % SPIN.len();
-            let v = 255u32.saturating_sub(age as u32 * 22).max(40) as u8;
-            let c = if age == 0 { RED } else { Rgb(v, v, v) };
-            disc(&mut s, cx + dx, cy + dy, 6, c, BLACK);
-        }
-    }
-
-    /// A small turning ring (a loading note's).
-    fn spin_small(&self, cx: i32, cy: i32) {
-        let mut s = self.api;
-        let head = (self.api.now() / FRAME_MS) as usize % SPIN.len();
-        for (i, &(dx, dy)) in SPIN.iter().enumerate() {
-            let age = (head + SPIN.len() - i) % SPIN.len();
-            let v = 255u32.saturating_sub(age as u32 * 22).max(40) as u8;
-            disc(&mut s, cx + dx / 3, cy + dy / 3, 2, if age == 0 { RED } else { Rgb(v, v, v) }, CARD);
+        let l = long();
+        let bg = Rgb(0, 0, 0);
+        arc(&mut s, C, C, 226, 232, 0, 65536, Rgb(0x30, 0x30, 0x30), None, bg);
+        if self.screen == Screen::Page && self.pictured && !self.tapping && l.height > 0 && l.done == 0 {
+            let f = (l.came().clamp(0, l.height) as u32 * 65536 / l.height as u32).max(2048);
+            arc(&mut s, C, C, 226, 232, 49152, f, WHITE, None, bg);
+        } else {
+            let a = (self.api.now().wrapping_mul(70) & 0xFFFF) as u16;
+            arc(&mut s, C, C, 226, 232, a, 14000, WHITE, None, bg);
         }
     }
 
@@ -646,32 +620,6 @@ impl Ui {
         }
     }
 
-    fn spinner_words(&self) {
-        let mut s = self.api;
-        let l = long();
-        let mut buf = [0u8; 40];
-        let t: &str = if self.n_note > 0 {
-            self.note()
-        } else if self.screen == Screen::Page && l.height > 0 {
-            let pc = (l.came() * 100 / l.height).clamp(0, 99) as u32;
-            let mut n = 0;
-            for &b in b"Loading the page " {
-                buf[n] = b;
-                n += 1;
-            }
-            if pc >= 10 {
-                buf[n] = b'0' + (pc / 10) as u8;
-                n += 1;
-            }
-            buf[n] = b'0' + (pc % 10) as u8;
-            buf[n + 1] = b'%';
-            core::str::from_utf8(&buf[..n + 2]).unwrap_or("")
-        } else {
-            "Loading\u{2026}"
-        };
-        centre_fit(&mut s, C, 262, t, 320, GREY);
-    }
-
     /// Page view's page where it is scrolled to; below what came, black (and why, at the end).
     fn draw_long(&mut self) {
         let mut s = self.api;
@@ -680,22 +628,12 @@ impl Ui {
         let end = came - self.pscroll;
         if end < 466 {
             Surface::rect(&mut s, 0, end.max(0), 466, 466 - end.max(0), 0);
-            if l.done == 0 {
-                // the rest is on its way: a small spinner in the gap
-                if end < 380 {
-                    self.spin_at((end.max(0) + 60).min(330));
-                }
-            } else if end < 360 {
+            if l.done != 0 && end < 360 {
                 let t = if came < l.height { "That's all that fits on the watch" } else { "End of the page" };
                 centre_fit(&mut s, C, end.max(0) + 30, t, 300, GREY);
             }
         }
         l.draw(&mut self.pic, &mut Screen565(self.api), &mut s, self.pscroll, 0, end.min(466));
-        if self.tapping {
-            // a tap on its way: a spinner on a dark disc in the middle
-            disc(&mut s, C, 210, 58, CARD, BLACK);
-            self.spin_at(210);
-        }
         if self.n_note > 0 {
             rrect(&mut s, C - 150, 20, 300, 36, 18, CARD, BLACK);
             centre_fit(&mut s, C, 28, self.note(), 270, W);
@@ -711,11 +649,22 @@ impl Ui {
         disc(&mut s, cx - w / 2 + 24, y + 19, 8, Rgb(0x80, 0x80, 0x80), CARD);
         disc(&mut s, cx - w / 2 + 24, y + 19, 5, CARD, Rgb(0x80, 0x80, 0x80));
         Surface::rect(&mut s, cx - w / 2 + 29, y + 25, 3, 7, GREY);
-        font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search", w - 56, GREY);
+        font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search or address", w - 56, GREY);
+        // the round button: reader view's lines (from page view), page view's frame (from reader view)
         let (cx, y, w, h) = SWITCH;
-        let label = if self.screen == Screen::Page { "Text" } else { "Page" };
-        rrect(&mut s, cx - w / 2, y, w, h, h / 2, WHITE, BLACK);
-        centre_fit(&mut s, cx, y + h / 2 - 12, label, w - 16, 0);
+        disc(&mut s, cx, y + h / 2, w / 2, WHITE, BLACK);
+        let (x0, cy) = (cx - 11, y + h / 2);
+        if self.screen == Screen::Page {
+            for (k, len) in [22, 22, 14].into_iter().enumerate() {
+                Surface::rect(&mut s, x0, cy - 8 + 7 * k as i32, len, 3, 0);
+            }
+        } else {
+            Surface::rect(&mut s, x0, cy - 9, 22, 3, 0);
+            Surface::rect(&mut s, x0, cy + 6, 22, 3, 0);
+            Surface::rect(&mut s, x0, cy - 9, 3, 18, 0);
+            Surface::rect(&mut s, x0 + 19, cy - 9, 3, 18, 0);
+            Surface::rect(&mut s, x0 + 6, cy - 3, 10, 6, rgb565(0xD7, 0x19, 0x21));
+        }
     }
 
     fn on_search(&self, x: i32, y: i32) -> bool {
@@ -803,12 +752,20 @@ impl Ui {
             self.pictured = false;
             self.set_note(b"Sending\xE2\x80\xA6");
         } else {
-            page().clear();
-            self.scroll = 0;
-            self.screen = Screen::Reader;
-            self.set_note(b"Loading\xE2\x80\xA6");
+            // page view by default (the reader's button is next to the search box)
+            self.to_page_view();
         }
         self.draw();
+    }
+
+    fn to_page_view(&mut self) {
+        self.scroll = 0;
+        self.pscroll = 0;
+        self.screen = Screen::Page;
+        self.pictured = false;
+        self.video = false;
+        self.tapping = false;
+        self.set_note(b"Loading\xE2\x80\xA6");
     }
 
     fn touch_up(&mut self, e: Event) {
@@ -895,10 +852,7 @@ impl Ui {
         if y >= ROWS_Y && (0..self.n_recent as i32).contains(&r) {
             self.motor.play(haptic::TICK);
             self.send(&[b'O', r as u8]);
-            page().clear();
-            self.scroll = 0;
-            self.screen = Screen::Reader;
-            self.set_note(b"Loading\xE2\x80\xA6");
+            self.to_page_view();
             self.draw();
         }
     }

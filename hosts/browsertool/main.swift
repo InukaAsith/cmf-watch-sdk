@@ -20,6 +20,27 @@ import WebKit
     var committed = true
     /// how the last page went to the watch (debugging)
     var lastMode = ""
+    /// the simple screen on the watch (YouTube, Instagram): its site, where its search bar and rows are
+    var simple: (site: Simple.Site, screen: Simple.Screen)?
+
+    /// A site's simple screen (Simple): what it lists, read once it is there (3 s at most), thumbnails fetched.
+    func simplePage(_ site: Simple.Site) async -> [String: Any] {
+        var items: [Simple.Item] = []
+        for _ in 0..<15 {
+            items = Simple.items(await js(Simple.script(site)) ?? "[]")
+            if !items.isEmpty { break }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        let thumbs = await Simple.thumbs(items, site: site)
+        let q = web.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?
+            .first { $0.name == "search_query" || $0.name == "q" }?.value } ?? ""
+        let sc = Simple.screen(site, query: q, items: items, thumbs: thumbs)
+        simple = (site, sc)
+        let boxes = [(x: sc.field.x, y: sc.field.y, w: sc.field.w, h: sc.field.h, kind: UInt8(1))]
+            + sc.rows.prefix(150).map { (x: $0.x, y: $0.y, w: $0.w, h: $0.h, kind: UInt8(0)) }
+        lastMode = "simple"
+        return ["msgs": hex(sc.messages + BrowserProto.boxes(boxes)), "url": web.url?.absoluteString ?? "", "mode": lastMode]
+    }
 
     override init() {
         let c = WKWebViewConfiguration()
@@ -52,6 +73,32 @@ import WebKit
 
     /// Shown as an ordinary window (SIGUSR1) to sign in by hand: its cookies stay in this browser's store and the
     /// watch's pages use them. SIGUSR2 hides it again.
+    /// Cookies exported from the owner's own browser (Netscape cookies.txt, e.g. ~/cmf-browser-cookies.txt): signed in
+    /// where an embedded browser can't sign in. Read once at start; nothing is written back.
+    func importCookies(_ path: String) async -> Int {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return 0 }
+        let store = web.configuration.websiteDataStore.httpCookieStore
+        var n = 0
+        for raw in text.split(whereSeparator: \.isNewline) {
+            var line = String(raw)
+            // HttpOnly cookies are written "#HttpOnly_domain…"
+            if line.hasPrefix("#HttpOnly_") { line.removeFirst("#HttpOnly_".count) } else if line.hasPrefix("#") { continue }
+            var f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            if f.count < 7 {
+                // tabs pasted as spaces: the first six fields have none, the value none here either
+                f = line.split(separator: " ", maxSplits: 6, omittingEmptySubsequences: true).map { $0.trimmingCharacters(in: .whitespaces) }
+            }
+            guard f.count >= 7 else { continue }
+            var p: [HTTPCookiePropertyKey: Any] = [.domain: f[0], .path: f[2], .name: f[5], .value: f[6]]
+            if f[3].uppercased() == "TRUE" { p[.secure] = "TRUE" }
+            if let t = Double(f[4]), t > 0 { p[.expires] = Date(timeIntervalSince1970: t) }
+            guard let c = HTTPCookie(properties: p) else { continue }
+            await store.setCookie(c)
+            n += 1
+        }
+        return n
+    }
+
     @objc func go() {
         let t = bar.stringValue.trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return }
@@ -84,7 +131,7 @@ import WebKit
         if on {
             NSApp.setActivationPolicy(.regular)
             window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
-            window.title = "Watch browser: sign in here"
+            window.title = "Watch browser"
             window.alphaValue = 1
             window.ignoresMouseEvents = false
             window.level = .normal
@@ -94,7 +141,7 @@ import WebKit
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             // nothing open yet: Google's sign-in (YouTube's too), from where any site can be reached
-            if web.url == nil {
+            if web.url == nil && ProcessInfo.processInfo.environment["BROWSERTOOL_SHOW"] == nil {
                 web.load(URLRequest(url: URL(string: "https://accounts.google.com/ServiceLogin?continue=https://m.youtube.com/")!))
             }
         } else {
@@ -121,7 +168,15 @@ import WebKit
 
     func load(_ u: URL) async {
         committed = false
-        web.load(URLRequest(url: u))
+        let p = u.path.lowercased()
+        if [".mp4", ".webm", ".mov", ".m4v", ".m3u8"].contains(where: { p.hasSuffix($0) }) {
+            // a video file: in a page of its own (a bare file has no video element to play or read)
+            let src = u.absoluteString.replacingOccurrences(of: "\"", with: "%22")
+            web.loadHTMLString("<!doctype html><title>\(u.lastPathComponent)</title><body style=margin:0;background:#000>"
+                + "<video src=\"\(src)\" autoplay playsinline style=width:100%></video>", baseURL: u)
+        } else {
+            web.load(URLRequest(url: u))
+        }
         await waitLoad()
     }
 
@@ -190,6 +245,8 @@ import WebKit
 
     /// The whole page (as much as the watch keeps): laid out tall, one picture, its tappable places in page px.
     func page() async -> [String: Any] {
+        simple = nil
+        if let u = web.url, let site = Simple.site(for: u) { return await simplePage(site) }
         let full = Double(await js(BrowserProto.pageHeight) ?? "") ?? Double(Self.side)
         let tall = min(max(full, Double(Self.side)), Double(Self.side) * 12)
         // laid out tall at the watch's width (the window as tall; shown or not), then back as it was
@@ -275,6 +332,15 @@ import WebKit
 
     /// A tap at page px: a field brings the keyboard; the page changed (a link, a section opened): all of it again.
     func tapPage(_ x: Int, _ y: Int) async -> [String: Any] {
+        if let (_, sc) = simple {
+            // the simple screen: its search bar, its rows
+            let f = sc.field
+            if (f.x...f.x + f.w).contains(x), (f.y...f.y + f.h).contains(y) { return ["field": true] }
+            if let r = sc.rows.first(where: { ($0.x...$0.x + $0.w).contains(x) && ($0.y...$0.y + $0.h).contains(y) }) {
+                return ["open": r.link.absoluteString]
+            }
+            return ["msgs": hex([BrowserProto.unchanged])]
+        }
         let before = await js(BrowserProto.pageState)
         let r = await js(BrowserProto.tapScript(x: x, y: y, side: Double(Self.side)))
         if r == "2" { return ["field": true] }
@@ -340,6 +406,10 @@ import WebKit
     }
 
     func type(_ t: String) async -> [String: Any] {
+        if let (site, _) = simple {
+            await load(Simple.search(site, t))
+            return await page()
+        }
         let s = String(data: try! JSONSerialization.data(withJSONObject: [t]), encoding: .utf8)!.dropFirst().dropLast()
         _ = await js("""
         (() => { const f = document.activeElement; if (!f) return;
@@ -390,12 +460,19 @@ import WebKit
             }
             try? await Task.sleep(for: .seconds(2))
             return [:]
+        case "ua":
+            // the browser's name to sites (the cookies' browser: a session moved from Chrome stays signed in as Chrome)
+            web.customUserAgent = arg.isEmpty ? nil : arg
+            return [:]
         case "vstate":
             let a = (await js(BrowserProto.videoState)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [Any] } ?? []
-            guard a.count == 6 else { return ["exists": false] }
-            return ["exists": true, "paused": (a[1] as? Int) == 1, "ended": (a[2] as? Int) == 1,
+            guard a.count >= 6 else { return ["exists": false] }
+            // an ad: its title says so (a tap skips it once it can be)
+            let ad = a.count > 6 && (a[6] as? Int) == 1, skip = a.count > 7 && (a[7] as? Int) == 1
+            let title = ad ? (skip ? "Ad \u{00B7} tap to skip" : "Ad") : (a[5] as? String ?? "")
+            return ["exists": true, "paused": (a[1] as? Int) == 1, "ended": (a[2] as? Int) == 1, "ad": ad,
                     "msgs": hex([BrowserProto.progress(cur: a[3] as? Double ?? 0, dur: a[4] as? Double ?? 0, paused: (a[1] as? Int) == 1)]),
-                    "title": hex([BrowserProto.videoTitle(a[5] as? String ?? "")])]
+                    "title": hex([BrowserProto.videoTitle(title)])]
         case "toggle":
             _ = await js(BrowserProto.toggleScript)
             return [:]
@@ -433,6 +510,19 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 Task { @MainActor in
     let tool = Tool()
+    let cookies = ProcessInfo.processInfo.environment["BROWSER_COOKIES"]
+        ?? (NSHomeDirectory() + "/cmf-browser-cookies.txt")
+    let n = await tool.importCookies(cookies)
+    if n > 0 {
+        FileHandle.standardError.write(Data("browsertool: \(n) cookies from \(cookies)\n".utf8))
+        // the cookies' browser by name (Chrome's export): YouTube drops a session that moves to another browser
+        tool.web.customUserAgent = ProcessInfo.processInfo.environment["BROWSER_UA"]
+            ?? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+    }
+    if ProcessInfo.processInfo.environment["BROWSERTOOL_SHOW"] != nil {
+        // shown from the start (what the watch is shown, live)
+        tool.show(true)
+    }
     for (sig, on) in [(SIGUSR1, true), (SIGUSR2, false)] {
         signal(sig, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
