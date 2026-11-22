@@ -354,16 +354,14 @@ async def web(ch, tool):
             elif c == b"O" and len(m) == 2 and m[1] < len(rows()):
                 st["page"] = True
                 await open_(rows()[m[1]])
-            elif m == b"*" and st["url"]:
-                # page view's star: a favourite, or not any more
-                u = st["url"]
-                if u in st["favs"]:
-                    st["favs"].remove(u)
-                    await ch.send(b"!Removed from favourites")
-                else:
-                    st["favs"] = [u] + st["favs"]
-                    await ch.send(b"!Added to favourites")
+            elif c == b"*" and len(m) > 1:
+                # a favourite typed on the start screen (an address, or words: their search), then the list again
+                u = url_for(m[1:].decode(errors="replace"))
+                st["favs"] = [u] + [x for x in st["favs"] if x != u]
                 save_favs(st["favs"])
+                st["list"] = 2
+                for i, f in enumerate(rows()[:3]):
+                    await ch.send(b"H" + bytes([i]) + (urllib.parse.urlsplit(f).hostname or f).encode()[:60])
             elif c == b"L" and len(m) == 2 and m[1] < len(st["links"]):
                 await open_(st["links"][m[1]])
             elif m == b"B":

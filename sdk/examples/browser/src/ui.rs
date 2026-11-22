@@ -91,8 +91,6 @@ const ROW_H: i32 = 58;
 const RECENT: usize = 4;
 /// the start screen's History and Favourites pills (top)
 const PILLS: i32 = 156;
-/// page view's star (a favourite): its middle and reach
-const STAR: (i32, i32, i32) = (C, 34, 24);
 /// Moved more than this from down to up: a drag.
 const DRAG: i32 = 24;
 const FRAME_MS: u32 = 80;
@@ -129,8 +127,11 @@ struct Ui {
     n_note: usize,
     recent: [([u8; 48], usize); RECENT],
     n_recent: usize,
-    /// what the start screen's rows are: 0 recent, 1 history, 2 favourites (the phone keeps them)
+    /// what the start screen's rows are: 0 recent, 1 history, 2 favourites (the phone keeps them; their first row
+    /// here is "+ Add", typed)
     list: u8,
+    /// the keyboard types a favourite
+    adding: bool,
     pic: Decoder,
     /// page view has a picture on the panel
     pictured: bool,
@@ -181,6 +182,7 @@ fn main(api: &'static Api) -> i32 {
         recent: [([0; 48], 0); RECENT],
         n_recent: 0,
         list: 0,
+        adding: false,
         pic: Decoder::new(),
         pictured: false,
         video: false,
@@ -492,7 +494,10 @@ impl Ui {
         match self.screen {
             Screen::Start => return false,
             Screen::Keys if self.field => self.screen = Screen::Page,
-            Screen::Keys => self.screen = self.keys_from,
+            Screen::Keys => {
+                self.adding = false;
+                self.screen = self.keys_from;
+            }
             Screen::Reader | Screen::Page => {
                 self.send(b"B");
                 self.set_note(b"Going back\xE2\x80\xA6");
@@ -561,8 +566,16 @@ impl Ui {
         if self.n_note > 0 {
             centre_fit(&mut s, C, 428, self.note(), 260, SOFT);
         }
-        for i in 0..self.n_recent {
-            let y = ROWS_Y + 4 + i as i32 * ROW_H;
+        let first = if self.list == 2 {
+            let (x0, x1) = cmf_wp2_ui::geom::chord(ROWS_Y + 4, ROWS_Y + ROW_H - 4, 30);
+            rrect(&mut s, x0, ROWS_Y + 4, x1 - x0, ROW_H - 8, 18, CARD, BLACK);
+            font::fitted(&mut s, x0 + 18, ROWS_Y + 17, "+ Add a favourite", x1 - x0 - 36, W);
+            1
+        } else {
+            0
+        };
+        for i in 0..self.n_recent.min(RECENT - first) {
+            let y = ROWS_Y + 4 + (i + first) as i32 * ROW_H;
             let (x0, x1) = cmf_wp2_ui::geom::chord(y, y + ROW_H - 8, 30);
             rrect(&mut s, x0, y, x1 - x0, ROW_H - 8, 18, CARD, BLACK);
             let (t, n) = &self.recent[i];
@@ -682,9 +695,8 @@ impl Ui {
         }
         l.draw(&mut self.pic, &mut Screen565(self.api), &mut s, self.pscroll, 0, end.min(466));
         if self.n_note > 0 {
-            // under the star
-            rrect(&mut s, C - 150, 60, 300, 36, 18, CARD, BLACK);
-            centre_fit(&mut s, C, 68, self.note(), 270, W);
+            rrect(&mut s, C - 150, 20, 300, 36, 18, CARD, BLACK);
+            centre_fit(&mut s, C, 28, self.note(), 270, W);
         }
     }
 
@@ -703,27 +715,6 @@ impl Ui {
         };
         // the round button, the mode it goes to: a photo (picture, from drawn), lines (text, from picture), a page's
         // frame (drawn, from text)
-        if self.screen == Screen::Page {
-            let (sx, sy, _) = STAR;
-            disc(&mut s, sx, sy, 18, CARD, BLACK);
-            // a five-pointed star, filled a row at a time (its ten corners, outer 12 px, inner 5)
-            const P: [(i32, i32); 10] =
-                [(0, -12), (3, -4), (11, -4), (5, 2), (7, 10), (0, 5), (-7, 10), (-5, 2), (-11, -4), (-3, -4)];
-            for y in -12..=10 {
-                let (mut a, mut b) = (99, -99);
-                for i in 0..10 {
-                    let ((x0, y0), (x1, y1)) = (P[i], P[(i + 1) % 10]);
-                    if (y0 <= y && y < y1) || (y1 <= y && y < y0) {
-                        let x = x0 + (x1 - x0) * (y - y0) / (y1 - y0);
-                        a = a.min(x);
-                        b = b.max(x);
-                    }
-                }
-                if a <= b {
-                    Surface::rect(&mut s, sx + a, sy + y, b - a + 1, 1, 0xFFE0);
-                }
-            }
-        }
         let (cx, y, w, h) = SWITCH;
         disc(&mut s, cx, y + h / 2, w / 2, WHITE, BLACK);
         let (x0, cy) = (cx - 11, y + h / 2);
@@ -822,6 +813,15 @@ impl Ui {
         self.motor.play(haptic::TICK);
         let mut m = [0u8; 1 + crate::keys::MAX];
         let n = self.keys.n;
+        if core::mem::replace(&mut self.adding, false) {
+            // into the favourites (the phone answers with the list again)
+            m[0] = b'*';
+            m[1..1 + n].copy_from_slice(&self.keys.text[..n]);
+            self.send(&m[..1 + n]);
+            self.n_recent = 0;
+            self.screen = Screen::Start;
+            return self.draw();
+        }
         m[0] = if self.field { b'W' } else { b'Q' };
         m[1..1 + n].copy_from_slice(&self.keys.text[..n]);
         self.send(&m[..1 + n]);
@@ -877,11 +877,6 @@ impl Ui {
             Screen::Page if self.video => {}
             Screen::Page if dragged => self.page_scroll(-dy),
             _ if self.on_switch(x, y) => self.switch(),
-            Screen::Page if (x - STAR.0).abs() <= STAR.2 && (y - STAR.1).abs() <= STAR.2 => {
-                // a favourite (the phone adds it, or takes it off: its note says which)
-                self.motor.play(haptic::TICK);
-                self.send(b"*");
-            }
             _ if self.on_search(x, y) => self.search(),
             Screen::Reader => self.reader_tap(y),
             Screen::Page => {
@@ -947,7 +942,20 @@ impl Ui {
             self.send(&[b'R', self.list]);
             return self.draw();
         }
-        let r = (y - ROWS_Y).div_euclid(ROW_H);
+        let mut r = (y - ROWS_Y).div_euclid(ROW_H);
+        if self.list == 2 && y >= ROWS_Y {
+            if r == 0 {
+                // a favourite, typed
+                self.motor.play(haptic::TICK);
+                self.field = false;
+                self.adding = true;
+                self.keys_from = Screen::Start;
+                self.keys.open("Add a favourite");
+                self.screen = Screen::Keys;
+                return self.draw();
+            }
+            r -= 1;
+        }
         if y >= ROWS_Y && (0..self.n_recent as i32).contains(&r) {
             self.motor.play(haptic::TICK);
             self.send(&[b'O', r as u8]);
