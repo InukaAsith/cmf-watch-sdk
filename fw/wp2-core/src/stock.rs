@@ -267,3 +267,4 @@ pub const STREAM_GET_SPACE: u32 = 0x101C_E411;
 // *AUDIO_CFG: the audio volume config, max level at +2 (0x1014DDD4)
 pub const AUDIO_CFG: u32 = 0x3803_97F8;
 pub const AUDIO_STREAM_TYPE: u32 = 5;
+// Watch face manager and data_storage: wfguard.rs (Device)
