@@ -11,3 +11,5 @@ __pycache__/
 .superpowers/
 # brand-style icons for the owner's own watch
 icon.local.svg
+
+/tests/probes/storage/target/
