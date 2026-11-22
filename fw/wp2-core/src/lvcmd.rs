@@ -697,6 +697,76 @@ pub fn media_info(buf: &[u8; 0x82]) -> (&[u8], &[u8]) {
     (field(&buf[..0x40]), field(&buf[0x41..0x81]))
 }
 
+/// AUDIO record (op 0x18, handle 0), alone in a batch: the speaker (docs/abi-1.4.md, "Audio"). `[0x18, n, 0, 0,
+/// cmd, …]`: 1 OPEN `[rate_khz]` (8, 16, 24, 32 or 48; 16-bit mono PCM), 2 WRITE `[ptr u32, len u32]` (LE, a
+/// buffer in the app block; even len) → bytes taken, 3 CLOSE, 4 VOLUME `[percent]` (0..=100), 5 STATE → bytes
+/// still queued, or a negative error. On an older loader op 0x18 is `Malformed` (-22).
+#[derive(Debug, PartialEq)]
+pub enum AudioCmd {
+    Open { rate_khz: u8 },
+    Write { ptr: u32, len: u32 },
+    Close,
+    Volume { percent: u8 },
+    State,
+}
+
+pub const AUDIO_RATES_KHZ: [u8; 5] = [8, 16, 24, 32, 48];
+
+pub fn audio(buf: &[u8]) -> Option<AudioCmd> {
+    let u = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    match *buf {
+        [0x18, 2, 0, 0, 1, rate_khz] if AUDIO_RATES_KHZ.contains(&rate_khz) => Some(AudioCmd::Open { rate_khz }),
+        [0x18, 9, 0, 0, 2, ref rest @ ..] if rest.len() == 8 && u(&rest[4..]) % 2 == 0 => {
+            Some(AudioCmd::Write { ptr: u(&rest[..4]), len: u(&rest[4..]) })
+        }
+        [0x18, 1, 0, 0, 3] => Some(AudioCmd::Close),
+        [0x18, 2, 0, 0, 4, percent @ 0..=100] => Some(AudioCmd::Volume { percent }),
+        [0x18, 1, 0, 0, 5] => Some(AudioCmd::State),
+        _ => None,
+    }
+}
+
+/// The stock volume level for `percent` of `max` (0 only for 0 %).
+pub fn audio_level(percent: u8, max: u8) -> u8 {
+    if percent == 0 || max == 0 {
+        return 0;
+    }
+    ((u32::from(percent.min(100)) * u32::from(max)).div_ceil(100)) as u8
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::*;
+
+    #[test]
+    fn audio_records() {
+        assert_eq!(audio(&[0x18, 2, 0, 0, 1, 16]), Some(AudioCmd::Open { rate_khz: 16 }));
+        assert_eq!(audio(&[0x18, 2, 0, 0, 1, 11]), None, "11 kHz is not a DAC rate here");
+        let mut w = std::vec![0x18, 9, 0, 0, 2];
+        w.extend(0x3800_1000u32.to_le_bytes());
+        w.extend(640u32.to_le_bytes());
+        assert_eq!(audio(&w), Some(AudioCmd::Write { ptr: 0x3800_1000, len: 640 }));
+        w[9] = 1; // odd: half a sample
+        assert_eq!(audio(&w), None);
+        assert_eq!(audio(&[0x18, 1, 0, 0, 3]), Some(AudioCmd::Close));
+        assert_eq!(audio(&[0x18, 2, 0, 0, 4, 100]), Some(AudioCmd::Volume { percent: 100 }));
+        assert_eq!(audio(&[0x18, 2, 0, 0, 4, 101]), None);
+        assert_eq!(audio(&[0x18, 1, 0, 0, 5]), Some(AudioCmd::State));
+        assert_eq!(audio(&[0x18, 1, 1, 0, 3]), None, "handle 0 only");
+        assert_eq!(audio(&[0x18, 1, 0, 0, 3, 0x02, 0, 1, 0]), None, "alone in its batch");
+        assert_eq!(validate(&[0x18, 1, 0, 0, 3], &Table::new(), 0), Err(Error::Malformed), "op 0x18 is not an LVGL record");
+    }
+
+    #[test]
+    fn audio_levels() {
+        assert_eq!(audio_level(0, 16), 0);
+        assert_eq!(audio_level(1, 16), 1, "never muted above 0 %");
+        assert_eq!(audio_level(50, 16), 8);
+        assert_eq!(audio_level(100, 16), 16);
+        assert_eq!(audio_level(100, 0), 0);
+    }
+}
+
 #[cfg(test)]
 mod file_tests {
     use super::*;

@@ -10,8 +10,10 @@
 //! - then the sharp version, 256 colours, shown with a progress bar and replacing the bands: `S total:u16 w:u16
 //!   h:u16 scale x0:i16 y0:i16`, `K first count rgb565…` (the palette), `Y seq tokens…` (a byte < 255 one pixel of
 //!   that colour, `255 c n` n pixels; runs stay in a row), `Z`. A gap: the watch sends `G`, the phone sends it again.
+//!   Or, to a watch that said `R 1`, the tokens as `y seq:u16 bytes…` at seq × 124, in any order and maybe twice
+//!   (the phone's sliding window, several in flight): whole when all came, no `Z`.
 //!
-//! Watch → phone: `R` ready (send the gallery), `q idx` a thumbnail it has not got, `o idx` open a picture (stepping through: the one it stops on), `g` back in the gallery (thumbnails go on), `a` file
+//! Watch → phone: `R 1` ready (send the gallery; 1: it takes `y`), `q idx` a thumbnail it has not got, `o idx` open a picture (stepping through: the one it stops on), `g` back in the gallery (thumbnails go on), `a` file
 //! stored, `G seq` a gap in the picture's stream.
 
 pub const MAX: usize = 64;

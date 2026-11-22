@@ -115,6 +115,7 @@ pub fn stop_app() {
     motor::off();
     hr::stop();
     media::stop();
+    crate::audio::stop();
     svc::stop();
     // LVGL keeps no object, callback or font of the app once its block is gone
     lv::teardown();

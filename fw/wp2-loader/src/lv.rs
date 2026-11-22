@@ -133,6 +133,10 @@ pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
     if let Some(rec) = lvcmd::widget(unsafe { core::slice::from_raw_parts(buf, len) }) {
         return crate::svc::save_widget(rec);
     }
+    // AUDIO needs no LVGL either; its stock calls run on the UI tick (audio.rs)
+    if let Some(cmd) = lvcmd::audio(unsafe { core::slice::from_raw_parts(buf, len) }) {
+        return crate::audio::request(cmd);
+    }
     if let Some(cmd) = lvcmd::media_key(unsafe { core::slice::from_raw_parts(buf, len) }) {
         return crate::media::key(cmd);
     }

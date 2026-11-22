@@ -2,6 +2,7 @@
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+pub mod adpcm;
 pub mod lv;
 pub mod stock;
 
@@ -241,6 +242,56 @@ impl Api {
         (self.lv_submit)(buf.as_ptr(), buf.len())
     }
 
+    /// Opens the speaker for 16-bit mono PCM at `rate_khz` (8, 16, 24, 32 or 48; docs/abi-1.4.md, "Audio"). The
+    /// loader plays it while the app runs in the foreground: a pause (call, alarm, notification) stops the sound and
+    /// drops what was queued, `RESUME` opens it again by itself; exit, crash and force stop close it. While it plays
+    /// the panel stays lit. `0`; `-22` for another rate and on a loader older than 2026-11-21.
+    pub fn audio_open(&self, rate_khz: u8) -> i32 {
+        static mut BUF: [u8; 6] = [0x18, 2, 0, 0, 1, 0];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        buf[5] = rate_khz;
+        self.audio_record(buf)
+    }
+
+    /// Queues samples (little-endian i16) for the speaker; returns how many **bytes** it took (0 when the loader's
+    /// 6 KiB queue is full: try again after a short wait), `-107` when not open, `-12` when the speaker could not
+    /// be opened, `-22` for a buffer outside the app block or an odd length. `pcm` must be a `static` (the stack
+    /// is not in the app block).
+    pub fn audio_write(&self, pcm: &[u8]) -> i32 {
+        static mut BUF: [u8; 13] = [0x18, 9, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        buf[5..9].copy_from_slice(&(pcm.as_ptr() as u32).to_le_bytes());
+        buf[9..13].copy_from_slice(&(pcm.len() as u32).to_le_bytes());
+        self.audio_record(buf)
+    }
+
+    /// Speaker volume, 0..=100 % of the watch's maximum (0 mutes). Until the first call the system's level is used.
+    pub fn audio_volume(&self, percent: u8) -> i32 {
+        static mut BUF: [u8; 6] = [0x18, 2, 0, 0, 4, 0];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        buf[5] = percent.min(100);
+        self.audio_record(buf)
+    }
+
+    /// Bytes still queued in the loader (not yet given to the speaker), or the negative error of the last open.
+    pub fn audio_queued(&self) -> i32 {
+        static BUF: [u8; 5] = [0x18, 1, 0, 0, 5];
+        self.audio_record(&BUF)
+    }
+
+    /// Stops the sound and drops what is queued.
+    pub fn audio_close(&self) -> i32 {
+        static BUF: [u8; 5] = [0x18, 1, 0, 0, 3];
+        self.audio_record(&BUF)
+    }
+
+    fn audio_record(&self, buf: &[u8]) -> i32 {
+        if self.abi_minor < 2 {
+            return -22;
+        }
+        (self.lv_submit)(buf.as_ptr(), buf.len())
+    }
+
     /// The app's widget on the cards left of the watch face (`wp2apps cards set widgets:0x40/<slot + 1>`): a
     /// `title` (one line, up to 23 bytes) and a `value` (up to 39 bytes, `\n` starts a second line), cut at a char
     /// boundary. Kept on NAND until the next call or the app's removal; the card shows it from its next layout
@@ -422,9 +473,10 @@ pub fn __sim_run(start: extern "C" fn(&'static Api) -> i32) -> i32 {
 #[macro_export]
 macro_rules! app_icon {
     () => {
+        // `static mut`: an app may use the pixels as RAM once it runs (the menu shows its own copy; examples/atlas ram.rs)
         #[used]
         #[unsafe(link_section = ".wp2info")]
-        static WP2_ICON: [u8; include_bytes!(env!("WP2_ICON")).len()] = *include_bytes!(env!("WP2_ICON"));
+        pub(crate) static mut WP2_ICON: [u8; include_bytes!(env!("WP2_ICON")).len()] = *include_bytes!(env!("WP2_ICON"));
     };
 }
 

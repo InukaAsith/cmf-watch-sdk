@@ -6,6 +6,8 @@ version=$2
 # shown in the watch menu (24 UTF-8 bytes); the crate name when not given
 display=${3:-$name}
 svg=$root/sdk/examples/$name/icon.svg
+# a local icon for the owner's own watch (icon.local.svg, never committed) wins
+[ -f "$root/sdk/examples/$name/icon.local.svg" ] && svg=$root/sdk/examples/$name/icon.local.svg
 if [ -f "$svg" ]; then
     export WP2_ICON=$root/sdk/target/icons/$name.wp2icon
     mkdir -p "$(dirname "$WP2_ICON")"

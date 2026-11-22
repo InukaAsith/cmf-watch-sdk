@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# The App Loader as a GitHub release (tag loader-<version>-<crc>, asset loader.wp2app): CMFX's iOS build bundles the
+# newest one (cmfx ios/fetch-loader.sh), so the next CMFX build carries it and its Firmware page offers it.
+#   scripts/release-loader <version> [notes]
+# Builds the loader only (no stock firmware needed). A release is a built binary, never a commit (AGENTS.md rule 2).
+set -euo pipefail
+version=${1:?usage: scripts/release-loader <version> [notes]}
+notes=${2:-}
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+out=fw/target/thumbv7em-none-eabi/release
+(cd fw && cargo build --release -p wp2-loader)
+mkdir -p target
+llvm-objcopy -O binary --set-section-flags .data=alloc,load,contents "$out/wp2-loader" target/loader.bin
+rm -f target/loader.wp2app
+uv run --locked wp2apps pack target/loader.bin --elf "$out/wp2-loader" --kind loader --name loader \
+    --version "$version" --output target/loader.wp2app
+# the header's CRC: what the watch reports for its loader (INFO) and CMFX shows
+crc=$(python3 -c 'import struct,sys; print("%08x" % struct.unpack_from("<I", open(sys.argv[1], "rb").read(), 48)[0])' target/loader.wp2app)
+tag="loader-$version-$crc"
+sha=$(git rev-parse HEAD)
+dirty=$(git status --porcelain fw | head -1)
+body="App Loader v$version, crc $crc. Built from $sha${dirty:+ with local changes in fw/}.${notes:+
+
+$notes}"
+gh release create "$tag" target/loader.wp2app --target "$sha" --title "App Loader v$version ($crc)" --notes "$body"
+echo "$tag"

@@ -9,3 +9,5 @@ __pycache__/
 /sdk/target/
 /fw/target/
 .superpowers/
+# brand-style icons for the owner's own watch
+icon.local.svg

@@ -14,12 +14,50 @@
 use cmf_wp2_ui::motion::{cos, sin};
 
 pub const MAX_PTS: usize = 400;
+/// Buzz once when the next turn comes within this many metres, and again (strong) at the turn. The phone sends a
+/// fix about once a second: at 50 m a car at 50 km/h still has 3 s, so "now" isn't skipped between two fixes.
+pub const SOON_M: u16 = 200;
+pub const NOW_M: u16 = 50;
+
+/// The manoeuvre in words: "Turn left onto Galle Road", "At the roundabout, exit onto …", "Arrive at …". The
+/// phone's placeholders ("Arrive", "Continue", "") name no street.
+pub fn instruction<'a>(kind: u8, dir: u8, street: &str, out: &'a mut [u8; 112]) -> &'a str {
+    let street = match street {
+        "Arrive" | "Continue" => "",
+        s => s,
+    };
+    let side = if dir <= 3 { "left" } else { "right" };
+    let (a, b, c): (&str, &str, &str) = match (kind, dir) {
+        (2, _) => ("Arrive", "", " at "),
+        (1, _) => ("At the roundabout, exit", "", " onto "),
+        (3, _) => ("Continue", "", " on "),
+        (4, 0) => ("Keep straight", "", " onto "),
+        (4, _) => ("Keep ", side, " onto "),
+        (_, 7) => ("Make a U-turn", "", " onto "),
+        (_, 1) | (_, 4) => ("Turn slight ", side, " onto "),
+        (_, 3) | (_, 6) => ("Turn sharp ", side, " onto "),
+        (_, 0) => ("Go straight", "", " onto "),
+        _ => ("Turn ", side, " onto "),
+    };
+    let mut n = 0;
+    for part in [a, b, if street.is_empty() { "" } else { c }, street] {
+        let k = part.len().min(out.len() - n);
+        out[n..n + k].copy_from_slice(&part.as_bytes()[..k]);
+        n += k;
+    }
+    match core::str::from_utf8(&out[..n]) {
+        Ok(s) => s,
+        Err(e) => core::str::from_utf8(&out[..e.valid_up_to()]).unwrap_or(""),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Effect {
     None,
-    /// The manoeuvre changed; `buzz`: 1 the turn is close (200 m), 2 it is now (30 m).
-    Turn { buzz: u8 },
+    /// The manoeuvre changed; `buzz`: 1 the turn is close (SOON_M), 2 it is now (NOW_M).
+    Turn {
+        buzz: u8,
+    },
     Pos,
     Arrived,
     Reroute,
@@ -74,7 +112,9 @@ impl Nav {
     }
 
     pub fn apply(&mut self, m: &[u8]) -> Effect {
-        let Some((&op, a)) = m.split_first() else { return Effect::None };
+        let Some((&op, a)) = m.split_first() else {
+            return Effect::None;
+        };
         let u = |i: usize| u16::from_le_bytes([a[i], a[i + 1]]);
         let s = |i: usize| i16::from_le_bytes([a[i], a[i + 1]]);
         match op {
@@ -91,7 +131,13 @@ impl Nav {
                 self.active = true;
                 self.arrived = false;
                 self.rerouting = false;
-                let want = if self.dist <= 30 { 2 } else if self.dist <= 200 { 1 } else { 0 };
+                let want = if self.dist <= NOW_M {
+                    2
+                } else if self.dist <= SOON_M {
+                    1
+                } else {
+                    0
+                };
                 let buzz = if want > self.buzzed { want } else { 0 };
                 self.buzzed = self.buzzed.max(want);
                 Effect::Turn { buzz }
@@ -104,7 +150,10 @@ impl Nav {
                 let off = u(0) as usize;
                 for (i, p) in a[2..].chunks_exact(4).enumerate() {
                     if off + i < MAX_PTS {
-                        self.pts[off + i] = (i16::from_le_bytes([p[0], p[1]]), i16::from_le_bytes([p[2], p[3]]));
+                        self.pts[off + i] = (
+                            i16::from_le_bytes([p[0], p[1]]),
+                            i16::from_le_bytes([p[2], p[3]]),
+                        );
                         self.n_pts = self.n_pts.max(off + i + 1);
                     }
                 }
@@ -129,7 +178,10 @@ impl Nav {
 
     /// A route point on screen, heading up: `(cx, cy)` is where we are, `px_q8` the scale in px per metre × 256.
     pub fn project(&self, p: (i16, i16), cx: i32, cy: i32, px_q8: i32) -> (i32, i32) {
-        let (dx, dy) = (p.0 as i32 - self.pos.0 as i32, p.1 as i32 - self.pos.1 as i32);
+        let (dx, dy) = (
+            p.0 as i32 - self.pos.0 as i32,
+            p.1 as i32 - self.pos.1 as i32,
+        );
         let a = (self.heading as u32 * 65536 / 360) as u16;
         let (c, s) = (cos(a), sin(a));
         // rotate by -heading: right of us is +x', ahead is +y'
@@ -161,13 +213,35 @@ mod tests {
     fn manoeuvre_and_buzzes() {
         let mut n = Box::new(Nav::new());
         assert_eq!(n.apply(&v(1, 450)), Effect::Turn { buzz: 0 });
-        assert_eq!((n.dist, n.eta_min, n.left_10m, n.arrive), (450, 12, 340, (14, 32)));
+        assert_eq!(
+            (n.dist, n.eta_min, n.left_10m, n.arrive),
+            (450, 12, 340, (14, 32))
+        );
         assert_eq!(n.street(), "Charing Cross Rd");
         assert_eq!(n.apply(&v(1, 190)), Effect::Turn { buzz: 1 });
         assert_eq!(n.apply(&v(1, 150)), Effect::Turn { buzz: 0 });
-        assert_eq!(n.apply(&v(1, 20)), Effect::Turn { buzz: 2 });
+        assert_eq!(n.apply(&v(1, 45)), Effect::Turn { buzz: 2 });
+        assert_eq!(n.apply(&v(1, 20)), Effect::Turn { buzz: 0 });
         // the next step starts over
         assert_eq!(n.apply(&v(2, 180)), Effect::Turn { buzz: 1 });
+    }
+
+    #[test]
+    fn instructions() {
+        let mut b = [0u8; 112];
+        assert_eq!(
+            instruction(0, 2, "Galle Road", &mut b),
+            "Turn left onto Galle Road"
+        );
+        assert_eq!(instruction(0, 6, "", &mut b), "Turn sharp right");
+        assert_eq!(
+            instruction(1, 5, "Green Path", &mut b),
+            "At the roundabout, exit onto Green Path"
+        );
+        assert_eq!(instruction(2, 0, "Arrive", &mut b), "Arrive");
+        assert_eq!(instruction(3, 0, "Continue", &mut b), "Continue");
+        assert_eq!(instruction(4, 4, "A1", &mut b), "Keep right onto A1");
+        assert_eq!(instruction(0, 7, "", &mut b), "Make a U-turn");
     }
 
     #[test]

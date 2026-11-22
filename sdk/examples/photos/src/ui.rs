@@ -42,6 +42,11 @@ const RING: (i32, i32) = (225, 231);
 const TOP: u16 = 49152;
 
 const STORE_CAP: usize = 40 * 1024;
+/// `R 1`: ready, and the sharp version may come as `y` chunks in any order (over the phone's sliding window).
+const READY: &[u8] = b"R\x01";
+/// A `y` chunk's bytes (all but the last).
+const Y_CHUNK: usize = 124;
+const Y_SEQS: usize = STORE_CAP.div_ceil(Y_CHUNK);
 const THUMB_CAP: usize = 12 * 1024;
 
 /// The open picture, kept to draw it again: up to BANDS horizontal bands, each a picture of its own (`I` header, its
@@ -61,6 +66,8 @@ struct Store {
     hd: Option<Hd>,
     /// the sharp version on its way: (bytes so far, of total, next seq)
     loading: Option<(usize, usize, u8)>,
+    /// its `y` chunks that came
+    got: [u8; Y_SEQS.div_ceil(8)],
     pal: [u16; 256],
 }
 
@@ -76,7 +83,7 @@ struct Hd {
 }
 const BANDS: usize = 8;
 static mut STORE: Store =
-    Store { headers: [[0; HEADER]; BANDS], rows: [0; BANDS], start: [0; BANDS + 1], n: 0, expect: 0, data: [0; STORE_CAP], len: 0, ok: false, hd: None, loading: None, pal: [0; 256] };
+    Store { headers: [[0; HEADER]; BANDS], rows: [0; BANDS], start: [0; BANDS + 1], n: 0, expect: 0, data: [0; STORE_CAP], len: 0, ok: false, hd: None, loading: None, got: [0; Y_SEQS.div_ceil(8)], pal: [0; 256] };
 
 impl Store {
     fn reset(&mut self, expect: usize) {
@@ -160,6 +167,9 @@ struct Incoming {
 struct Ui {
     api: &'static Api,
     screen: Screen,
+    /// the heading as it should be is on the panel: list updates and thumbnails leave it alone (clearing and
+    /// drawing it again for each flickered while the photos loaded)
+    head_up: bool,
     grid: bool,
     scroll: i32,
     asked: [bool; MAX],
@@ -264,7 +274,9 @@ impl Ui {
     }
 
     fn draw_gallery(&mut self) {
-        self.draw_gallery_(true);
+        let head = !self.head_up;
+        self.head_up = true;
+        self.draw_gallery_(head);
     }
 
     fn draw_head(&self) {
@@ -362,6 +374,7 @@ impl Ui {
             self.motor.play(haptic::TICK);
             let top = if self.grid { (self.scroll / PITCH) * COLS } else { self.scroll / ROW };
             self.grid = !self.grid;
+            self.head_up = false;
             self.scroll = (if self.grid { (top / COLS) * PITCH } else { top * ROW }).clamp(0, self.max_scroll());
             let _ = self.api.save(&[self.grid as u8]);
             return self.draw_gallery();
@@ -384,6 +397,7 @@ impl Ui {
     fn show_name(&mut self, i: usize) {
         self.open = i;
         self.screen = Screen::Viewer;
+        self.head_up = false;
         self.view = None;
         store().reset(0);
         let mut s = self.api;
@@ -443,12 +457,19 @@ impl Ui {
             return false;
         }
         let mut s = self.api;
-        Surface::rect(&mut s, 0, 0, 466, 466, 0);
         if let Some(hd) = st.hd {
-            draw_hd(st, hd, x0, y0, i32::from(scale), &mut Clip(self.api, 0));
+            // black only round the picture: the sharp one is drawn straight over the soft one, no black frame
+            let sc = i32::from(scale);
+            let (x1, y1) = (x0 + hd.w * sc, y0 + hd.h * sc);
+            Surface::rect(&mut s, 0, 0, 466, y0, 0);
+            Surface::rect(&mut s, 0, y1, 466, 466 - y1, 0);
+            Surface::rect(&mut s, 0, y0, x0, y1 - y0, 0);
+            Surface::rect(&mut s, x1, y0, 466 - x1, y1 - y0, 0);
+            draw_hd(st, hd, x0, y0, sc, &mut Clip(self.api, 0));
             self.api.show();
             return true;
         }
+        Surface::rect(&mut s, 0, 0, 466, 466, 0);
         for k in 0..st.n {
             let mut d = Decoder::new();
             if !d.start(&st.headers[k], x0, y0 + st.rows[k] * i32::from(scale), scale) {
@@ -552,14 +573,14 @@ impl Ui {
                             i = i * 10 + (d - b'0') as usize;
                         }
                         if i < g.n {
+                            // clipped below the heading: the heading stays as it is
                             self.draw_item(i);
-                            self.draw_head();
                             drew = true;
                         }
                     }
                 }
                 Some(b'?') => {
-                    let _ = self.api.send(b"R");
+                    let _ = self.api.send(READY);
                 }
                 // the sharp version (256 colours) after the bands: `S total:u16 w:u16 h:u16 scale x0:i16 y0:i16`,
                 // `K first count rgb565…`, `Y seq tokens…`, `Z`
@@ -570,6 +591,7 @@ impl Ui {
                     if total <= STORE_CAP {
                         st.hd = Some(Hd { w: u(3), h: u(5), scale: m[7].max(1), x0: u(8), y0: u(10) });
                         st.loading = Some((0, total, 0));
+                        st.got = [0; Y_SEQS.div_ceil(8)];
                         self.ring_drawn = u32::MAX;
                         st.ok = false;
                         st.len = 0;
@@ -604,14 +626,31 @@ impl Ui {
                     self.hd_ring();
                     drew = true;
                 }
-                Some(b'Z') if store().loading.is_some() => {
+                // `y seq:u16 tokens…`: the sharp version's bytes at seq × 124, in any order, maybe twice; it is
+                // whole when every chunk came
+                Some(b'y') if m.len() > 3 && store().loading.is_some() => {
                     let st = store();
-                    st.loading = None;
-                    st.ok = true;
-                    self.base = st.origin();
-                    self.view = Some(self.base);
-                    let (x, y, sc) = self.base;
-                    self.redraw(x, y, sc);
+                    let Some((got, total, _)) = st.loading else { continue };
+                    let seq = usize::from(u16::from_le_bytes([m[1], m[2]]));
+                    let at = seq * Y_CHUNK;
+                    if seq >= Y_SEQS || at >= total || st.got[seq / 8] & (1 << (seq % 8)) != 0 {
+                        continue;
+                    }
+                    let n = (m.len() - 3).min(total - at);
+                    st.data[at..at + n].copy_from_slice(&m[3..3 + n]);
+                    st.got[seq / 8] |= 1 << (seq % 8);
+                    st.len = st.len.max(at + n);
+                    st.loading = Some((got + n, total, 0));
+                    if got + n >= total {
+                        st.len = total;
+                        self.sharp_done();
+                    } else {
+                        self.hd_ring();
+                    }
+                    drew = true;
+                }
+                Some(b'Z') if store().loading.is_some() => {
+                    self.sharp_done();
                 }
                 Some(b'P') if self.screen == Screen::Viewer && m.len() == 2 => {
                     // a picture in m[1] bands follows (each `I`/`D`/`E`)
@@ -675,6 +714,17 @@ impl Ui {
         } else if drew {
             self.api.show();
         }
+    }
+
+    /// The sharp version came: it replaces the bands.
+    fn sharp_done(&mut self) {
+        let st = store();
+        st.loading = None;
+        st.ok = true;
+        self.base = st.origin();
+        self.view = Some(self.base);
+        let (x, y, sc) = self.base;
+        self.redraw(x, y, sc);
     }
 
     /// Every file this app keeps (thumbnails, the list, the key): Photos leaves nothing on the watch. At the start
@@ -777,6 +827,7 @@ fn main(api: &'static Api) -> i32 {
     let mut ui = Ui {
         api,
         screen: Screen::Gallery,
+        head_up: false,
         grid,
         scroll: 0,
         asked: [false; MAX],
@@ -799,7 +850,7 @@ fn main(api: &'static Api) -> i32 {
     api.own_back(true);
     ui.wipe();
     ui.draw_gallery();
-    let _ = api.send(b"R");
+    let _ = api.send(READY);
     let mut ask = cmf_wp2_ui::ask::Ask::new(api.now(), 10);
     let mut ahead: Option<Event> = None;
     loop {
@@ -811,7 +862,7 @@ fn main(api: &'static Api) -> i32 {
             }
         };
         if ask.due(api.now()) {
-            let _ = api.send(b"R");
+            let _ = api.send(READY);
         }
         if e.as_ref().is_some_and(|e| e.kind == MESSAGE) {
             ask.answered();

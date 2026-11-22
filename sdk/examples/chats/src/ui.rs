@@ -402,7 +402,14 @@ struct Ui {
     syncing: bool,
     /// a picture loading: the spinner's next frame and its angle
     spin: (u32, u16),
+    /// when the last frame was shown; the phone's messages (a chat or a picture coming in pieces) redraw at most
+    /// once in FRAME_MS, the rest waits in `due` (the panel takes a frame from the buffer we draw into)
+    shown_at: u32,
+    due: bool,
 }
+
+/// The least time between two frames that messages bring.
+const FRAME_MS: u32 = 80;
 
 fn main(api: &'static Api) -> i32 {
     api.own_back(true);
@@ -427,6 +434,8 @@ fn main(api: &'static Api) -> i32 {
         asked_n: 0,
         syncing: false,
         spin: (0, 0),
+        shown_at: 0,
+        due: false,
     };
     if crate::PLAIN && kept().load(api) {
         // the last run's list at once, then the phone's
@@ -462,7 +471,11 @@ fn main(api: &'static Api) -> i32 {
             }
             SPIN_MS
         });
-        let wait = [ui.motor.wait(), flash, hold, again, asked, spin].into_iter().flatten().min().unwrap_or(u32::MAX);
+        if ui.due && now.wrapping_sub(ui.shown_at) >= FRAME_MS {
+            ui.refresh();
+        }
+        let paced = ui.due.then(|| FRAME_MS.saturating_sub(now.wrapping_sub(ui.shown_at)).max(1));
+        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced].into_iter().flatten().min().unwrap_or(u32::MAX);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
             None => api.event(wait),
@@ -605,7 +618,11 @@ fn main(api: &'static Api) -> i32 {
                 } else if head && ui.screen == Screen::Chat {
                     ui.draw();
                 } else if (list && ui.screen == Screen::List) || (chat && ui.screen == Screen::Chat) {
-                    ui.refresh();
+                    if api.now().wrapping_sub(ui.shown_at) >= FRAME_MS {
+                        ui.refresh();
+                    } else {
+                        ui.due = true;
+                    }
                 }
             }
             _ => {}
@@ -659,7 +676,12 @@ impl Ui {
 
     fn draw(&mut self) {
         let mut s = Dot(self.api);
-        Surface::rect(&mut s, 0, 0, 466, 466, 0);
+        // the list and a chat clear each part as they draw it (heading, cards or feed, buttons): no frame of a
+        // black panel, which flickers
+        if !matches!(self.screen, Screen::List | Screen::Chat) {
+            Surface::rect(&mut s, 0, 0, 466, 466, 0);
+        }
+        self.due = false;
         match self.screen {
             Screen::List => self.draw_list(),
             Screen::Chat => self.draw_chat(),
@@ -668,6 +690,7 @@ impl Ui {
             Screen::Dial => self.draw_dial(),
         }
         self.api.show();
+        self.shown_at = self.api.now();
     }
 
     // --- list
@@ -896,7 +919,9 @@ impl Ui {
             Screen::Chat => self.feed(),
             _ => return self.draw(),
         }
+        self.due = false;
         self.api.show();
+        self.shown_at = self.api.now();
     }
 
     // --- quick replies

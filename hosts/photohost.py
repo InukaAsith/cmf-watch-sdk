@@ -5,7 +5,7 @@
 
 Without DIR it makes a demo gallery in runs/mock/gallery.
 """
-import argparse, asyncio, colorsys, math, pathlib, struct, sys, zlib
+import argparse, random, asyncio, colorsys, math, pathlib, struct, sys, zlib
 
 from PIL import Image, ImageDraw
 
@@ -130,8 +130,9 @@ def rle8(px: bytes, w: int, h: int) -> bytes:
     return bytes(out)
 
 
-def sharp_messages(img: Image.Image, round_: bool, scale: int = 2, cap: int = 40 * 1024):
-    """The sharp version: up to 255 colours (fewer if it would not fit the watch's 40 KB), `S`, `K`…, `Y`…, `Z`."""
+def sharp_messages(img: Image.Image, round_: bool, scale: int = 2, cap: int = 40 * 1024, any_order=False):
+    """The sharp version: up to 255 colours (fewer if it would not fit the watch's 40 KB), `S`, `K`…, `Y`…, `Z`;
+    `any_order` (a watch that said `R 1`): `y seq:u16` chunks of 124 at seq × 124 instead, shuffled, no `Z`."""
     img, (ox, oy) = framed(img, round_, scale)
     w, h = img.size
     for colours in (255, 192, 128, 96, 64):
@@ -144,6 +145,10 @@ def sharp_messages(img: Image.Image, round_: bool, scale: int = 2, cap: int = 40
     for first in range(0, colours, 60):
         cs = range(first, min(first + 60, colours))
         out.append(b"K" + bytes([first, len(cs)]) + b"".join(struct.pack("<H", rgb565(*pal[3 * i:3 * i + 3])) for i in cs))
+    if any_order:
+        ys = [b"y" + struct.pack("<H", seq) + data[i:i + 124] for seq, i in enumerate(range(0, len(data), 124))]
+        random.shuffle(ys)
+        return out + ys
     for seq, i in enumerate(range(0, len(data), MSG_MAX - 2)):
         out.append(b"Y" + bytes([seq & 0xFF]) + data[i:i + MSG_MAX - 2])
     out.append(b"Z")
@@ -172,9 +177,11 @@ async def main():
                 await ch.send(b"l" + bytes([i]) + n.encode()[:40])
 
         shown = [None, True, False]  # index, round, sharp
+        any_order = [False]
 
         async def handle(m):
-            if m == b"R":
+            if m[:1] == b"R":
+                any_order[0] = len(m) >= 2 and m[1] >= 1
                 await gallery()
             elif m[:1] == b"q" and len(m) == 2 and m[1] < len(pics):
                 for msg in file_messages(f"th{m[1]}", thumb_file(Image.open(pics[m[1]]))):
@@ -186,7 +193,9 @@ async def main():
                     await ch.send(msg)
             elif m == b"h" and shown[0] is not None:
                 shown[2] = True
-                for msg in sharp_messages(Image.open(pics[shown[0]]), shown[1]):
+                msgs = sharp_messages(Image.open(pics[shown[0]]), shown[1], any_order=any_order[0])
+                print(f"sharp: {len(msgs)} messages, {'any order' if any_order[0] else 'in order'}", flush=True)
+                for msg in msgs:
                     await ch.send(msg)
             elif m[:1] == b"G" and shown[0] is not None:
                 # a chunk went missing: that picture again, whole

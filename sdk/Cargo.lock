@@ -27,6 +27,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "back-owner"
 version = "0.1.0"
 dependencies = [
@@ -155,7 +163,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "speaker"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+]
+
+[[package]]
 name = "spotify"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "spplayer"
 version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
@@ -188,3 +211,11 @@ dependencies = [
 [[package]]
 name = "wp2-core"
 version = "0.1.0"
+
+[[package]]
+name = "ytmusic"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]

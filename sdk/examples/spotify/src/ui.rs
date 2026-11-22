@@ -368,6 +368,7 @@ impl Ui {
         }
     }
 
+    /// The crown asks the phone for a volume step (`v percent`); the iOS app sets the phone's system volume.
     fn volume(&mut self, delta: i32) {
         let n = &mut model().now;
         n.vol = (i32::from(n.vol) + delta * 5).clamp(0, 100) as u8;
