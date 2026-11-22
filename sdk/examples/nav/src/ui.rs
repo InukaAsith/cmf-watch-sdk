@@ -5,7 +5,7 @@
 
 use crate::state::{Effect, Nav};
 use crate::view::{self, ZOOMS};
-use crate::start::{Screen, Start};
+use crate::start::{Screen, Start, Tap};
 use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::dial::Act;
 use cmf_wp2_ui::haptic::{self, Motor};
@@ -77,8 +77,10 @@ fn main(api: &'static Api) -> i32 {
         }
         match e.kind {
             BUTTON if !nav().active && ui.start.back() => {
-                // the keyboard or the list: back to the start, the recent places again
-                let _ = api.send(b"R");
+                // the rotary keyboard: back to the keys; the keys or the list: to the start, the recent places again
+                if ui.start.screen == Screen::Start {
+                    let _ = api.send(b"R");
+                }
                 ui.draw();
             }
             BUTTON => {
@@ -99,7 +101,30 @@ fn main(api: &'static Api) -> i32 {
                 ui.draw();
             }
             TOUCH_DOWN if !nav().active => {
-                if ui.start.screen == Screen::Dial {
+                if ui.start.on_query(e.x.into(), e.y.into()) {
+                    // the typed words on the rotary keyboard: back to the keys
+                    ui.motor.play(haptic::TICK);
+                    ui.start.to_keys();
+                    ui.draw();
+                } else if ui.start.screen == Screen::Keys {
+                    let mut out = [0u8; 64];
+                    match ui.start.keys_down(api, e.x.into(), e.y.into(), &mut out) {
+                        Tap::Shown => ui.shown(),
+                        Tap::Typed => {
+                            ui.motor.play(haptic::TICK);
+                            ui.shown();
+                        }
+                        Tap::Redraw => {
+                            ui.motor.play(haptic::TICK);
+                            ui.draw();
+                        }
+                        Tap::Send(n) => {
+                            ui.motor.play(haptic::TICK);
+                            let _ = api.send(&out[..n]);
+                            ui.draw();
+                        }
+                    }
+                } else if ui.start.screen == Screen::Dial {
                     let a = ui.start.dial.down(&mut ui.api, e.x.into(), e.y.into(), api.now());
                     ui.dial_act(a);
                 } else if let Some(id) = ui.start.hit(e.x.into(), e.y.into()) {

@@ -1,6 +1,6 @@
 //! Starting a route from the watch, as the phone's Navigation page does (the page then shows it too, and its Stop
-//! ends it). With no route on: "Where to?" (the rotary keyboard, the phone searches), walking or the roads, and
-//! the last places gone to. A place tapped: `S idx walking`; the route's turns follow as usual.
+//! ends it). With no route on: "Where to?" (a keyboard as Spotify's, its "dial" key the rotary one; the phone
+//! searches), walk or drive, and the last places gone to. A place tapped: `S idx walking`; the route's turns follow as usual.
 //!
 //! The phone's side (CMFX NavService, HubKit NavProto): `P n walking`, then `p idx name 0 detail` each: the places
 //! (what was searched for, or the recent ones); `E text`: what it is doing or why it couldn't. Asks: `R` (the
@@ -32,6 +32,11 @@ const MODE_Y: i32 = 172;
 const MODE_H: i32 = 44;
 const ROWS_Y: i32 = 252;
 const ROW_H: i32 = 60;
+/// Keys (as Spotify's): rows' tops, key height.
+const ROW_Y: [i32; 4] = [184, 242, 300, 358];
+const KH: i32 = 58;
+const KEYC: Rgb = Rgb(0x2A, 0x2A, 0x2A);
+const RED: Rgb = Rgb(0xD7, 0x19, 0x21);
 /// List: the rows under the query.
 const LIST_Y: i32 = 86;
 const LIST_ROWS: usize = 5;
@@ -39,6 +44,9 @@ const LIST_ROWS: usize = 5;
 #[derive(Clone, Copy, PartialEq)]
 pub enum Screen {
     Start,
+    /// the keyboard
+    Keys,
+    /// the rotary keyboard
     Dial,
     List,
 }
@@ -79,6 +87,32 @@ pub struct Start {
     n_note: usize,
     top: usize,
     pressed: Option<u8>,
+    /// the keyboard's numbers and signs
+    sym: bool,
+    /// the key lit since it was typed (till the next touch)
+    lit: Option<K>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum K {
+    Ch(u8),
+    Del,
+    Sym,
+    Space,
+    Go,
+    Dial,
+}
+
+/// What a touch on the keyboard did.
+pub enum Tap {
+    /// drawn: show
+    Shown,
+    /// a key typed: tick and show
+    Typed,
+    /// draw the whole screen
+    Redraw,
+    /// send `out[..n]` (the search), then draw the whole screen
+    Send(usize),
 }
 
 impl Start {
@@ -96,6 +130,8 @@ impl Start {
             n_note: 0,
             top: 0,
             pressed: None,
+            sym: false,
+            lit: None,
         }
     }
 
@@ -152,6 +188,11 @@ impl Start {
         let mut s = api;
         match self.screen {
             Screen::Start => self.draw_start(&mut s),
+            Screen::Keys => {
+                self.draw_query(&mut s);
+                let sym = self.sym;
+                each_key(sym, |k, _, _, _| draw_key(&mut s, sym, k, false));
+            }
             Screen::Dial => {
                 self.draw_query(&mut s);
                 self.dial.draw(&mut s);
@@ -173,7 +214,7 @@ impl Start {
         let (y, h, w) = WHERE;
         self.pill(s, C, y, h, w, "Where to?", false, 1);
         self.pill(s, C - 66, MODE_Y, MODE_H, 120, "Walk", self.walking, 2);
-        self.pill(s, C + 66, MODE_Y, MODE_H, 120, "Roads", !self.walking, 3);
+        self.pill(s, C + 66, MODE_Y, MODE_H, 120, "Drive", !self.walking, 3);
         if self.n_note > 0 {
             centre_fit(s, C, 230, self.note(), 300, SOFT);
         }
@@ -200,7 +241,92 @@ impl Start {
     fn draw_query(&self, s: &mut &'static Api) {
         let q = core::str::from_utf8(&self.query[..self.n_query]).unwrap_or("");
         Surface::rect(s, 40, 100, 386, 40, 0);
-        centre_fit(s, C, 110, if q.is_empty() { "Where to?" } else { q }, 300, if q.is_empty() { GREY } else { W });
+        if q.is_empty() {
+            return centre_fit(s, C, 110, "Where to?", 300, GREY);
+        }
+        // the end of a long query stays in view
+        let max = if self.screen == Screen::Dial { 200 } else { 300 };
+        let mut start = 0;
+        while font::width(&q[start..]) > max && start < q.len() {
+            start += 1;
+            while !q.is_char_boundary(start) {
+                start += 1;
+            }
+        }
+        centre_fit(s, C, 110, &q[start..], max, W);
+    }
+
+    /// On the rotary keyboard, a touch on the typed words: back to the keys.
+    pub fn on_query(&self, x: i32, y: i32) -> bool {
+        self.screen == Screen::Dial && (90..150).contains(&y) && (x - C).abs() < 140
+    }
+
+    pub fn to_keys(&mut self) {
+        self.dial.cancel();
+        self.screen = Screen::Keys;
+    }
+
+    /// A touch on the keyboard: typed at once, the key lit till the next touch (as Spotify's).
+    pub fn keys_down(&mut self, api: &'static Api, x: i32, y: i32, out: &mut [u8; 64]) -> Tap {
+        let mut s = api;
+        let sym = self.sym;
+        if let Some(old) = self.lit.take() {
+            draw_key(&mut s, sym, old, false);
+        }
+        let mut hit = None;
+        each_key(sym, |k, kx, ky, w| {
+            if (kx..kx + w).contains(&x) && (ky..ky + KH).contains(&y) {
+                hit = Some(k);
+            }
+        });
+        let Some(k) = hit else { return Tap::Shown };
+        match k {
+            K::Ch(c) if self.n_query < QUERY => {
+                // the first letter a capital, as the dial does
+                self.query[self.n_query] = if self.n_query == 0 { c.to_ascii_uppercase() } else { c };
+                self.n_query += 1;
+            }
+            K::Space if self.n_query > 0 && self.n_query < QUERY && self.query[self.n_query - 1] != b' ' => {
+                self.query[self.n_query] = b' ';
+                self.n_query += 1;
+            }
+            K::Del => self.n_query = self.n_query.saturating_sub(1),
+            K::Sym => {
+                self.sym = !self.sym;
+                return Tap::Redraw;
+            }
+            K::Dial => {
+                self.dial.shift = self.n_query == 0;
+                self.dial.cancel();
+                self.screen = Screen::Dial;
+                return Tap::Redraw;
+            }
+            K::Go => {
+                let n = self.send_query(out);
+                return if n > 0 { Tap::Send(n) } else { Tap::Shown };
+            }
+            _ => {}
+        }
+        self.draw_query(&mut s);
+        draw_key(&mut s, sym, k, true);
+        self.lit = Some(k);
+        Tap::Typed
+    }
+
+    /// `Q text` into `out`, to the list (0: nothing typed).
+    fn send_query(&mut self, out: &mut [u8; 64]) -> usize {
+        if self.n_query == 0 {
+            return 0;
+        }
+        out[0] = b'Q';
+        out[1..1 + self.n_query].copy_from_slice(&self.query[..self.n_query]);
+        self.n = 0;
+        self.n_note = 0;
+        self.searched = true;
+        self.lit = None;
+        self.dial.cancel();
+        self.screen = Screen::List;
+        1 + self.n_query
     }
 
     fn draw_list(&self, s: &mut &'static Api) {
@@ -248,7 +374,7 @@ impl Start {
                 (self.searched && y >= LIST_Y && (0..LIST_ROWS as i32).contains(&r) && (i as usize) < self.n)
                     .then(|| 10 + i as u8)
             }
-            Screen::Dial => None,
+            Screen::Keys | Screen::Dial => None,
         }
     }
 
@@ -258,9 +384,9 @@ impl Start {
         match id {
             1 => {
                 self.n_query = 0;
-                self.dial.shift = true;
-                self.dial.cancel();
-                self.screen = Screen::Dial;
+                self.sym = false;
+                self.lit = None;
+                self.screen = Screen::Keys;
                 0
             }
             2 | 3 => {
@@ -289,15 +415,7 @@ impl Start {
                 self.n_query += 1;
             }
             Key::Del if self.n_query > 0 => self.n_query -= 1,
-            Key::Send if self.n_query > 0 => {
-                out[0] = b'Q';
-                out[1..1 + self.n_query].copy_from_slice(&self.query[..self.n_query]);
-                self.n = 0;
-                self.n_note = 0;
-                self.searched = true;
-                self.screen = Screen::List;
-                return 1 + self.n_query;
-            }
+            Key::Send if self.n_query > 0 => return self.send_query(out),
             _ => {}
         }
         0
@@ -320,18 +438,96 @@ impl Start {
         moved
     }
 
-    /// Back: the keyboard or the list to the start (the recent places asked again: `R`); false on the start.
+    /// Back: the rotary keyboard to the keys, the keys or the list to the start (then the recent places are asked
+    /// again: `R`); false on the start.
     pub fn back(&mut self) -> bool {
-        if self.screen == Screen::Start {
-            return false;
+        match self.screen {
+            Screen::Start => return false,
+            Screen::Dial => {
+                self.to_keys();
+                return true;
+            }
+            _ => {}
         }
         self.dial.cancel();
+        self.lit = None;
         self.screen = Screen::Start;
         self.searched = false;
         self.n = 0;
         self.n_note = 0;
         true
     }
+}
+
+/// One keyboard row: up to 10 keys `(key, width)`, centred (Spotify's layout).
+fn row(r: usize, sym: bool) -> ([(K, i32); 10], usize) {
+    let mut keys = [(K::Space, 0); 10];
+    let chars = |s: &[u8], keys: &mut [(K, i32); 10]| {
+        for (i, &c) in s.iter().enumerate() {
+            keys[i] = (K::Ch(c), 44);
+        }
+        s.len()
+    };
+    let n = match (r, sym) {
+        (0, false) => chars(b"qwertyuiop", &mut keys),
+        (1, false) => chars(b"asdfghjkl", &mut keys),
+        (0, true) => chars(b"1234567890", &mut keys),
+        (1, true) => chars(b"&-'.,!?()", &mut keys),
+        (2, _) => {
+            let n = chars(if sym { b"#+/:\"@*" } else { b"zxcvbnm" }, &mut keys);
+            keys[n] = (K::Del, 58);
+            n + 1
+        }
+        _ => {
+            keys[0] = (K::Sym, 62);
+            keys[1] = (K::Dial, 62);
+            keys[2] = (K::Space, 108);
+            keys[3] = (K::Go, 66);
+            4
+        }
+    };
+    (keys, n)
+}
+
+fn each_key(sym: bool, mut f: impl FnMut(K, i32, i32, i32)) {
+    for (r, &y) in ROW_Y.iter().enumerate() {
+        let (keys, n) = row(r, sym);
+        let total: i32 = keys[..n].iter().map(|k| k.1).sum();
+        let mut x = C - total / 2;
+        for &(k, w) in &keys[..n] {
+            f(k, x, y, w);
+            x += w;
+        }
+    }
+}
+
+fn draw_key(s: &mut &'static Api, sym: bool, key: K, pressed: bool) {
+    each_key(sym, |k, x, y, w| {
+        if k != key {
+            return;
+        }
+        let fill = match (pressed, k) {
+            (true, _) => WHITE,
+            (_, K::Go) => RED,
+            (_, K::Ch(_)) => KEYC,
+            _ => CARD,
+        };
+        Surface::rect(s, x, y, w, KH, 0);
+        rrect(s, x + 3, y + 3, w - 6, KH - 6, 14, fill, BLACK);
+        let mut b = [0u8; 4];
+        let label: &str = match k {
+            K::Ch(c) => (c as char).encode_utf8(&mut b),
+            K::Del => "<",
+            K::Sym if sym => "abc",
+            K::Sym => "123",
+            K::Space => "space",
+            K::Go => "Go",
+            K::Dial => "dial",
+        };
+        let ink = if pressed { 0 } else if k == K::Space { GREY } else { W };
+        let lw = font::width(label);
+        font::draw(s, x + w / 2 - lw / 2, y + KH / 2 - 12, label, ink);
+    });
 }
 
 fn centre_fit(s: &mut &'static Api, cx: i32, y: i32, text: &str, px: i32, c: u16) {
