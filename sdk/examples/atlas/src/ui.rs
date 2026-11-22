@@ -138,6 +138,8 @@ const SHEET_Y: i32 = 318;
 // --- Place: the card under the map
 const CARD_Y: i32 = 262;
 const DIRS: (i32, i32, i32) = (384, 56, 230);
+/// Route: "+" beside Start, a stop on the way (searched for, then "Add stop" on its card)
+const STOP_BTN: (i32, i32, i32) = (C - 132, 409, 25);
 /// The place on the map over the card.
 const PLACE_Y: i32 = 150;
 // --- Find: Search and Area, then the kinds of places (2 a row)
@@ -380,6 +382,8 @@ struct Ui {
     about_top: i32,
     /// List of a mixed search: all the places round us shown (else two and "More nearby")
     expanded: bool,
+    /// a stop being searched for from the route: the card's pill adds it (`J`), back returns to the route
+    adding: bool,
     /// a row of the other group tapped: its map asked (`F`), it opens when the rows come placed
     pending: Option<usize>,
 }
@@ -558,7 +562,7 @@ impl Ui {
                 Screen::Pick => &[(0, PICK_Y - 8, 466, 466)],
                 Screen::Route => &[
                     (0, 0, 466, ROUTE_TOP + 6),
-                    (130, START.0 - START.1 / 2 - 6, 336, 466),
+                    (STOP_BTN.0 - STOP_BTN.2 - 4, START.0 - 10, 336, 466),
                 ],
                 _ => &[
                     (C - 142, 38, C + 142, 86),
@@ -1145,7 +1149,7 @@ impl Ui {
             centre_fit(&mut s, C, CARD_Y + 98, m.info(2), 260, GREY);
         }
         let (y, h, w) = DIRS;
-        self.pill(y, h, w, "Directions", BLUE, 24);
+        self.pill(y, h, w, if self.adding { "Add stop" } else { "Directions" }, BLUE, 24);
     }
 
     /// The place: car, bike and foot, each with its time and arrival.
@@ -1475,6 +1479,14 @@ impl Ui {
         let (y, h, w) = START;
         if model().routed {
             self.pill(y, h, w, "Start", BLUE, 4);
+            // a stop on the way: a dark disc with a plus
+            let mut s = self.s;
+            let (cx, cy, r) = STOP_BTN;
+            let on = self.pressed == Some(7);
+            disc(&mut s, cx, cy, r, if on { WHITE } else { CARD }, render::BG);
+            let ink = if on { 0 } else { W };
+            Surface::rect(&mut s, cx - 10, cy - 2, 20, 4, ink);
+            Surface::rect(&mut s, cx - 2, cy - 10, 4, 20, ink);
         }
     }
 
@@ -1544,6 +1556,7 @@ impl Ui {
 
     fn back(&mut self) -> bool {
         match self.screen {
+            Screen::Home | Screen::Find | Screen::Results if self.adding => self.stop_route(None),
             Screen::Home => return false,
             Screen::Find | Screen::Results => self.go(Screen::Home),
             Screen::Search => self.go(Screen::Find),
@@ -1675,6 +1688,7 @@ impl Ui {
                     None
                 }
             }
+            Screen::Route if model().routed && disc_at(STOP_BTN) => Some(7),
             Screen::Route => (model().routed && pill(START.0, START.1, START.2)).then_some(4),
             Screen::List => {
                 if y < 74 && (x - C).abs() < 130 {
@@ -1988,6 +2002,12 @@ impl Ui {
                 self.draw();
             }
             20..=22 => self.route(b - 20, None),
+            24 if self.adding => self.stop_route(Some(self.sel as u8)),
+            7 => {
+                // a stop: searched for like any place, its card then adds it
+                self.adding = true;
+                self.go(Screen::Find);
+            }
             24 => {
                 model().ways = [Way::Asking; 3];
                 self.send(&[b'U', self.sel as u8]);
@@ -2036,6 +2056,25 @@ impl Ui {
         self.pic_tries = 2;
         let d = [b'D', mode, self.sel as u8, self.next_id, alt.unwrap_or(0)];
         self.send(&d[..if alt.is_some() { 5 } else { 4 }]);
+        self.go(Screen::Route);
+    }
+
+    /// The route again with result `idx` as a stop before the end (`J id idx`; None: as it was, its map again).
+    fn stop_route(&mut self, idx: Option<u8>) {
+        self.adding = false;
+        let m = model();
+        m.routed = false;
+        m.n_error = 0;
+        m.n_alts = 0;
+        self.step = 0;
+        self.busy = Some(if idx.is_some() { "Adding the stop\u{2026}" } else { "Finding a route\u{2026}" });
+        nav().n_pts = 0;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        self.asked = Some(ROUTE_SCENE);
+        scene().want = self.next_id;
+        self.pic_at = self.api.now();
+        self.pic_tries = 2;
+        self.send(&[b'J', self.next_id, idx.unwrap_or(255)]);
         self.go(Screen::Route);
     }
 
@@ -2318,6 +2357,7 @@ fn main(api: &'static Api) -> i32 {
         alt_sel: 0,
         about_top: 0,
         expanded: false,
+        adding: false,
         pending: None,
     };
     api.own_back(true);

@@ -13,3 +13,5 @@ const ACCENT: cmf_wp2_ui::color::Rgb = cmf_wp2_ui::color::Rgb(0xD7, 0x19, 0x21);
 mod ui;
 #[cfg(any(target_os = "none", wp2_sim))]
 mod view;
+#[cfg(any(target_os = "none", wp2_sim))]
+mod start;

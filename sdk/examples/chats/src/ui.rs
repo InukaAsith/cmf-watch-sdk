@@ -406,7 +406,18 @@ struct Ui {
     /// once in FRAME_MS, the rest waits in `due` (the panel takes a frame from the buffer we draw into)
     shown_at: u32,
     due: bool,
+    /// when the list was last asked for: back on the list, and every LIST_MS while it is open, the phone sends it
+    /// again (new chats while the app stays open; the phone may have gone quiet meanwhile)
+    list_ask: u32,
 }
+
+const LIST_MS: u32 = 30_000;
+
+/// Chats and Mail ask for their list again; Notes keep their own, Gemini has none from the phone.
+const RELIST: bool = !crate::PLAIN && !crate::ASSISTANT;
+/// WhatsApp also every LIST_MS while the list is open (Mail's phone side fetches the server for each ask: on return
+/// only).
+const PERIODIC: bool = RELIST && matches!(crate::TITLE.as_bytes(), b"WHATSAPP");
 
 /// The least time between two frames that messages bring.
 const FRAME_MS: u32 = 80;
@@ -436,6 +447,7 @@ fn main(api: &'static Api) -> i32 {
         spin: (0, 0),
         shown_at: 0,
         due: false,
+        list_ask: api.now(),
     };
     if crate::PLAIN && kept().load(api) {
         // the last run's list at once, then the phone's
@@ -474,8 +486,13 @@ fn main(api: &'static Api) -> i32 {
         if ui.due && now.wrapping_sub(ui.shown_at) >= FRAME_MS {
             ui.refresh();
         }
+        if PERIODIC && ui.screen == Screen::List && now.wrapping_sub(ui.list_ask) >= LIST_MS {
+            ui.ask_list();
+        }
+        let relist = (PERIODIC && ui.screen == Screen::List)
+            .then(|| LIST_MS.saturating_sub(now.wrapping_sub(ui.list_ask)).max(1));
         let paced = ui.due.then(|| FRAME_MS.saturating_sub(now.wrapping_sub(ui.shown_at)).max(1));
-        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist].into_iter().flatten().min().unwrap_or(u32::MAX);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
             None => api.event(wait),
@@ -657,7 +674,16 @@ fn upper(s: &str, out: &mut [u8; 24]) -> usize {
 }
 
 impl Ui {
+    /// The phone's list again (`R`: it answers with the chats as they are now).
+    fn ask_list(&mut self) {
+        self.list_ask = self.api.now();
+        let _ = self.api.send(b"R");
+    }
+
     fn go(&mut self, to: Screen) {
+        if RELIST && to == Screen::List && self.screen != Screen::List {
+            self.ask_list();
+        }
         self.screen = to;
         match to {
             Screen::Chat => self.chat_scroll = 0,

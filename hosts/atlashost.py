@@ -152,6 +152,17 @@ class Host:
                             + [b"t" + bytes([k, kind, d]) + struct.pack("<I", at) + name.encode()
                                for k, (at, kind, d, name) in enumerate(STEPS)] + self.route())
             await self.scene(m[3], (-340, 580))
+        elif op == b"J" and len(m) == 3:
+            # a stop (result idx; 255 none): the route again, a "Stop:" leg end in its steps
+            self.log(f"stop {m[2]}" if m[2] != 255 else "route again")
+            steps = list(STEPS)
+            if m[2] != 255:
+                steps.insert(2, (600, 2, 0, PLACES[m[2] % len(PLACES)][0]))
+            mode = getattr(self, "mode", 0)
+            await self.send([b"T" + bytes([mode]) + struct.pack("<II", SECS.get(mode, 600) + 120, 2240) + bytes([len(steps), 14, 34])]
+                            + [b"t" + bytes([k, kind, d]) + struct.pack("<I", at) + name.encode()
+                               for k, (at, kind, d, name) in enumerate(steps)] + self.route())
+            await self.scene(m[1], (-340, 580))
         elif op == b"S":
             self.log("start")
             await self.send([b"N", b"V" + bytes([1, 0, 2]) + struct.pack("<HHH", 380, 9, 184) + bytes([14, 32])

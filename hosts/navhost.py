@@ -3,6 +3,7 @@ along it, sending the next manoeuvre and where we are every tick (examples/nav/s
 
   uv run python hosts/navhost.py --sim 7705                       # Trafalgar Square → British Museum, 12 m/s
   uv run python hosts/navhost.py --sim 7705 --speed 25 --from 51.5007,-0.1246 --to 51.5194,-0.1270
+  uv run python hosts/navhost.py --sim 7705 --wait     # the watch starts it: recent places, a search, a pick
 """
 import argparse, asyncio, datetime, json, math, pathlib, struct, sys, urllib.request
 
@@ -123,6 +124,41 @@ async def drive(ch, route, speed, tick):
     await ch.send(b"W")
 
 
+RECENT = [("British Museum", "Great Russell St, London"), ("Covent Garden", "London WC2"),
+          ("King's Cross", "Euston Rd, London")]
+FOUND = [("Russell Square", "Bloomsbury, London"), ("Russell Square Gardens", "London WC1"),
+         ("Russell Hotel", "Russell Sq, London")]
+
+
+def places(rows, walking=True):
+    return [b"P" + bytes([len(rows), walking])] + [b"p" + bytes([i]) + n.encode() + b"\0" + d.encode()
+                                                    for i, (n, d) in enumerate(rows)]
+
+
+async def start_screen(ch, route, a):
+    """The watch's start screen (examples/nav/src/start.rs): recent places, a search, a pick starts the drive."""
+    driving = None
+    for m in places(RECENT):
+        await ch.send(m)
+    while True:
+        m = (await ch.recv()).data
+        if m == b"R":
+            for x in ([] if driving else places(RECENT)):
+                await ch.send(x)
+            if driving:
+                await send_route(ch, route)
+        elif m[:1] == b"Q":
+            print(f"search {m[1:].decode(errors='replace')!r}", flush=True)
+            await ch.send(b"E" + "Searching\u2026".encode())
+            for x in places(FOUND):
+                await ch.send(x)
+        elif m[:1] == b"S" and len(m) == 3 and not driving:
+            print(f"start {m[1]} {'walking' if m[2] else 'roads'}", flush=True)
+            await ch.send(b"E" + "Finding a route\u2026".encode())
+            await send_route(ch, route)
+            driving = asyncio.create_task(drive(ch, route, a.speed, a.tick))
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sim", type=int)
@@ -131,11 +167,14 @@ async def main():
     ap.add_argument("--to", dest="b", default="51.51939,-0.12697")    # British Museum
     ap.add_argument("--speed", type=float, default=12.0, help="m/s")
     ap.add_argument("--tick", type=float, default=1.0)
+    ap.add_argument("--wait", action="store_true", help="drive once the watch picks a place (its start screen)")
     a = ap.parse_args()
     route = Route(osrm(tuple(map(float, a.a.split(","))), tuple(map(float, a.b.split(",")))))
     print(f"route {route.length:.0f} m, {len(route.steps)} steps, {len(route.shape)} points", flush=True)
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
         await send_when_open(ch, b"?")  # waits till the app is open
+        if a.wait:
+            return await start_screen(ch, route, a)
         await send_route(ch, route)
         task = asyncio.create_task(drive(ch, route, a.speed, a.tick))
         while True:

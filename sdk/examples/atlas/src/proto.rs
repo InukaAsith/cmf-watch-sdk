@@ -20,6 +20,8 @@
 //! - `D mode idx id [alt]` a route to result `idx` (mode 0 drive, 1 bike, 2 walk), its map as scene `id`. With two
 //!   or three ways there the phone first sends `O` and the watch asks again with the one picked (`alt`).
 //! - `S` start navigating the route; `X` stop.
+//! - `J id idx` the route again with result `idx` as a stop before its end (3 at most; idx 255: no new stop, the
+//!   route as it is), its map as scene `id`; the stop is a leg's end (`t` kind 2, the stop's name).
 //! - `g id` scene `id` again (part of it never came).
 //!
 //! Phone → watch:

@@ -1,15 +1,15 @@
 //! Turn by turn in the Nothing look. Turn view (default): the next manoeuvre as a big arrow, the distance in dots,
 //! the street, arrival time. Map view (tap to switch): the route heading-up around a red dot, drawn here from the
 //! route points, so it turns and zooms (crown) at once. Buzz at 200 m and at the turn (state.rs SOON_M, NOW_M; view.rs SOON, NOW). Button: exit.
+//! No route on: start one here (start.rs), as on the phone.
 
 use crate::state::{Effect, Nav};
 use crate::view::{self, ZOOMS};
-use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN};
-use cmf_wp2_ui::color::{rgb565, BLACK, Rgb};
-use cmf_wp2_ui::draw::disc;
+use crate::start::{Screen, Start};
+use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
+use cmf_wp2_ui::dial::Act;
 use cmf_wp2_ui::haptic::{self, Motor};
-use cmf_wp2_ui::text::{centre, dots_centre};
-use cmf_wp2_ui::{C, Surface};
+use cmf_wp2_ui::Surface;
 
 cmf_wp2_app::entry!(main);
 cmf_wp2_app::app_icon!();
@@ -20,9 +20,6 @@ fn nav() -> &'static mut Nav {
     unsafe { &mut *core::ptr::addr_of_mut!(NAV) }
 }
 
-const RED: Rgb = Rgb(0xD7, 0x19, 0x21);
-const W: u16 = 0xFFFF;
-const GREY: u16 = rgb565(0x80, 0x80, 0x80);
 
 struct Ui {
     api: &'static Api,
@@ -34,6 +31,8 @@ struct Ui {
     /// when the last frame was shown; a message's redraw waits till FRAME_MS after it
     shown_at: u32,
     due: bool,
+    /// no route on: where to (start.rs)
+    start: Start,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -48,7 +47,7 @@ enum Drawn {
 const FRAME_MS: u32 = 80;
 
 fn main(api: &'static Api) -> i32 {
-    let mut ui = Ui { api, map: false, zoom: 2, motor: Motor::new(api), drawn: Drawn::Other, shown_at: 0, due: false };
+    let mut ui = Ui { api, map: false, zoom: 2, motor: Motor::new(api), drawn: Drawn::Other, shown_at: 0, due: false, start: Start::new() };
     api.keep_screen_on(true);
     ui.draw();
     let _ = api.send(b"R");
@@ -56,9 +55,16 @@ fn main(api: &'static Api) -> i32 {
     let mut msg = [0u8; MSG_MAX];
     loop {
         let pace = ui.due.then(|| FRAME_MS.saturating_sub(api.now().wrapping_sub(ui.shown_at)));
-        let w = [ui.motor.wait(), ask.wait(api.now()), pace].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let typing = !nav().active && ui.start.screen == Screen::Dial;
+        let hold = typing.then(|| ui.start.dial.hold_wait(api.now())).flatten();
+        let w = [ui.motor.wait(), ask.wait(api.now()), pace, hold].into_iter().flatten().min().unwrap_or(u32::MAX);
         let e = api.event(w);
         ui.motor.update();
+        if typing && ui.start.dial.tick(&mut ui.api, api.now()) == Act::Show {
+            // held: a capital
+            ui.motor.play(haptic::TICK);
+            api.show();
+        }
         if ui.due && api.now().wrapping_sub(ui.shown_at) >= FRAME_MS {
             ui.draw();
         }
@@ -70,6 +76,11 @@ fn main(api: &'static Api) -> i32 {
             ask.answered();
         }
         match e.kind {
+            BUTTON if !nav().active && ui.start.back() => {
+                // the keyboard or the list: back to the start, the recent places again
+                let _ = api.send(b"R");
+                ui.draw();
+            }
             BUTTON => {
                 ui.motor.off();
                 api.keep_screen_on(false);
@@ -87,6 +98,32 @@ fn main(api: &'static Api) -> i32 {
                 ui.drawn = Drawn::Other;
                 ui.draw();
             }
+            TOUCH_DOWN if !nav().active => {
+                if ui.start.screen == Screen::Dial {
+                    let a = ui.start.dial.down(&mut ui.api, e.x.into(), e.y.into(), api.now());
+                    ui.dial_act(a);
+                } else if let Some(id) = ui.start.hit(e.x.into(), e.y.into()) {
+                    ui.motor.play(haptic::TICK);
+                    let mut out = [0u8; 64];
+                    let n = ui.start.act(id, &mut out);
+                    if n > 0 {
+                        let _ = api.send(&out[..n]);
+                    }
+                    ui.draw();
+                }
+            }
+            TOUCH_UP if !nav().active && ui.start.screen == Screen::Dial => {
+                let a = ui.start.dial.up(&mut ui.api, e.x.into(), e.y.into());
+                ui.dial_act(a);
+            }
+            CROWN if !nav().active => {
+                if ui.start.screen == Screen::Dial {
+                    let a = ui.start.dial.crown(&mut ui.api, e.delta.signum().into(), api.now());
+                    ui.dial_act(a);
+                } else if ui.start.crown(e.delta.signum().into()) {
+                    ui.draw();
+                }
+            }
             TOUCH_DOWN => {
                 ui.map = !ui.map;
                 ui.motor.play(haptic::TICK);
@@ -103,6 +140,11 @@ fn main(api: &'static Api) -> i32 {
             MESSAGE => {
                 let mut redraw = false;
                 while let Some(m) = api.recv(&mut msg) {
+                    // where to: places, notes
+                    if ui.start.apply(m) {
+                        redraw |= !nav().active;
+                        continue;
+                    }
                     if matches!(m.first(), Some(b'G' | b'g')) {
                         // a new route: the old line can't be wiped by drawing it again
                         ui.drawn = Drawn::Other;
@@ -165,10 +207,7 @@ impl Ui {
         self.drawn = now;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
         if !n.active {
-            dots_centre(&mut s, C, 180, "NAV", 6, 5, W);
-            disc(&mut s, C + 84, 222, 6, RED, BLACK);
-            centre(&mut s, C, 260, "Start a route", GREY);
-            centre(&mut s, C, 284, "on your phone", GREY);
+            self.start.draw(self.api);
         } else if n.arrived {
             view::arrived(self.api, n);
         } else if self.map {
@@ -177,6 +216,30 @@ impl Ui {
             view::turn(self.api, n);
         }
         self.shown();
+    }
+
+    /// What the keyboard did: a letter into the words (only they and the middle redrawn), or the search sent.
+    fn dial_act(&mut self, a: Act) {
+        match a {
+            Act::None => {}
+            Act::Show => {
+                self.motor.play(haptic::TICK);
+                self.shown();
+            }
+            Act::Redraw => self.draw(),
+            Act::Key(_) => {
+                self.motor.play(haptic::TICK);
+                let mut out = [0u8; 64];
+                let n = self.start.key(a, &mut out);
+                if n > 0 {
+                    let _ = self.api.send(&out[..n]);
+                    self.draw();
+                } else {
+                    self.start.redraw_query(self.api);
+                    self.shown();
+                }
+            }
+        }
     }
 
     fn shown(&mut self) {
