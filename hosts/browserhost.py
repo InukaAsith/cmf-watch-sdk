@@ -14,7 +14,40 @@ import argparse, asyncio, json, math, os, pathlib, subprocess, sys, urllib.parse
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from PIL import Image, ImageDraw  # noqa: E402
+from wp2apps import channel  # noqa: E402
 from wp2apps.channel import Channel, NoApp, SimChannel, send_when_open  # noqa: E402
+
+
+class Fast:
+    """The watch link at full speed: every message through one sender, 4 in flight (channel.Pipe, about 7 KB/s on
+    the watch against 2 KB/s one at a time). One sender, so two never take each other's replies."""
+
+    def __init__(self, ch):
+        self.ch, self.lock = ch, asyncio.Lock()
+
+    async def send_many(self, msgs):
+        if not msgs:
+            return
+        async with self.lock:
+            if isinstance(self.ch, SimChannel):
+                for m in msgs:
+                    await self.ch.send(m)
+                return
+            for attempt in (0, 1):
+                session = await self.ch.connect()
+                try:
+                    return await channel.Pipe(session).stream(msgs)
+                except channel.LOST:
+                    # the link dropped: once more on a fresh one
+                    await self.ch.drop()
+                    if attempt:
+                        raise
+
+    async def send(self, m):
+        await self.send_many([m])
+
+    async def recv(self, *a, **k):
+        return await self.ch.recv(*a, **k)
 import pixhost  # noqa: E402
 
 PAGE = [
@@ -69,7 +102,7 @@ HUBKIT = ROOT.parent / "cmfx" / "ios" / "HubKit" / "Sources" / "HubKit"
 
 def build_tool():
     out = ROOT / "target" / "browsertool"
-    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji", "Layout", "Simple")]
+    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji", "Layout", "Simple", "Video")]
     if not out.exists() or any(p.stat().st_mtime > out.stat().st_mtime for p in srcs):
         out.parent.mkdir(exist_ok=True)
         # built beside it, then swapped in: macOS won't start a signed binary rewritten in place while it runs
@@ -118,7 +151,7 @@ async def web(ch, tool):
         if v.get("title"):
             await send(v["title"])
         n = 0
-        last = None
+        paused = False
         title = None
         loop = asyncio.get_running_loop()
         try:
@@ -136,14 +169,18 @@ async def web(ch, tool):
                 if v.get("paused"):
                     await asyncio.sleep(0.4)
                     n = 0
+                    paused = True
                     continue
+                if paused:
+                    # the pause sign is over the picture: a whole frame
+                    await tool.ask("vkey")
+                    paused = False
                 r = await tool.ask("frame")
                 n += 1
-                if r.get("none") or r["msgs"] == last:
-                    # between an ad and the video, buffering, or the same picture: wait (the video is still there)
-                    await asyncio.sleep(0.05)
+                if r.get("none") or not r["msgs"]:
+                    # between an ad and the video, buffering, or nothing changed: wait (the video is still there)
+                    await asyncio.sleep(0.03)
                     continue
-                last = r["msgs"]
                 await send(r["msgs"])
                 # at most 24 frames a second
                 await asyncio.sleep(max(0, 1 / 24 - (loop.time() - t0)))
@@ -173,8 +210,7 @@ async def web(ch, tool):
                 pass
 
     async def send(msgs):
-        for h in msgs:
-            await ch.send(bytes.fromhex(h))
+        await ch.send_many([bytes.fromhex(h) for h in msgs])
 
     async def answer(r):
         if r.get("url"):
@@ -320,6 +356,7 @@ async def main():
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
         await send_when_open(ch, b"!")
         if a.web:
+            ch = Fast(ch)
             # the app closed: wait for it to open again, a fresh start
             while True:
                 try:

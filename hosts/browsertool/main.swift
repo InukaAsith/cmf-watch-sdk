@@ -168,6 +168,7 @@ import WebKit
 
     func load(_ u: URL) async {
         committed = false
+        coder = nil
         let p = u.path.lowercased()
         if [".mp4", ".webm", ".mov", ".m4v", ".m3u8"].contains(where: { p.hasSuffix($0) }) {
             // a video file: in a page of its own (a bare file has no video element to play or read)
@@ -351,41 +352,28 @@ import WebKit
     }
 
     /// A playing video's frame, 155 px (the page's picture when the video won't give its pixels), as the watch's picture.
+    /// the video's coder (VideoCoder): a new one for each video (or a new shape)
+    var coder: VideoCoder?
+    var coderSize = ""
+
+    /// The playing video's next frame for the watch (VideoCoder: the part that changed, few colours); `msgs` empty
+    /// when nothing changed, `none` when nothing plays.
     func frame() async -> [String: Any] {
-        let grab = """
-        (() => { const v = [...document.querySelectorAll('video')].find(v => !v.paused && !v.ended && v.readyState > 2);
-          if (!v || !v.videoWidth) return null;
-          const c = document.createElement('canvas'), w = 155, h = Math.round(155 * v.videoHeight / v.videoWidth);
-          c.width = w; c.height = Math.min(h, 155);
-          try { c.getContext('2d').drawImage(v, 0, 0, c.width, c.height); return c.toDataURL('image/jpeg', 0.6); }
-          catch (e) { return null; } })()
-        """
-        var cg: CGImage?
-        if let s = await js(grab), s.hasPrefix("data:"), let comma = s.firstIndex(of: ","),
-           let d = Data(base64Encoded: String(s[s.index(after: comma)...])), let img = NSImage(data: d) {
-            cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        guard let size = await js(VideoCoder.sizeScript), !size.isEmpty else { return ["none": true] }
+        if coder == nil || size != coderSize {
+            let p = size.split(separator: ",").compactMap { Int($0) }
+            let scale = Int(ProcessInfo.processInfo.environment["BROWSER_VSCALE"] ?? "") ?? 5
+            let (w, h) = VideoCoder.grid(videoWidth: p.first ?? 16, videoHeight: p.last ?? 9, scale: scale)
+            coder = VideoCoder(width: w, height: h, scale: scale)
+            coder?.colours = Int(ProcessInfo.processInfo.environment["BROWSER_VCOLOURS"] ?? "") ?? 4
+            coder?.budget = Int(ProcessInfo.processInfo.environment["BROWSER_VBUDGET"] ?? "") ?? 500
+            coderSize = size
         }
-        if cg == nil {
-            let c = WKSnapshotConfiguration()
-            c.rect = web.bounds
-            c.snapshotWidth = 155
-            cg = (try? await web.takeSnapshot(configuration: c))?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        }
-        guard let cg else { return ["none": true] }
-        let side = 155
-        var px = [UInt8](repeating: 0, count: side * side * 4)
-        px.withUnsafeMutableBytes { b in
-            let ctx = CGContext(data: b.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
-                                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-            ctx.setFillColor(.black)
-            ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
-            // the frame's whole width, in the middle
-            let h = CGFloat(side) * CGFloat(cg.height) / CGFloat(max(cg.width, 1))
-            ctx.draw(cg, in: CGRect(x: 0, y: (CGFloat(side) - h) / 2, width: CGFloat(side), height: h))
-        }
-        var rgb = [UInt8](repeating: 0, count: side * side * 3)
-        for i in 0..<(side * side) { (rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]) = (px[4 * i], px[4 * i + 1], px[4 * i + 2]) }
-        return ["msgs": hex(Rle.picture(rgb: rgb, width: side, height: side, scale: 3))]
+        guard let c = coder, let s = await js(VideoCoder.grabScript(width: c.width, height: c.height)),
+              s.hasPrefix("data:"), let comma = s.firstIndex(of: ","),
+              let d = Data(base64Encoded: String(s[s.index(after: comma)...])),
+              let rgb = Simple.rgb(d, w: c.width, h: c.height) else { return ["none": true] }
+        return ["msgs": hex(c.encode(rgb))]
     }
 
     func tap(_ x: Double, _ y: Double) async -> [String: Any] {
@@ -463,6 +451,10 @@ import WebKit
         case "ua":
             // the browser's name to sites (the cookies' browser: a session moved from Chrome stays signed in as Chrome)
             web.customUserAgent = arg.isEmpty ? nil : arg
+            return [:]
+        case "vkey":
+            // the watch drew over the picture (paused sign): a whole frame next
+            coder = nil
             return [:]
         case "vstate":
             let a = (await js(BrowserProto.videoState)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [Any] } ?? []
