@@ -50,6 +50,21 @@ class Fast:
         return await self.ch.recv(*a, **k)
 import pixhost  # noqa: E402
 
+# favourites: kept between runs (the owner's own file, never in the repo); BROWSER_FAVOURITES moves it
+FAVS = pathlib.Path(os.environ.get("BROWSER_FAVOURITES", "~/.cmf-browser-favourites.json")).expanduser()
+
+
+def load_favs():
+    try:
+        return [u for u in json.loads(FAVS.read_text()) if isinstance(u, str)]
+    except (OSError, ValueError):
+        return []
+
+
+def save_favs(favs):
+    FAVS.write_text(json.dumps(favs))
+    FAVS.chmod(0o600)
+
 PAGE = [
     (0, 255, "Watches get a browser"),
     (1, 255, "The phone loads the web and the watch reads it: the text first, a picture of the page when it needs one."),
@@ -140,7 +155,20 @@ def url_for(typed):
 
 
 async def web(ch, tool):
-    st = {"url": None, "links": [], "history": [], "page": False, "recent": [], "video": None}
+    st = {"url": None, "links": [], "history": [], "page": False, "recent": [], "video": None,
+          # the start screen's rows: 0 recent, 1 history (this run's pages, newest first), 2 favourites (kept on file)
+          "list": 0, "visited": [], "favs": load_favs()}
+
+    def rows():
+        return [st["recent"], st["visited"], st["favs"]][st["list"]]
+
+    async def bar_label(u):
+        # the bar's words: what was searched on Google, else the site
+        p = urllib.parse.urlsplit(u or "")
+        q = urllib.parse.parse_qs(p.query).get("q", [""])[0] if "google." in (p.hostname or "") else ""
+        t = q or (p.hostname or "").removeprefix("www.").removeprefix("m.")
+        if t:
+            await ch.send(b"b" + t.encode()[:64])
 
     async def frames():
         # the watch's player: frames while it plays, its place while paused; as long as the video is there and page
@@ -217,9 +245,34 @@ async def web(ch, tool):
             st["url"] = r["url"]
         if "links" in r:
             st["links"] = r["links"]
+        if r.get("url"):
+            u = r["url"]
+            if u not in st["visited"][:1] and not u.startswith("about:"):
+                st["visited"] = ([u] + [x for x in st["visited"] if x != u])[:50]
         ms = r.get("msgs", [])
         print(f"answer: {r.get("mode", "")} {r.get("url", "")[:60]} {len(ms)} messages, {sum(len(x) for x in ms) // 2} B", file=sys.stderr, flush=True)
         await send(ms)
+        if ms:
+            await bar_label(r.get("url") or st["url"])
+        if r.get("mode") in ("drawn", "picture"):
+            # pictures that weren't in yet (striped on the watch): sent as they come, 20 s at most
+            if st.get("late") and not st["late"].done():
+                st["late"].cancel()
+            st["late"] = asyncio.create_task(late(st["url"]))
+
+    async def late(url):
+        for _ in range(14):
+            await asyncio.sleep(1.5)
+            if st["url"] != url or (st["video"] and not st["video"].done()):
+                return
+            r = await tool.ask("late")
+            if st["url"] != url:
+                return
+            if r.get("msgs"):
+                print(f"late pictures: {len(r['msgs'])} messages", file=sys.stderr, flush=True)
+                await send(r["msgs"])
+            if not r.get("left"):
+                return
 
     async def to_page(u):
         # page view by itself: the watch is told, the page sent whole
@@ -290,16 +343,27 @@ async def web(ch, tool):
             if c in (b"X", b"B") or m == b"V\x00":
                 await tool.ask("stop")
         try:
-            if m == b"R":
-                for i, u in enumerate(st["recent"]):
+            if c == b"R":
+                st["list"] = m[1] if len(m) == 2 and m[1] < 3 else 0
+                for i, u in enumerate(rows()[:4]):
                     await ch.send(b"H" + bytes([i]) + (urllib.parse.urlsplit(u).hostname or u).encode()[:60])
             elif c == b"Q":
                 # page view by default (the watch's reader button asks for text)
                 st["page"] = True
                 await open_(url_for(m[1:].decode(errors="replace")))
-            elif c == b"O" and len(m) == 2 and m[1] < len(st["recent"]):
+            elif c == b"O" and len(m) == 2 and m[1] < len(rows()):
                 st["page"] = True
-                await open_(st["recent"][m[1]])
+                await open_(rows()[m[1]])
+            elif m == b"*" and st["url"]:
+                # page view's star: a favourite, or not any more
+                u = st["url"]
+                if u in st["favs"]:
+                    st["favs"].remove(u)
+                    await ch.send(b"!Removed from favourites")
+                else:
+                    st["favs"] = [u] + st["favs"]
+                    await ch.send(b"!Added to favourites")
+                save_favs(st["favs"])
             elif c == b"L" and len(m) == 2 and m[1] < len(st["links"]):
                 await open_(st["links"][m[1]])
             elif m == b"B":

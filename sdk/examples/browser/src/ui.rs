@@ -89,6 +89,10 @@ const WHERE: (i32, i32, i32) = (96, 56, 270);
 const ROWS_Y: i32 = 190;
 const ROW_H: i32 = 58;
 const RECENT: usize = 4;
+/// the start screen's History and Favourites pills (top)
+const PILLS: i32 = 156;
+/// page view's star (a favourite): its middle and reach
+const STAR: (i32, i32, i32) = (C, 34, 24);
 /// Moved more than this from down to up: a drag.
 const DRAG: i32 = 24;
 const FRAME_MS: u32 = 80;
@@ -125,6 +129,8 @@ struct Ui {
     n_note: usize,
     recent: [([u8; 48], usize); RECENT],
     n_recent: usize,
+    /// what the start screen's rows are: 0 recent, 1 history, 2 favourites (the phone keeps them)
+    list: u8,
     pic: Decoder,
     /// page view has a picture on the panel
     pictured: bool,
@@ -174,6 +180,7 @@ fn main(api: &'static Api) -> i32 {
         n_note: 0,
         recent: [([0; 48], 0); RECENT],
         n_recent: 0,
+        list: 0,
         pic: Decoder::new(),
         pictured: false,
         video: false,
@@ -323,6 +330,12 @@ impl Ui {
                     self.n_recent = 1;
                 }
                 if self.screen == Screen::Start { Got::Redraw } else { Got::None }
+            }
+            Some(b'b') => {
+                let t = cmf_wp2_ui::text::fit(&m[1..], 64).as_bytes();
+                self.searched[..t.len()].copy_from_slice(t);
+                self.n_searched = t.len();
+                if self.screen == Screen::Page || self.screen == Screen::Reader { Got::Redraw } else { Got::None }
             }
             Some(b'Z') => {
                 self.to_start();
@@ -539,8 +552,14 @@ impl Ui {
         let (y, h, w) = WHERE;
         rrect(&mut s, C - w / 2, y, w, h, h / 2, CARD, BLACK);
         centre_fit(&mut s, C, y + h / 2 - 12, "Search or address", w - 30, W);
+        for (k, name) in [(1u8, "History"), (2, "Favourites")] {
+            let cx = if k == 1 { C - 68 } else { C + 68 };
+            let on = self.list == k;
+            rrect(&mut s, cx - 62, PILLS, 124, 32, 16, if on { WHITE } else { CARD }, BLACK);
+            centre_fit(&mut s, cx, PILLS + 4, name, 110, if on { 0 } else { SOFT });
+        }
         if self.n_note > 0 {
-            centre_fit(&mut s, C, 166, self.note(), 320, SOFT);
+            centre_fit(&mut s, C, 428, self.note(), 260, SOFT);
         }
         for i in 0..self.n_recent {
             let y = ROWS_Y + 4 + i as i32 * ROW_H;
@@ -663,8 +682,9 @@ impl Ui {
         }
         l.draw(&mut self.pic, &mut Screen565(self.api), &mut s, self.pscroll, 0, end.min(466));
         if self.n_note > 0 {
-            rrect(&mut s, C - 150, 20, 300, 36, 18, CARD, BLACK);
-            centre_fit(&mut s, C, 28, self.note(), 270, W);
+            // under the star
+            rrect(&mut s, C - 150, 60, 300, 36, 18, CARD, BLACK);
+            centre_fit(&mut s, C, 68, self.note(), 270, W);
         }
     }
 
@@ -683,6 +703,27 @@ impl Ui {
         };
         // the round button, the mode it goes to: a photo (picture, from drawn), lines (text, from picture), a page's
         // frame (drawn, from text)
+        if self.screen == Screen::Page {
+            let (sx, sy, _) = STAR;
+            disc(&mut s, sx, sy, 18, CARD, BLACK);
+            // a five-pointed star, filled a row at a time (its ten corners, outer 12 px, inner 5)
+            const P: [(i32, i32); 10] =
+                [(0, -12), (3, -4), (11, -4), (5, 2), (7, 10), (0, 5), (-7, 10), (-5, 2), (-11, -4), (-3, -4)];
+            for y in -12..=10 {
+                let (mut a, mut b) = (99, -99);
+                for i in 0..10 {
+                    let ((x0, y0), (x1, y1)) = (P[i], P[(i + 1) % 10]);
+                    if (y0 <= y && y < y1) || (y1 <= y && y < y0) {
+                        let x = x0 + (x1 - x0) * (y - y0) / (y1 - y0);
+                        a = a.min(x);
+                        b = b.max(x);
+                    }
+                }
+                if a <= b {
+                    Surface::rect(&mut s, sx + a, sy + y, b - a + 1, 1, 0xFFE0);
+                }
+            }
+        }
         let (cx, y, w, h) = SWITCH;
         disc(&mut s, cx, y + h / 2, w / 2, WHITE, BLACK);
         let (x0, cy) = (cx - 11, y + h / 2);
@@ -836,6 +877,11 @@ impl Ui {
             Screen::Page if self.video => {}
             Screen::Page if dragged => self.page_scroll(-dy),
             _ if self.on_switch(x, y) => self.switch(),
+            Screen::Page if (x - STAR.0).abs() <= STAR.2 && (y - STAR.1).abs() <= STAR.2 => {
+                // a favourite (the phone adds it, or takes it off: its note says which)
+                self.motor.play(haptic::TICK);
+                self.send(b"*");
+            }
             _ if self.on_search(x, y) => self.search(),
             Screen::Reader => self.reader_tap(y),
             Screen::Page => {
@@ -889,6 +935,16 @@ impl Ui {
             self.keys_from = Screen::Start;
             self.keys.open("Search or address");
             self.screen = Screen::Keys;
+            return self.draw();
+        }
+        if (PILLS - 6..PILLS + 38).contains(&y) && (x - C).abs() <= 136 {
+            // history / favourites (again: the recent pages)
+            let k = if x < C { 1 } else { 2 };
+            self.list = if self.list == k { 0 } else { k };
+            self.n_note = 0;
+            self.n_recent = 0;
+            self.motor.play(haptic::TICK);
+            self.send(&[b'R', self.list]);
             return self.draw();
         }
         let r = (y - ROWS_Y).div_euclid(ROW_H);

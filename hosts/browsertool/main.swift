@@ -362,6 +362,8 @@ import WebKit
             try? await Task.sleep(for: .milliseconds(100))
         }
         try? await Task.sleep(for: .milliseconds(100))
+        pending = Self.marks(await js(Self.markPending))
+        pendingTall = tall
         let layout = await js(Layout.script(width: Double(Self.side), height: tall))
         let rows = (await js(BrowserProto.pageBoxes)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[Double]] } ?? []
         let c = WKSnapshotConfiguration()
@@ -401,6 +403,82 @@ import WebKit
         return ["msgs": hex(msgs + BrowserProto.boxes(boxes)), "url": web.url?.absoluteString ?? "", "mode": lastMode]
     }
 
+    /// Pictures on the page not loaded when it was sent (a striped stand-in on the watch): id, page css x y w h
+    var pending: [(id: Int, x: Double, y: Double, w: Double, h: Double)] = []
+    /// the drawn page's laid-out height then (its pictures are where that layout put them)
+    var pendingTall = 0.0
+
+    /// Marks each picture that isn't in yet (`data-wp`, stripes in its place); answers them as [[id, x, y, w, h]].
+    static let markPending = """
+    (() => { const out = []; let n = window.__wpn || 0;
+      for (const e of document.querySelectorAll('img')) { if (e.complete && e.naturalWidth > 0) continue;
+        const r = e.getBoundingClientRect(); if (r.width < 16 || r.height < 16) continue;
+        if (!e.dataset.wp) e.dataset.wp = String(++n);
+        e.style.setProperty('background', 'repeating-linear-gradient(45deg,#6a6a6a 0 6px,#8a8a8a 6px 12px)', 'important');
+        out.push([+e.dataset.wp, r.left + scrollX, r.top + scrollY, r.width, r.height]); }
+      window.__wpn = n; return JSON.stringify(out); })()
+    """
+
+    static func marks(_ json: String?) -> [(id: Int, x: Double, y: Double, w: Double, h: Double)] {
+        let a = (json.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[Double]] }) ?? []
+        return a.filter { $0.count == 5 }.map { (Int($0[0]), $0[1], $0[2], $0[3], $0[4]) }
+    }
+
+    /// The marked pictures that came in since: each as a picture in its place on the watch's page (drawn over the
+    /// stand-in). None: {"msgs": []}; "left" how many are still out.
+    func late() async -> [String: Any] {
+        guard !pending.isEmpty else { return ["msgs": [String](), "left": 0] }
+        let ids = pending.map { String($0.id) }.joined(separator: ",")
+        let inNow = await js("JSON.stringify([\(ids)].filter(i => { const e = document.querySelector('[data-wp=\"' + i + '\"]'); return e && e.complete && e.naturalWidth > 0; }))") ?? "[]"
+        let got = Set(((try? JSONSerialization.jsonObject(with: Data(inNow.utf8))) as? [Int]) ?? [])
+        let ready = pending.filter { got.contains($0.id) }
+        guard !ready.isEmpty else { return ["msgs": [String](), "left": pending.count] }
+        pending.removeAll { got.contains($0.id) }
+        _ = await js("document.querySelectorAll('[data-wp]').forEach(e => { if (e.complete && e.naturalWidth > 0) e.style.removeProperty('background'); }); 1")
+        let k = 466 / Double(Self.side), px = 233 / Double(Self.side)
+        var out: [Data] = []
+        // drawn: the tall layout again (where the stand-ins were); a picture page: its part, from its top
+        let drawn = lastMode == "drawn"
+        if drawn {
+            window.setContentSize(NSSize(width: Self.side, height: pendingTall))
+            box.frame = NSRect(x: 0, y: 0, width: Self.side, height: pendingTall)
+            web.frame = NSRect(x: 0, y: 0, width: Self.side, height: pendingTall)
+            _ = await js("window.scrollTo(0, 0)")
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+        for p in ready {
+            var top = 0.0
+            if !drawn {
+                guard sectioned, p.y >= sectionTop, p.y < sectionTop + sectionHeight else { continue }
+                top = Double(await js("window.scrollTo(0, \(max(0, p.y - 20))); scrollY") ?? "") ?? 0
+                try? await Task.sleep(for: .milliseconds(60))
+            }
+            let c = WKSnapshotConfiguration()
+            c.rect = NSRect(x: p.x, y: p.y - top, width: p.w, height: p.h)
+            let w = max(2, Int(p.w * px)), h = max(2, Int(p.h * px))
+            c.snapshotWidth = NSNumber(value: w)
+            guard let img = try? await web.takeSnapshot(configuration: c),
+                  let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { continue }
+            var raw = [UInt8](repeating: 0, count: w * h * 4)
+            raw.withUnsafeMutableBytes { b in
+                let ctx = CGContext(data: b.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+                ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+            }
+            var rgb = [UInt8](); rgb.reserveCapacity(w * h * 3)
+            for i in 0..<(w * h) { rgb += [raw[4 * i], raw[4 * i + 1], raw[4 * i + 2]] }
+            let (palette, idx) = Quantize.refined(rgb: rgb, colours: 16)
+            let pal = (palette + Array(repeating: (0, 0, 0), count: max(0, 16 - palette.count))).prefix(16)
+                .map { Rle.rgb565($0.0, $0.1, $0.2) }
+            let y0 = drawn ? p.y : p.y - sectionTop
+            let hdr = Rle.header(width: w, height: h, scale: 2, x0: Int16(clamping: Int(p.x * k)), y0: Int16(clamping: Int(y0 * k)),
+                                 palette: pal)
+            out += Rle.messages(header: hdr, tokens: Rle.tokens(idx, width: w, height: h))
+        }
+        if drawn { lay() }
+        return ["msgs": hex(out), "left": pending.count]
+    }
+
     /// picture pages: the part of the real page sent (its top and height, page css px), more below it, above it
     var sectionTop = 0.0, sectionHeight = 0.0
     var sectioned = false
@@ -428,6 +506,8 @@ import WebKit
             for _ in 0..<15 where await js("document.fonts.status") == "loading" {
                 try? await Task.sleep(for: .milliseconds(100))
             }
+            if i == 0 { pending = [] }
+            pending += Self.marks(await js(Self.markPending)).filter { p in !pending.contains { $0.id == p.id } }
             let at = Double(await js("scrollY") ?? "") ?? got
             // the page ended: only what is below the last screen
             let already = i == 0 ? 0 : Int(((top + Double(i) * vh) - at) / vh * Double(w))
@@ -703,6 +783,7 @@ import WebKit
             return xy.count == 2 ? await tapPage(xy[0], xy[1]) : [:]
         case "type": return await type(arg)
         case "more": return await more(Int(arg) ?? 1)
+        case "late": return await late()
         case "playing":
             // (one that plays by itself, muted, is the page's: not the player's)
             let r = await js("[...document.querySelectorAll('video')].some(v => !v.paused && !v.ended && v.readyState > 2 && !v.muted)")
