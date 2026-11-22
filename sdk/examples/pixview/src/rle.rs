@@ -1,7 +1,8 @@
 //! Palette run-length images streamed from the phone, drawn as one rect per run.
 //!
 //! Wire format (every message ≤ 128 B, host → app):
-//! - `I` w:u16 h:u16 scale:u8 x0:i16 y0:i16 palette:16×u16 (RGB565), all little endian: a new image.
+//! - `I` w:u16 h:u16 scale:u8 x0:i16 y0:i16 palette:16×u16 (RGB565), all little endian: a new image. Bit 7 of
+//!   `scale` (KEEP): colour 15 is not drawn, what is under it stays (a video frame's unchanged pixels).
 //! - `D` seq:u8 tokens…: the next bytes of the run stream; `seq` counts D messages from 0, wrapping at 256.
 //! - `E`: the image is complete.
 //!
@@ -11,6 +12,8 @@
 pub const PALETTE: usize = 16;
 /// Length of an `I` message.
 pub const HEADER: usize = 10 + 2 * PALETTE;
+/// `scale`'s bit: colour 15 keeps what is under it.
+pub const KEEP: u8 = 0x80;
 
 struct Null;
 impl Surface for Null {
@@ -47,6 +50,7 @@ pub struct Decoder {
     seq: u8,
     pending: Option<u8>,
     active: bool,
+    keep: bool,
     pub rects: u32,
 }
 
@@ -58,7 +62,7 @@ impl Default for Decoder {
 
 impl Decoder {
     pub const fn new() -> Self {
-        Self { w: 0, h: 0, scale: 1, x0: 0, y0: 0, pal: [0; PALETTE], x: 0, y: 0, seq: 0, pending: None, active: false, rects: 0 }
+        Self { w: 0, h: 0, scale: 1, x0: 0, y0: 0, pal: [0; PALETTE], x: 0, y: 0, seq: 0, pending: None, active: false, keep: false, rects: 0 }
     }
 
     pub fn active(&self) -> bool {
@@ -71,7 +75,8 @@ impl Decoder {
                 let u = |i: usize| u16::from_le_bytes([m[i], m[i + 1]]);
                 self.w = u(1);
                 self.h = u(3);
-                self.scale = m[5].max(1);
+                self.scale = (m[5] & !KEEP).max(1);
+                self.keep = m[5] & KEEP != 0;
                 self.x0 = u(6) as i16;
                 self.y0 = u(8) as i16;
                 for (i, c) in self.pal.iter_mut().enumerate() {
@@ -116,7 +121,7 @@ impl Decoder {
         }
         self.x0 = x0.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         self.y0 = y0.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        self.scale = scale.max(1);
+        self.scale = (scale & !KEEP).max(1);
         true
     }
 
@@ -150,7 +155,7 @@ impl Decoder {
         let k = self.scale as i32;
         let (x, y, w) = (self.x0 as i32 + self.x as i32 * k, self.y0 as i32 + self.y as i32 * k, run as i32 * k);
         // off the panel: skip the call (a local zoom draws mostly outside)
-        if y + k > 0 && y < 466 && x + w > 0 && x < 466 {
+        if !(self.keep && c == 15) && y + k > 0 && y < 466 && x + w > 0 && x < 466 {
             s.rect(x, y, w, k, self.pal[c as usize]);
             self.rects += 1;
         }
