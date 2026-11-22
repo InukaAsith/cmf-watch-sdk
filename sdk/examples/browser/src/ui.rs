@@ -9,7 +9,8 @@
 //! Phone → watch (and page.rs): `!text` what it is doing or why it couldn't; `H idx title` a recent page for the
 //! start screen; `Z` no page before this one; `K` a text field was tapped in page view (the keyboard up); `M 0|1` a
 //! video is playing (its frames: `I`/`D`…/`E`, examples/pixview rle.rs, drawn as they come); page view's page:
-//! `J h`, its bands, `j` (long.rs: shown once all of it came, a spinner till then, so it scrolls without waits);
+//! `J h`, its bands, `j` (long.rs: shown once its first screen came, a spinner till then; the rest comes while it
+//! is read, a small spinner where it hasn't yet);
 //! `G` go to page view (a page with no text, a video page); `Y` a tap changed nothing; `A n`, `a first (x y w h:i16 kind)…` the page's
 //! tappable places, page px (links 0, fields 1, buttons 2): a tap goes to the nearest one within reach, outlined.
 //! Watch → phone: `R` ready; `Q text` a search or an address; `O idx` a recent page; `L idx` a link; `B` back;
@@ -340,8 +341,21 @@ impl Ui {
                         self.pictured = false;
                         Got::None
                     }
-                    // kept, not drawn: the spinner shows how much came; the page once all of it has
-                    long::Got::Band(..) => Got::None,
+                    // the page once its first screen came; then each band drawn if in view
+                    long::Got::Band(y0, y1) => {
+                        if !self.pictured {
+                            if long().came() >= 466.min(long().height) {
+                                self.pictured = true;
+                                self.n_note = 0;
+                                return Got::Redraw;
+                            }
+                            Got::None
+                        } else if y1 > self.pscroll && y0 < self.pscroll + 466 {
+                            Got::Redraw
+                        } else {
+                            Got::None
+                        }
+                    }
                     long::Got::Done => {
                         self.pictured = true;
                         self.n_note = 0;
@@ -501,7 +515,12 @@ impl Ui {
     fn loading(&self) -> bool {
         match self.screen {
             // an error note ("Couldn't load") stops it
-            Screen::Page => !self.pictured && !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
+            Screen::Page if self.pictured => {
+                // the rest still coming, and the view reaches past what came
+                let l = long();
+                !self.video && l.done == 0 && self.pscroll + 466 > l.came()
+            }
+            Screen::Page => !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
             // a note that ends "…" is under way ("Loading…"); others ("Couldn't load") are not
             Screen::Reader => page().n_blocks == 0 && self.note[..self.n_note].ends_with(b"\xE2\x80\xA6"),
             _ => false,
@@ -510,8 +529,14 @@ impl Ui {
 
     /// A turning ring of dots and what is loading (how much of a page came).
     fn draw_spinner(&self) {
+        self.spin_at(196);
+        self.spinner_words();
+    }
+
+    /// The spinner's dots round (C, cy).
+    fn spin_at(&self, cy: i32) {
         let mut s = self.api;
-        let (cx, cy) = (C, 196);
+        let cx = C;
         let head = (self.api.now() / FRAME_MS) as usize % SPIN.len();
         for (i, &(dx, dy)) in SPIN.iter().enumerate() {
             // brightest at the head, fading behind it
@@ -520,6 +545,10 @@ impl Ui {
             let c = if age == 0 { RED } else { Rgb(v, v, v) };
             disc(&mut s, cx + dx, cy + dy, 6, c, BLACK);
         }
+    }
+
+    fn spinner_words(&self) {
+        let mut s = self.api;
         let l = long();
         let mut buf = [0u8; 40];
         let t: &str = if self.n_note > 0 {
@@ -552,7 +581,12 @@ impl Ui {
         let end = came - self.pscroll;
         if end < 466 {
             Surface::rect(&mut s, 0, end.max(0), 466, 466 - end.max(0), 0);
-            if l.done != 0 && end < 360 {
+            if l.done == 0 {
+                // the rest is on its way: a small spinner in the gap
+                if end < 380 {
+                    self.spin_at((end.max(0) + 60).min(330));
+                }
+            } else if end < 360 {
                 let t = if came < l.height { "That's all that fits on the watch" } else { "End of the page" };
                 centre_fit(&mut s, C, end.max(0) + 30, t, 300, GREY);
             }
@@ -800,7 +834,10 @@ impl Ui {
         if self.video || !self.pictured {
             return;
         }
-        let max = (long().came() - 300).max(0);
+        // while the rest comes, as far as the page goes (a spinner where it hasn't come yet)
+        let l = long();
+        let to = if l.done == 0 { l.height.max(l.came()) } else { l.came() };
+        let max = (to - 300).max(0);
         let s = (self.pscroll + d).clamp(0, max);
         if s != self.pscroll {
             self.pscroll = s;
