@@ -217,7 +217,9 @@ async def web(ch, tool):
             st["url"] = r["url"]
         if "links" in r:
             st["links"] = r["links"]
-        await send(r.get("msgs", []))
+        ms = r.get("msgs", [])
+        print(f"answer: {r.get("mode", "")} {r.get("url", "")[:60]} {len(ms)} messages, {sum(len(x) for x in ms) // 2} B", file=sys.stderr, flush=True)
+        await send(ms)
 
     async def to_page(u):
         # page view by itself: the watch is told, the page sent whole
@@ -328,7 +330,8 @@ async def web(ch, tool):
                 else:
                     await answer(r)
             elif c == b"S" and len(m) == 3:
-                await answer(await tool.ask(f"scroll {int.from_bytes(m[1:3], 'little', signed=True)}"))
+                # the end of what the watch has (1 down, -1 up): the real page's next part, or the feed's next posts
+                await answer(await tool.ask(f"more {1 if int.from_bytes(m[1:3], 'little', signed=True) > 0 else -1}"))
             elif c == b"W":
                 await answer(await tool.ask("type " + m[1:].decode(errors="replace").replace("\n", " ")))
             elif m == b"X":

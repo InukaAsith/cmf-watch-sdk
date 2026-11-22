@@ -137,6 +137,13 @@ struct Ui {
     tapping: bool,
     /// page view as a picture of the page (the mode button: default → picture → text → default)
     pmode: bool,
+    /// the page has more below (1), above (2) what came; the watch's drawn view isn't for this site (4)
+    more: u8,
+    /// the next part asked for (one at a time)
+    asking: bool,
+    /// the last search or address typed: shown in the bottom bar
+    searched: [u8; 64],
+    n_searched: usize,
     tap_at: u32,
     /// the video player: its title, where it is (s), paused, a frame on the panel
     vtitle: [u8; 80],
@@ -174,6 +181,10 @@ fn main(api: &'static Api) -> i32 {
         keys_from: Screen::Start,
         tapping: false,
         pmode: false,
+        more: 0,
+        asking: false,
+        searched: [0; 64],
+        n_searched: 0,
         tap_at: 0,
         vtitle: [0; 80],
         n_vtitle: 0,
@@ -364,6 +375,12 @@ impl Ui {
                 self.vpaused = m[5] == 1;
                 if self.video && self.screen == Screen::Page { Got::Drew } else { Got::None }
             }
+            // the page just begun: where the view starts on it, what more there is
+            Some(b'y') if m.len() == 4 && self.screen == Screen::Page && !self.video => {
+                self.pscroll = i32::from(u16::from_le_bytes([m[1], m[2]]));
+                self.more = m[3];
+                Got::None
+            }
             Some(b'Y') if self.screen == Screen::Page => {
                 self.tapping = false;
                 Got::Redraw
@@ -386,13 +403,17 @@ impl Ui {
                         self.pscroll = 0;
                         self.n_boxes = 0;
                         self.pictured = false;
-                        Got::Redraw
+                        self.more = 0;
+                        // the next part of the same page: what is on screen stays till it is there
+                        if core::mem::replace(&mut self.asking, false) { Got::None } else { Got::Redraw }
                     }
                     // the page shown whole once its first screen came (the ring round the edge fills till then);
                     // then what comes in view is drawn
                     long::Got::Band(y0, y1) => {
                         if !self.pictured {
-                            if long().came() >= 466.min(long().height) {
+                            // all of the first screen: something below it came (the page's own colour, one entry the
+                            // page tall, comes first: no measure)
+                            if y0 >= (self.pscroll + 466).min(long().height) {
                                 self.pictured = true;
                                 self.n_note = 0;
                                 return Got::Redraw;
@@ -656,13 +677,16 @@ impl Ui {
         disc(&mut s, cx - w / 2 + 24, y + 19, 8, Rgb(0x80, 0x80, 0x80), CARD);
         disc(&mut s, cx - w / 2 + 24, y + 19, 5, CARD, Rgb(0x80, 0x80, 0x80));
         Surface::rect(&mut s, cx - w / 2 + 29, y + 25, 3, 7, GREY);
-        font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search or address", w - 56, GREY);
+        match core::str::from_utf8(&self.searched[..self.n_searched]) {
+            Ok(t) if !t.is_empty() => font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, t, w - 56, 0xFFFF),
+            _ => font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search or address", w - 56, GREY),
+        };
         // the round button, the mode it goes to: a photo (picture, from drawn), lines (text, from picture), a page's
         // frame (drawn, from text)
         let (cx, y, w, h) = SWITCH;
         disc(&mut s, cx, y + h / 2, w / 2, WHITE, BLACK);
         let (x0, cy) = (cx - 11, y + h / 2);
-        if self.screen == Screen::Page && !self.pmode {
+        if self.screen == Screen::Page && !self.pmode && self.more & 4 == 0 {
             Surface::rect(&mut s, x0, cy - 9, 22, 18, 0);
             Surface::rect(&mut s, x0 + 3, cy - 6, 16, 12, 0xFFFF);
             Surface::rect(&mut s, x0 + 4, cy + 1, 6, 4, 0);
@@ -760,6 +784,11 @@ impl Ui {
         m[0] = if self.field { b'W' } else { b'Q' };
         m[1..1 + n].copy_from_slice(&self.keys.text[..n]);
         self.send(&m[..1 + n]);
+        if !self.field && n > 0 {
+            let k = n.min(self.searched.len());
+            self.searched[..k].copy_from_slice(&self.keys.text[..k]);
+            self.n_searched = k;
+        }
         if self.field {
             self.field = false;
             self.screen = Screen::Page;
@@ -896,7 +925,7 @@ impl Ui {
             self.pictured = false;
             self.n_note = 0;
             self.send(b"V\x01");
-        } else if !self.pmode {
+        } else if !self.pmode && self.more & 4 == 0 {
             // a picture of the page: page view still, the phone sends it again
             self.pmode = true;
             self.pictured = false;
@@ -930,7 +959,17 @@ impl Ui {
         let l = long();
         let to = if l.done == 0 { l.height.max(l.came()) } else { l.came() };
         let max = (to - 300).max(0);
-        let s = (self.pscroll + d).clamp(0, max);
+        // at an end with more there: the real page's next part (the phone scrolls it), the feed's next posts
+        let want = self.pscroll + d;
+        if l.done != 0 && !self.asking && ((want > max && self.more & 1 != 0) || (want < 0 && self.more & 2 != 0)) {
+            self.asking = true;
+            let b = (if want > max { 1i16 } else { -1 }).to_le_bytes();
+            self.send(&[b'S', b[0], b[1]]);
+            self.set_note(b"Loading more\xE2\x80\xA6");
+            self.later();
+            return;
+        }
+        let s = want.clamp(0, max);
         if s != self.pscroll {
             self.pscroll = s;
             self.later();
