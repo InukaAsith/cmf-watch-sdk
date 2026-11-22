@@ -186,6 +186,9 @@ import WebKit
     func load(_ u: URL) async {
         committed = false
         coder = nil
+        let youtube = (u.host ?? "").lowercased().hasSuffix("youtube.com") || u.host == "youtu.be"
+        let ua = youtube ? chromeUA : nil
+        if web.customUserAgent != (ua ?? "") { web.customUserAgent = ua }
         let p = u.path.lowercased()
         if [".mp4", ".webm", ".mov", ".m4v", ".m3u8"].contains(where: { p.hasSuffix($0) }) {
             // a video file: in a page of its own (a bare file has no video element to play or read)
@@ -208,6 +211,10 @@ import WebKit
         }
         for _ in 0..<60 where await js("document.readyState") == "loading" {
             try? await Task.sleep(for: .milliseconds(100))
+        }
+        // a bot check ("Just a moment…", Cloudflare's): it passes by itself in a few seconds
+        for _ in 0..<50 where (await js("document.title") ?? "").hasPrefix("Just a moment") {
+            try? await Task.sleep(for: .milliseconds(200))
         }
         // Google's results are in its HTML: no settling time
         let google = web.url.map(BrowserProto.isGoogleSearch) ?? false
@@ -310,8 +317,9 @@ import WebKit
         for i in 0..<(w * h) { (rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]) = (px[4 * i], px[4 * i + 1], px[4 * i + 2]) }
         // drawn on the watch as it is laid out; a fancy page (or BROWSERTOOL_PICTURE): its picture
         var drawn: (messages: [Data], height: Int)?
-        if ProcessInfo.processInfo.environment["BROWSERTOOL_PICTURE"] == nil, !pictureMode, let lay = layout {
-            drawn = Layout.messages(json: lay, rgb: rgb, pw: w, ph: h, cssWidth: Double(Self.side), cssHeight: tall)
+        if ProcessInfo.processInfo.environment["BROWSERTOOL_PICTURE"] == nil, !pictureMode, Self.drawnHere(web.url),
+           let lay = layout {
+            drawn = Layout.messages(json: lay, rgb: rgb, pw: w, ph: h, cssWidth: Double(Self.side), cssHeight: tall, always: true)
         }
         let (msgs, came) = drawn ?? Rle.longPicture(rgb: rgb, width: w, height: h, scale: 2)
         lastMode = drawn == nil ? "picture" : "drawn"
@@ -378,6 +386,16 @@ import WebKit
     /// A playing video's frame, 155 px (the page's picture when the video won't give its pixels), as the watch's picture.
     /// the video's coder (VideoCoder): a new one for each video (or a new shape)
     var coder: VideoCoder?
+    /// The sites the watch draws (their text sharp in its font); the rest come as a picture of the page.
+    static func drawnHere(_ u: URL?) -> Bool {
+        let h = (u?.host ?? "").lowercased()
+        return ["google.", "youtube.com", "instagram.com", "fandom.com", "wikipedia.org", "wikimedia.org", "wiktionary.org"]
+            .contains { h.contains($0) }
+    }
+
+    /// the browser's name to YouTube (the cookies' browser), nil: Safari's own
+    var chromeUA: String?
+
     /// page view as a picture (the watch's picture mode)
     var pictureMode = false
     var coderSize = ""
@@ -541,7 +559,8 @@ Task { @MainActor in
     if n > 0 {
         FileHandle.standardError.write(Data("browsertool: \(n) cookies from \(cookies)\n".utf8))
         // the cookies' browser by name (Chrome's export): YouTube drops a session that moves to another browser
-        tool.web.customUserAgent = ProcessInfo.processInfo.environment["BROWSER_UA"]
+        // (YouTube only: elsewhere a Chrome name on Safari's engine trips bot checks, Cloudflare's)
+        tool.chromeUA = ProcessInfo.processInfo.environment["BROWSER_UA"]
             ?? "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
     }
     if ProcessInfo.processInfo.environment["BROWSERTOOL_SHOW"] != nil {
