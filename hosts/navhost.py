@@ -8,6 +8,7 @@ along it, sending the next manoeuvre and where we are every tick (examples/nav/s
 import argparse, asyncio, datetime, json, math, pathlib, struct, sys, urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
 
 CACHE = pathlib.Path(__file__).resolve().parents[1] / "runs" / "routes"
@@ -124,6 +125,27 @@ async def drive(ch, route, speed, tick):
     await ch.send(b"W")
 
 
+async def send_scene(ch, route, m):
+    """`M id x y`: Maps' streets round that route frame point (atlasscene.py, OpenStreetMap tiles), as scene id."""
+    try:
+        await _send_scene(ch, route, m)
+    except Exception as e:  # a test host: say why, keep driving
+        print(f"map failed: {e!r}", flush=True)
+
+
+async def _send_scene(ch, route, m):
+    import atlasscene as sc
+    sid = m[1]
+    x, y = struct.unpack("<hh", m[2:6])
+    blob, r = await asyncio.to_thread(sc.scene_round, route.lat0, route.lon0, (x, y))
+    me = tuple(round(v) for v in route.at(0)[:2])
+    msgs = [b"S" + bytes([sid]) + struct.pack("<HhhhhH", len(blob), *me, x, y, r)]
+    msgs += [b"d" + bytes([sid]) + struct.pack("<H", k) + blob[i:i + 124] for k, i in enumerate(range(0, len(blob), 124))]
+    print(f"map {sid} round {x} {y}: {len(blob)} B", flush=True)
+    for x in msgs:
+        await ch.send(x)
+
+
 RECENT = [("British Museum", "Great Russell St, London"), ("Covent Garden", "London WC2"),
           ("King's Cross", "Euston Rd, London")]
 FOUND = [("Russell Square", "Bloomsbury, London"), ("Russell Square Gardens", "London WC1"),
@@ -152,6 +174,8 @@ async def start_screen(ch, route, a):
             await ch.send(b"E" + "Searching\u2026".encode())
             for x in places(FOUND):
                 await ch.send(x)
+        elif m[:1] == b"M" and len(m) == 6 and driving:
+            asyncio.create_task(send_scene(ch, route, m))
         elif m == b"C" and driving:
             print("stopped from the watch", flush=True)
             driving.cancel()
@@ -187,6 +211,8 @@ async def main():
             m = (await ch.recv()).data
             if m == b"R":
                 await send_route(ch, route)
+            elif m[:1] == b"M" and len(m) == 6:
+                asyncio.create_task(send_scene(ch, route, m))
 
 
 if __name__ == "__main__":

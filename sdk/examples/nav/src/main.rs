@@ -15,3 +15,14 @@ mod ui;
 mod view;
 #[cfg(any(target_os = "none", wp2_sim))]
 mod start;
+// the map view's streets: Maps' scene and drawing (examples/atlas), the phone sends them as Maps gets them
+#[cfg(any(target_os = "none", wp2_sim))]
+#[path = "../../atlas/src/scene.rs"]
+#[allow(dead_code)]
+mod scene;
+#[cfg(any(target_os = "none", wp2_sim))]
+#[path = "../../atlas/src/render.rs"]
+#[allow(dead_code)]
+mod render;
+#[cfg(any(target_os = "none", wp2_sim))]
+mod ram;
