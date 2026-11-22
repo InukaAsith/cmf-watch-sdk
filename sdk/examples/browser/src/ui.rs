@@ -11,7 +11,9 @@
 //! video is playing (its frames: `I`/`D`…/`E`, examples/pixview rle.rs, drawn as they come); page view's page:
 //! `J h`, its bands, `j` (long.rs: shown once its first screen came, a spinner till then; the rest comes while it
 //! is read, a small spinner where it hasn't yet);
-//! `G` go to page view (a page with no text, a video page); `Y` a tap changed nothing; `A n`, `a first (x y w h:i16 kind)…` the page's
+//! `G` go to page view (a page with no text, a video page); `Y` a tap changed nothing (a spinner turns from a tap
+//! till the phone answers); the video player (page view while `M 1`): its frames, `U title`, `u cur dur paused`
+//! (seconds), a tap pauses or plays (`P` to the phone), the crown skips 10 s a step (`k dt:i16`); `A n`, `a first (x y w h:i16 kind)…` the page's
 //! tappable places, page px (links 0, fields 1, buttons 2): a tap goes to the nearest one within reach, outlined.
 //! Watch → phone: `R` ready; `Q text` a search or an address; `O idx` a recent page; `L idx` a link; `B` back;
 //! `V 0|1` reader or page view; `T x:u16 y:u16` a tap on the page view, page px (from the page's top); `W text`
@@ -134,6 +136,16 @@ struct Ui {
     pscroll: i32,
     /// where the keyboard was opened from (back returns there)
     keys_from: Screen,
+    /// a tap in page view waits for the phone's answer (since `tap_at`): a spinner
+    tapping: bool,
+    tap_at: u32,
+    /// the video player: its title, where it is (s), paused, a frame on the panel
+    vtitle: [u8; 80],
+    n_vtitle: usize,
+    vcur: u16,
+    vdur: u16,
+    vpaused: bool,
+    vframe: bool,
     /// page view's tappable places: x, y (page px), w, h, kind
     boxes: [(i16, i16, i16, i16, u8); BOXES],
     n_boxes: usize,
@@ -161,6 +173,14 @@ fn main(api: &'static Api) -> i32 {
         video: false,
         pscroll: 0,
         keys_from: Screen::Start,
+        tapping: false,
+        tap_at: 0,
+        vtitle: [0; 80],
+        n_vtitle: 0,
+        vcur: 0,
+        vdur: 0,
+        vpaused: false,
+        vframe: false,
         boxes: [(0, 0, 0, 0, 0); BOXES],
         n_boxes: 0,
         shown_at: 0,
@@ -225,7 +245,9 @@ fn main(api: &'static Api) -> i32 {
                 if redraw {
                     ui.later();
                 } else if drew {
-                    if ui.screen == Screen::Page {
+                    if ui.screen == Screen::Page && ui.video {
+                        ui.draw_player();
+                    } else if ui.screen == Screen::Page {
                         ui.draw_switch();
                     }
                     ui.shown();
@@ -319,10 +341,33 @@ impl Ui {
             Some(b'M') if m.len() == 2 => {
                 let was = self.video;
                 self.video = m[1] == 1;
-                // stopped: the page again
-                if was && !self.video && self.screen == Screen::Page { Got::Redraw } else { Got::None }
+                self.tapping = false;
+                if self.video && !was {
+                    // the player: black till its first frame
+                    self.vframe = false;
+                    self.vpaused = false;
+                    self.vcur = 0;
+                    self.vdur = 0;
+                    self.n_vtitle = 0;
+                }
+                if self.screen == Screen::Page && was != self.video { Got::Redraw } else { Got::None }
             }
-            Some(b'Y') if self.screen == Screen::Page => Got::Redraw,
+            Some(b'U') => {
+                let t = cmf_wp2_ui::text::fit(&m[1..], 80).as_bytes();
+                self.vtitle[..t.len()].copy_from_slice(t);
+                self.n_vtitle = t.len();
+                if self.video && self.screen == Screen::Page { Got::Drew } else { Got::None }
+            }
+            Some(b'u') if m.len() == 6 => {
+                self.vcur = u16::from_le_bytes([m[1], m[2]]);
+                self.vdur = u16::from_le_bytes([m[3], m[4]]);
+                self.vpaused = m[5] == 1;
+                if self.video && self.screen == Screen::Page { Got::Drew } else { Got::None }
+            }
+            Some(b'Y') if self.screen == Screen::Page => {
+                self.tapping = false;
+                Got::Redraw
+            }
             Some(b'G') => {
                 // page view, whether asked or not: no text here, or a video
                 if self.screen != Screen::Keys {
@@ -333,9 +378,10 @@ impl Ui {
                 self.n_note = 0;
                 Got::Redraw
             }
-            Some(b'J' | b'j') | Some(b'I' | b'D' | b'E') if self.screen == Screen::Page && !self.video => {
+            Some(b'J' | b'j' | b'o' | b'p') | Some(b'I' | b'D' | b'E') if self.screen == Screen::Page && !self.video => {
                 match long().message(m) {
                     long::Got::Begin => {
+                        self.tapping = false;
                         self.pscroll = 0;
                         self.n_boxes = 0;
                         self.pictured = false;
@@ -366,6 +412,9 @@ impl Ui {
             }
             Some(b'I' | b'D' | b'E') if self.screen == Screen::Page => {
                 let st = self.pic.message(m, &mut Screen565(self.api));
+                if matches!(st, Status::Done(_)) {
+                    self.vframe = true;
+                }
                 if st == Status::Begin && !self.pictured {
                     // the first picture: the loading words go
                     self.pictured = true;
@@ -434,7 +483,17 @@ impl Ui {
             }
             Screen::Reader => self.draw_reader(),
             Screen::Page => {
-                if !self.pictured && !self.video {
+                if self.video {
+                    // the player: a redraw keeps the frame on the panel (black till the first)
+                    if !self.vframe {
+                        Surface::rect(&mut s, 0, 0, 466, 466, 0);
+                        centre_fit(&mut s, C, 222, "Starting the video\u{2026}", 300, GREY);
+                    }
+                    self.draw_player();
+                    self.shown();
+                    return;
+                }
+                if !self.pictured {
                     Surface::rect(&mut s, 0, 0, 466, 466, 0);
                     if self.loading() {
                         self.draw_spinner();
@@ -506,7 +565,10 @@ impl Ui {
         if p.n_blocks > 0 && self.n_note > 0 {
             // what the phone is doing (loading a link): over the text's top
             rrect(&mut s, C - 150, TOP - 8, 300, 36, 18, CARD, BLACK);
-            centre_fit(&mut s, C, TOP, self.note(), 270, W);
+            centre_fit(&mut s, C + 12, TOP, self.note(), 240, W);
+            if self.loading() {
+                self.spin_small(C - 124, TOP + 10);
+            }
         }
         self.draw_switch();
     }
@@ -515,14 +577,16 @@ impl Ui {
     fn loading(&self) -> bool {
         match self.screen {
             // an error note ("Couldn't load") stops it
+            Screen::Page if self.video => false,
             Screen::Page if self.pictured => {
-                // the rest still coming, and the view reaches past what came
+                // a tap waiting for its answer (10 s at most); the rest still coming, and the view reaches past it
                 let l = long();
-                !self.video && l.done == 0 && self.pscroll + 466 > l.came()
+                (self.tapping && self.api.now().wrapping_sub(self.tap_at) < 10_000)
+                    || (l.done == 0 && self.pscroll + 466 > l.came())
             }
             Screen::Page => !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
             // a note that ends "…" is under way ("Loading…"); others ("Couldn't load") are not
-            Screen::Reader => page().n_blocks == 0 && self.note[..self.n_note].ends_with(b"\xE2\x80\xA6"),
+            Screen::Reader => self.note[..self.n_note].ends_with(b"\xE2\x80\xA6"),
             _ => false,
         }
     }
@@ -544,6 +608,41 @@ impl Ui {
             let v = 255u32.saturating_sub(age as u32 * 22).max(40) as u8;
             let c = if age == 0 { RED } else { Rgb(v, v, v) };
             disc(&mut s, cx + dx, cy + dy, 6, c, BLACK);
+        }
+    }
+
+    /// A small turning ring (a loading note's).
+    fn spin_small(&self, cx: i32, cy: i32) {
+        let mut s = self.api;
+        let head = (self.api.now() / FRAME_MS) as usize % SPIN.len();
+        for (i, &(dx, dy)) in SPIN.iter().enumerate() {
+            let age = (head + SPIN.len() - i) % SPIN.len();
+            let v = 255u32.saturating_sub(age as u32 * 22).max(40) as u8;
+            disc(&mut s, cx + dx / 3, cy + dy / 3, 2, if age == 0 { RED } else { Rgb(v, v, v) }, CARD);
+        }
+    }
+
+    /// The player's title (top), where it is (a bar and the times, bottom), and a pause sign while paused.
+    fn draw_player(&self) {
+        let mut s = self.api;
+        let t = core::str::from_utf8(&self.vtitle[..self.n_vtitle]).unwrap_or("");
+        Surface::rect(&mut s, 80, 24, 306, 30, 0);
+        centre_fit(&mut s, C, 28, if t.is_empty() { "Video" } else { t }, 290, W);
+        let (x, y, w) = (C - 140, 392, 280);
+        Surface::rect(&mut s, x - 10, y - 8, w + 20, 56, 0);
+        Surface::rect(&mut s, x, y, w, 4, rgb565(0x50, 0x50, 0x50));
+        if self.vdur > 0 {
+            let f = (i32::from(self.vcur) * w / i32::from(self.vdur)).clamp(0, w);
+            Surface::rect(&mut s, x, y, f, 4, rgb565(0xD7, 0x19, 0x21));
+            disc(&mut s, x + f, y + 2, 6, RED, BLACK);
+        }
+        let mut buf = [0u8; 24];
+        let n = clock(&mut buf, self.vcur, self.vdur);
+        centre_fit(&mut s, C, y + 14, core::str::from_utf8(&buf[..n]).unwrap_or(""), 200, GREY);
+        if self.vpaused {
+            disc(&mut s, C, 230, 36, CARD, BLACK);
+            Surface::rect(&mut s, C - 12, 214, 8, 32, 0xFFFF);
+            Surface::rect(&mut s, C + 4, 214, 8, 32, 0xFFFF);
         }
     }
 
@@ -591,7 +690,12 @@ impl Ui {
                 centre_fit(&mut s, C, end.max(0) + 30, t, 300, GREY);
             }
         }
-        l.draw(&mut self.pic, &mut Screen565(self.api), self.pscroll, 0, end.min(466));
+        l.draw(&mut self.pic, &mut Screen565(self.api), &mut s, self.pscroll, 0, end.min(466));
+        if self.tapping {
+            // a tap on its way: a spinner on a dark disc in the middle
+            disc(&mut s, C, 210, 58, CARD, BLACK);
+            self.spin_at(210);
+        }
         if self.n_note > 0 {
             rrect(&mut s, C - 150, 20, 300, 36, 18, CARD, BLACK);
             centre_fit(&mut s, C, 28, self.note(), 270, W);
@@ -721,6 +825,15 @@ impl Ui {
         match self.screen {
             Screen::Start if !dragged => self.start_tap(x, y),
             Screen::Reader if dragged => self.scroll_by(-dy),
+            Screen::Page if self.video && !dragged => {
+                // the player: pause / play
+                self.motor.play(haptic::TICK);
+                self.vpaused = !self.vpaused;
+                self.send(b"P");
+                self.draw_player();
+                self.shown();
+            }
+            Screen::Page if self.video => {}
             Screen::Page if dragged => self.page_scroll(-dy),
             _ if self.on_switch(x, y) => self.switch(),
             _ if self.on_search(x, y) => self.search(),
@@ -744,6 +857,8 @@ impl Ui {
                 };
                 let (a, b) = ((x.clamp(0, 465) as u16).to_le_bytes(), (y.clamp(0, 65535) as u16).to_le_bytes());
                 self.send(&[b'T', a[0], a[1], b[0], b[1]]);
+                self.tapping = true;
+                self.tap_at = self.api.now();
             }
             _ => {}
         }
@@ -852,10 +967,51 @@ impl Ui {
                 self.dial(a);
             }
             Screen::Reader => self.scroll_by(d.signum() * 3 * page::LH / 2),
+            Screen::Page if self.video => {
+                // the player: 10 s a step
+                let dt = (d.signum() * 10) as i16;
+                let b = dt.to_le_bytes();
+                self.send(&[b'k', b[0], b[1]]);
+                self.vcur = (i32::from(self.vcur) + i32::from(dt)).clamp(0, i32::from(self.vdur.max(self.vcur))) as u16;
+                self.draw_player();
+                self.shown();
+            }
             Screen::Page => self.page_scroll(d.signum() * 140),
             _ => {}
         }
     }
+}
+
+/// "m:ss / m:ss" (or "m:ss" with no length yet) into `buf`: its length.
+fn clock(buf: &mut [u8; 24], cur: u16, dur: u16) -> usize {
+    fn put(buf: &mut [u8; 24], mut n: usize, v: u16) -> usize {
+        let (m, s) = (v / 60, v % 60);
+        let mut d = [0u8; 5];
+        let (mut k, mut mm) = (0, m);
+        loop {
+            d[k] = b'0' + (mm % 10) as u8;
+            k += 1;
+            mm /= 10;
+            if mm == 0 || k == 5 {
+                break;
+            }
+        }
+        while k > 0 {
+            k -= 1;
+            buf[n] = d[k];
+            n += 1;
+        }
+        buf[n] = b':';
+        buf[n + 1] = b'0' + (s / 10) as u8;
+        buf[n + 2] = b'0' + (s % 10) as u8;
+        n + 3
+    }
+    let mut n = put(buf, 0, cur);
+    if dur > 0 {
+        buf[n..n + 3].copy_from_slice(b" / ");
+        n = put(buf, n + 3, dur);
+    }
+    n
 }
 
 fn centre_fit(s: &mut &'static Api, cx: i32, y: i32, text: &str, px: i32, c: u16) {

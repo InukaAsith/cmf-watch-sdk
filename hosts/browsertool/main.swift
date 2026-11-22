@@ -14,6 +14,8 @@ import WebKit
     var waiters: [CheckedContinuation<Void, Never>] = []
     /// the navigation under way has its new document (its text may still be coming)
     var committed = true
+    /// how the last page went to the watch (debugging)
+    var lastMode = ""
 
     override init() {
         let c = WKWebViewConfiguration()
@@ -155,7 +157,13 @@ import WebKit
         window.setContentSize(NSSize(width: Self.side, height: tall))
         web.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
         _ = await js("window.scrollTo(0, 0)")
-        try? await Task.sleep(for: .milliseconds(250))
+        try? await Task.sleep(for: .milliseconds(150))
+        // its images in (lazy ones told to load: all of the tall page is in view), 1.5 s at most
+        for _ in 0..<15 where (Int(await js(BrowserProto.imagesPending(tall)) ?? "0") ?? 0) > 0 {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+        let layout = await js(Layout.script(width: Double(Self.side), height: tall))
         let rows = (await js(BrowserProto.pageBoxes)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[Double]] } ?? []
         let c = WKSnapshotConfiguration()
         c.rect = web.bounds
@@ -179,14 +187,19 @@ import WebKit
         }
         var rgb = [UInt8](repeating: 0, count: w * h * 3)
         for i in 0..<(w * h) { (rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]) = (px[4 * i], px[4 * i + 1], px[4 * i + 2]) }
-        let colours = Int(ProcessInfo.processInfo.environment["BROWSERTOOL_COLOURS"] ?? "") ?? 16
-        let (msgs, came) = Rle.longPicture(rgb: rgb, width: w, height: h, scale: 2, colours: colours)
+        // drawn on the watch as it is laid out; a fancy page (or BROWSERTOOL_PICTURE): its picture
+        var drawn: (messages: [Data], height: Int)?
+        if ProcessInfo.processInfo.environment["BROWSERTOOL_PICTURE"] == nil, let lay = layout {
+            drawn = Layout.messages(json: lay, rgb: rgb, pw: w, ph: h, cssWidth: Double(Self.side), cssHeight: tall)
+        }
+        let (msgs, came) = drawn ?? Rle.longPicture(rgb: rgb, width: w, height: h, scale: 2)
+        lastMode = drawn == nil ? "picture" : "drawn"
         let k = 466 / Double(Self.side)
         let boxes = rows.compactMap { r -> (x: Int, y: Int, w: Int, h: Int, kind: UInt8)? in
             guard r.count == 5, Int(r[1] * k) < came else { return nil }
             return (Int(r[0] * k), Int(r[1] * k), Int(r[2] * k), Int(r[3] * k), UInt8(r[4]))
         }
-        return ["msgs": hex(msgs + BrowserProto.boxes(boxes)), "url": web.url?.absoluteString ?? ""]
+        return ["msgs": hex(msgs + BrowserProto.boxes(boxes)), "url": web.url?.absoluteString ?? "", "mode": lastMode]
     }
 
     func screenPage() async -> [String: Any] {
@@ -337,6 +350,18 @@ import WebKit
                 try? await Task.sleep(for: .milliseconds(500))
             }
             try? await Task.sleep(for: .seconds(2))
+            return [:]
+        case "vstate":
+            let a = (await js(BrowserProto.videoState)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [Any] } ?? []
+            guard a.count == 6 else { return ["exists": false] }
+            return ["exists": true, "paused": (a[1] as? Int) == 1, "ended": (a[2] as? Int) == 1,
+                    "msgs": hex([BrowserProto.progress(cur: a[3] as? Double ?? 0, dur: a[4] as? Double ?? 0, paused: (a[1] as? Int) == 1)]),
+                    "title": hex([BrowserProto.videoTitle(a[5] as? String ?? "")])]
+        case "toggle":
+            _ = await js(BrowserProto.toggleScript)
+            return [:]
+        case "seek":
+            _ = await js(BrowserProto.seekScript(Int(arg) ?? 0))
             return [:]
         case "isvideo":
             return ["video": URL(string: arg).map(BrowserProto.isVideo) ?? false]

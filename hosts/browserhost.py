@@ -69,7 +69,7 @@ HUBKIT = ROOT.parent / "cmfx" / "ios" / "HubKit" / "Sources" / "HubKit"
 
 def build_tool():
     out = ROOT / "target" / "browsertool"
-    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji")]
+    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji", "Layout")]
     if not out.exists() or any(p.stat().st_mtime > out.stat().st_mtime for p in srcs):
         out.parent.mkdir(exist_ok=True)
         # built beside it, then swapped in: macOS won't start a signed binary rewritten in place while it runs
@@ -110,18 +110,29 @@ async def web(ch, tool):
     st = {"url": None, "links": [], "history": [], "page": False, "recent": [], "video": None}
 
     async def frames():
-        # as long as it plays and page view is open: no timer stops it
+        # the watch's player: frames while it plays, its place while paused; as long as the video is there and page
+        # view is open (no timer stops it)
         await ch.send(b"M\x01")
+        v = await tool.ask("vstate")
+        if v.get("title"):
+            await send(v["title"])
         n = 0
         try:
             while st["page"]:
+                if n % 6 == 0:
+                    v = await tool.ask("vstate")
+                    if not v.get("exists") or v.get("ended"):
+                        break
+                    await send(v["msgs"])
+                if v.get("paused"):
+                    await asyncio.sleep(0.4)
+                    n = 0
+                    continue
                 r = await tool.ask("frame")
                 if r.get("none"):
                     break
                 await send(r["msgs"])
                 n += 1
-                if n % 8 == 0 and not (await tool.ask("playing")).get("playing"):
-                    break
         finally:
             await ch.send(b"M\x00")
         await answer(await tool.ask("page -"))
@@ -200,6 +211,13 @@ async def web(ch, tool):
         c = m[:1]
         if st["video"] and st["video"].done():
             st["video"] = None
+        if st["video"] and not st["video"].done() and c in (b"P", b"k"):
+            # the player's own: pause / play, skip
+            if c == b"P":
+                await tool.ask("toggle")
+            elif len(m) == 3:
+                await tool.ask(f"seek {int.from_bytes(m[1:3], 'little', signed=True)}")
+            continue
         if st["video"] and c != b"R":
             await stop_video()
             if c in (b"X", b"B") or m == b"V\x00":
