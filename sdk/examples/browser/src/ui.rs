@@ -380,20 +380,24 @@ impl Ui {
             }
             Some(b'J' | b'j' | b'o' | b'p') | Some(b'I' | b'D' | b'E') if self.screen == Screen::Page && !self.video => {
                 match long().message(m) {
+                    // a new page: the last one goes at once (nothing of it left under the new one)
                     long::Got::Begin => {
                         self.tapping = false;
                         self.pscroll = 0;
                         self.n_boxes = 0;
                         self.pictured = false;
-                        Got::None
+                        Got::Redraw
                     }
-                    // the page once its first screen came; then each band drawn if in view
-                    // drawn as it comes (the ring round the edge fills)
+                    // the page shown whole once its first screen came (the ring round the edge fills till then);
+                    // then what comes in view is drawn
                     long::Got::Band(y0, y1) => {
                         if !self.pictured {
-                            self.pictured = true;
-                            self.n_note = 0;
-                            Got::Redraw
+                            if long().came() >= 466.min(long().height) {
+                                self.pictured = true;
+                                self.n_note = 0;
+                                return Got::Redraw;
+                            }
+                            Got::None
                         } else if y1 > self.pscroll && y0 < self.pscroll + 466 {
                             Got::Redraw
                         } else {

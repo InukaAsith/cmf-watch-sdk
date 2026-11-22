@@ -187,7 +187,8 @@ import WebKit
         committed = false
         coder = nil
         let youtube = (u.host ?? "").lowercased().hasSuffix("youtube.com") || u.host == "youtu.be"
-        let ua = youtube ? chromeUA : nil
+        // elsewhere an iPhone's Safari: sites' phone layouts (Google's), and the same engine as it says (no bot checks)
+        let ua = youtube ? chromeUA : Self.phoneUA
         if web.customUserAgent != (ua ?? "") { web.customUserAgent = ua }
         let p = u.path.lowercased()
         if [".mp4", ".webm", ".mov", ".m4v", ".m3u8"].contains(where: { p.hasSuffix($0) }) {
@@ -211,6 +212,17 @@ import WebKit
         }
         for _ in 0..<60 where await js("document.readyState") == "loading" {
             try? await Task.sleep(for: .milliseconds(100))
+        }
+        // a redirect in the page (script) or an app still on its splash (Instagram's logo): till the address holds
+        // and there is something to show, 3 s at most
+        var last = ""
+        for _ in 0..<15 {
+            let st = await js("JSON.stringify([location.href, (document.body ? document.body.innerText.length : 0), document.images.length])") ?? ""
+            let parts = (try? JSONSerialization.jsonObject(with: Data(st.utf8)) as? [Any]) ?? []
+            let href = parts.first as? String ?? "", chars = parts.count > 1 ? (parts[1] as? Int ?? 0) : 0
+            if href == last && chars > 120 { break }
+            last = href
+            try? await Task.sleep(for: .milliseconds(200))
         }
         // a bot check ("Just a moment…", Cloudflare's): it passes by itself in a few seconds
         for _ in 0..<50 where (await js("document.title") ?? "").hasPrefix("Just a moment") {
@@ -392,6 +404,8 @@ import WebKit
         return ["google.", "youtube.com", "instagram.com", "fandom.com", "wikipedia.org", "wikimedia.org", "wiktionary.org"]
             .contains { h.contains($0) }
     }
+
+    static let phoneUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1"
 
     /// the browser's name to YouTube (the cookies' browser), nil: Safari's own
     var chromeUA: String?
