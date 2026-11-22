@@ -362,14 +362,14 @@ import WebKit
         guard let size = await js(VideoCoder.sizeScript), !size.isEmpty else { return ["none": true] }
         if coder == nil || size != coderSize {
             let p = size.split(separator: ",").compactMap { Int($0) }
-            let scale = Int(ProcessInfo.processInfo.environment["BROWSER_VSCALE"] ?? "") ?? 7
+            let scale = Int(ProcessInfo.processInfo.environment["BROWSER_VSCALE"] ?? "") ?? 8
             let (w, h) = VideoCoder.grid(videoWidth: p.first ?? 16, videoHeight: p.last ?? 9, scale: scale)
             coder = VideoCoder(width: w, height: h, scale: scale)
-            coder?.colours = Int(ProcessInfo.processInfo.environment["BROWSER_VCOLOURS"] ?? "") ?? 8
+            coder?.colours = Int(ProcessInfo.processInfo.environment["BROWSER_VCOLOURS"] ?? "") ?? 16
             coder?.whole = ProcessInfo.processInfo.environment["BROWSER_VKEEP"] == nil
-            // black and white by default (BROWSER_VGREY=0: colour)
-            coder?.grey = Int(ProcessInfo.processInfo.environment["BROWSER_VGREY"] ?? "") ?? 5
-            coder?.budget = Int(ProcessInfo.processInfo.environment["BROWSER_VBUDGET"] ?? "") ?? 650
+            // colour by default (BROWSER_VGREY=5: black and white, 5 greys)
+            coder?.grey = Int(ProcessInfo.processInfo.environment["BROWSER_VGREY"] ?? "") ?? 0
+            coder?.budget = Int(ProcessInfo.processInfo.environment["BROWSER_VBUDGET"] ?? "") ?? 750
             coderSize = size
         }
         guard let c = coder, let s = await js(VideoCoder.grabScript(width: c.width, height: c.height)),
