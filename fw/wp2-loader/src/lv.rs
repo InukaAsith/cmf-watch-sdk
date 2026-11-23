@@ -138,6 +138,10 @@ pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
         return crate::svc::file(cmd, (buf as *mut u8, len));
     }
     if let Some(rec) = lvcmd::widget(unsafe { core::slice::from_raw_parts(buf, len) }) {
+        // a v2 record the running stub cannot draw (or a malformed one): -22, so the app falls back to v1
+        if !wp2_core::widget::accepts(rec, wp2_core::layout::stub_ram().version()) {
+            return -22;
+        }
         return crate::svc::save_widget(rec);
     }
     // AUDIO needs no LVGL either; its stock calls run on the UI tick (audio.rs)
