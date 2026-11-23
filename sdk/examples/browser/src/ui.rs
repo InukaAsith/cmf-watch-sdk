@@ -417,37 +417,39 @@ impl Ui {
             }
             Some(b'J' | b'j' | b'o' | b'p') | Some(b'I' | b'D' | b'E') if self.screen == Screen::Page && !self.video => {
                 match long().message(m) {
-                    // a new page: the last one goes at once (nothing of it left under the new one)
+                    // a new page (or part): the page on screen stays (no black, nothing drawn bit by bit) till the
+                    // new one's first screen is all here; then it is shown in one go
                     long::Got::Begin => {
-                        self.tapping = false;
+                        self.holding = self.pictured || self.asking;
+                        self.asking = false;
                         self.pscroll = 0;
                         self.n_boxes = 0;
                         self.pictured = false;
                         self.more = 0;
-                        // the next part of the same page: what is on screen stays till it is there
-                        self.holding = core::mem::replace(&mut self.asking, false);
                         if self.holding { Got::None } else { Got::Redraw }
                     }
-                    // the page shown whole once its first screen came (the ring round the edge fills till then);
-                    // then what comes in view is drawn
                     long::Got::Band(y0, y1) => {
                         if !self.pictured {
-                            // all of the view came (a picture's bands, top down): shown at once
+                            // all of the first screen came (a picture's bands, top down): shown whole
                             if long().came() >= (self.pscroll + 466).min(long().height) || y0 >= self.pscroll + 466 {
-                                self.pictured = true;
-                                self.n_note = 0;
+                                self.shown_page();
                                 return Got::Redraw;
                             }
                             Got::None
-                        } else if y1 > self.pscroll && y0 < self.pscroll + 466 {
+                        } else if long().done != 0 && y1 > self.pscroll && y0 < self.pscroll + 466 {
+                            // a late picture (the page all came): in its place
                             Got::Redraw
                         } else {
+                            // the rest coming below what is shown: kept, not drawn
                             Got::None
                         }
                     }
                     long::Got::Done => {
-                        self.pictured = true;
-                        self.n_note = 0;
+                        // shown already: the rest came under it; a page shorter than a screen: shown now
+                        if self.pictured {
+                            return Got::None;
+                        }
+                        self.shown_page();
                         Got::Redraw
                     }
                     long::Got::None => Got::None,
@@ -630,6 +632,14 @@ impl Ui {
     }
 
     /// Something on its way: page view's page (till all of it came), or the reader's text.
+    /// The new page's first screen is here: it replaces the one held on screen.
+    fn shown_page(&mut self) {
+        self.pictured = true;
+        self.holding = false;
+        self.tapping = false;
+        self.n_note = 0;
+    }
+
     fn loading(&self) -> bool {
         match self.screen {
             // an error note ("Couldn't load") stops it
@@ -637,8 +647,8 @@ impl Ui {
             Screen::Page if self.pictured => {
                 // a tap waiting for its answer (10 s at most); the rest still coming, and the view reaches past it
                 let l = long();
-                (self.tapping && self.api.now().wrapping_sub(self.tap_at) < 10_000)
-                    || (l.done == 0 && self.pscroll + 466 > l.came())
+                let _ = l;
+                self.tapping && self.api.now().wrapping_sub(self.tap_at) < 10_000
             }
             Screen::Page => !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
             // a note that ends "…" is under way ("Loading…"); others ("Couldn't load") are not
@@ -1007,30 +1017,37 @@ impl Ui {
         }
     }
 
-    /// Page view scrolls here: the page came whole (as much as fits).
+    /// Page view is a part of the page at a time (two screens, as a photo): scrolled within it; past its end the
+    /// next part is asked for, and replaces it once its first screen is all here.
     fn page_scroll(&mut self, d: i32) {
-        if self.video || !self.pictured {
+        if self.video || !self.pictured || self.asking || d == 0 {
             return;
         }
-        // while the rest comes, as far as the page goes (a spinner where it hasn't come yet)
         let l = long();
-        let to = if l.done == 0 { l.height.max(l.came()) } else { l.came() };
-        let max = (to - 300).max(0);
-        // at an end with more there: the real page's next part (the phone scrolls it), the feed's next posts
+        let max = (l.came() - 466).max(0);
         let want = self.pscroll + d;
-        if l.done != 0 && !self.asking && ((want > max && self.more & 1 != 0) || (want < 0 && self.more & 2 != 0)) {
-            self.asking = true;
-            let b = (if want > max { 1i16 } else { -1 }).to_le_bytes();
-            self.send(&[b'S', b[0], b[1]]);
-            self.set_note(b"Loading more\xE2\x80\xA6");
-            self.later();
+        if (0..=max).contains(&want) || l.done == 0 {
+            let s = want.clamp(0, max);
+            if s != self.pscroll {
+                self.pscroll = s;
+                self.later();
+            }
             return;
         }
-        let s = want.clamp(0, max);
-        if s != self.pscroll {
-            self.pscroll = s;
-            self.later();
+        let (bit, dir) = if want > max { (1, 1i16) } else { (2, -1) };
+        if self.more & bit == 0 {
+            // the end of the page: as far as it goes
+            let s = want.clamp(0, max);
+            if s != self.pscroll {
+                self.pscroll = s;
+                self.later();
+            }
+            return;
         }
+        self.asking = true;
+        let b = dir.to_le_bytes();
+        self.send(&[b'S', b[0], b[1]]);
+        self.later();
     }
 
     fn crown(&mut self, d: i32) {

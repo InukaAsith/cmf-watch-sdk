@@ -10,7 +10,7 @@ fn main() {}
 
 #[cfg(any(target_os = "none", wp2_sim))]
 mod keys;
-#[cfg(any(target_os = "none", wp2_sim))]
+#[cfg(any(target_os = "none", wp2_sim, test))]
 mod long;
 #[cfg(any(target_os = "none", wp2_sim))]
 mod page;

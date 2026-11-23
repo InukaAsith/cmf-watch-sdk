@@ -139,6 +139,11 @@ impl Long {
                 }
                 Got::None
             }
+            // the band being received, its header again (the phone sent a window again): no restart
+            Some(b'I') if m.len() == HEADER && self.open != NONE && {
+                let o = usize::from(self.entries[self.n].off);
+                self.store[o..o + HEADER] == *m
+            } => Got::None,
             Some(b'I') if m.len() == HEADER => {
                 let got = self.close_ops();
                 self.open = NONE;
@@ -158,6 +163,11 @@ impl Long {
                     return Got::None;
                 }
                 let t = &m[2..];
+                // one already here (sent again with its window): skipped, the band goes on
+                let behind = self.open.wrapping_sub(u16::from(m[1])) & 0xFF;
+                if (1..=16).contains(&behind) {
+                    return Got::None;
+                }
                 if u16::from(m[1]) != self.open || self.used + t.len() > STORE {
                     // out of order or no room: the band goes
                     self.open = NONE;
@@ -274,5 +284,47 @@ fn draw_ops(ops: &[u8], s: &mut impl Surface, scroll: i32, top: i32, bottom: i32
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use std::boxed::Box;
+    use std::vec::Vec;
+
+    fn header(y0: u16) -> Vec<u8> {
+        let mut h = std::vec![0u8; HEADER];
+        h[0] = b'I';
+        h[1..3].copy_from_slice(&10u16.to_le_bytes());
+        h[3..5].copy_from_slice(&4u16.to_le_bytes());
+        h[5] = 2;
+        h[8..10].copy_from_slice(&y0.to_le_bytes());
+        h
+    }
+
+    #[test]
+    fn a_window_sent_again_keeps_the_band() {
+        let mut l = Box::new(Long::new());
+        l.message(b"J\x00\x02");
+        let (i, d0, d1, d2) = (header(0), [b'D', 0, 1, 2], [b'D', 1, 3, 4], [b'D', 2, 5, 6]);
+        // I D0 D1, then the window again (I D0 D1), then D2 E: one band, all its tokens once
+        for m in [&i[..], &d0, &d1, &i[..], &d0, &d1, &d2, b"E"] {
+            l.message(m);
+        }
+        assert_eq!(l.n, 1);
+        assert_eq!(usize::from(l.entries[0].len), HEADER + 6);
+        assert_eq!(l.came(), 8);
+    }
+
+    #[test]
+    fn a_missing_part_still_drops_the_band() {
+        let mut l = Box::new(Long::new());
+        l.message(b"J\x00\x02");
+        for m in [&header(0)[..], &[b'D', 0, 1], &[b'D', 2, 3], b"E"] {
+            l.message(m);
+        }
+        assert_eq!(l.n, 0);
     }
 }
