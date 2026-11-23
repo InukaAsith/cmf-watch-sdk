@@ -9,7 +9,7 @@ WebKit), for trying the watch app on a real watch without a CMFX build:
 Reader view, Google search, links, page view with its tappable places, scrolling, typing into fields, back, and a
 playing video's frames on the watch (its sound on this Mac) work. Nothing is kept: recents live while it runs.
 """
-import argparse, asyncio, json, math, pathlib, subprocess, sys, urllib.parse
+import argparse, os, asyncio, json, math, pathlib, subprocess, sys, urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -88,6 +88,10 @@ class Tool:
 
     async def ask(self, line):
         async with self.lock:
+            if self.p.returncode is not None:
+                # it died: a fresh one (its cookies are on disk)
+                print("browser tool restarted", flush=True)
+                await self.start()
             self.p.stdin.write(line.encode() + b"\n")
             await self.p.stdin.drain()
             return json.loads(await self.p.stdout.readline() or b"{}")
@@ -190,9 +194,15 @@ async def web(ch, tool):
         if "google." not in host and "duckduckgo" not in host and st["url"] not in st["recent"]:
             st["recent"] = ([st["url"]] + st["recent"])[:4]
 
+    # (testing) a page opened in page view as the app starts: BROWSERHOST_START=url
+    start = os.environ.get("BROWSERHOST_START")
     while True:
         m = (await ch.recv()).data
         print(m[:1].decode(errors="replace"), m[1:40], flush=True)
+        if m == b"R" and start:
+            start, u = None, start
+            await to_page(u)
+            continue
         c = m[:1]
         if st["video"] and st["video"].done():
             st["video"] = None

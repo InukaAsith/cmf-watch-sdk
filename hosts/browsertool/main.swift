@@ -7,11 +7,13 @@ import AppKit
 import Foundation
 import WebKit
 
-@MainActor final class Tool: NSObject, WKNavigationDelegate {
+@MainActor final class Tool: NSObject, WKNavigationDelegate, NSWindowDelegate {
     static let side: CGFloat = 360
     let window: NSWindow
     let web: WKWebView
     var waiters: [CheckedContinuation<Void, Never>] = []
+    /// the navigation under way has its new document (its text may still be coming)
+    var committed = true
 
     override init() {
         let c = WKWebViewConfiguration()
@@ -25,6 +27,9 @@ import WebKit
         super.init()
         web.navigationDelegate = self
         window.contentView = web
+        // the close button hides it again (closing would free the window the watch's pages are drawn in)
+        window.isReleasedWhenClosed = false
+        window.delegate = self
         window.alphaValue = 0.02
         window.ignoresMouseEvents = true
         window.level = .floating
@@ -62,6 +67,11 @@ import WebKit
         }
     }
 
+    nonisolated func windowShouldClose(_ w: NSWindow) -> Bool {
+        MainActor.assumeIsolated { show(false) }
+        return false
+    }
+
     func js(_ s: String) async -> String? {
         await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
             web.evaluateJavaScript(s) { r, _ in c.resume(returning: r.map { "\($0)" }) }
@@ -69,23 +79,31 @@ import WebKit
     }
 
     func load(_ u: URL) async {
+        committed = false
         web.load(URLRequest(url: u))
         await waitLoad()
     }
 
+    /// Till the page's text is in (its document parsed), not every image and ad: a picture in about a second.
     func waitLoad() async {
-        try? await Task.sleep(for: .milliseconds(300))
-        if web.isLoading {
-            await withCheckedContinuation { c in
-                waiters.append(c)
-                Task { try? await Task.sleep(for: .seconds(12)); self.done() }
-            }
+        try? await Task.sleep(for: .milliseconds(150))
+        guard web.isLoading || !committed else { return }
+        // the new document, not the one before it
+        for _ in 0..<100 where !committed {
+            try? await Task.sleep(for: .milliseconds(100))
         }
-        // the new document drawn, not the one before it
-        for _ in 0..<40 where await js("document.readyState") != "complete" {
-            try? await Task.sleep(for: .milliseconds(250))
+        for _ in 0..<60 where await js("document.readyState") == "loading" {
+            try? await Task.sleep(for: .milliseconds(100))
         }
-        try? await Task.sleep(for: .milliseconds(300))
+        try? await Task.sleep(for: .milliseconds(400))
+    }
+
+    nonisolated func webView(_ v: WKWebView, didStartProvisionalNavigation n: WKNavigation!) {
+        Task { @MainActor in self.committed = false }
+    }
+
+    nonisolated func webView(_ v: WKWebView, didCommit n: WKNavigation!) {
+        Task { @MainActor in self.committed = true }
     }
 
     func done() {
@@ -97,7 +115,7 @@ import WebKit
     nonisolated func webView(_ v: WKWebView, didFinish n: WKNavigation!) { Task { @MainActor in self.done() } }
     nonisolated func webView(_ v: WKWebView, didFail n: WKNavigation!, withError e: Error) { Task { @MainActor in self.done() } }
     nonisolated func webView(_ v: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
-        Task { @MainActor in self.done() }
+        Task { @MainActor in self.committed = true; self.done() }
     }
 
     func reader(_ u: URL) async -> [String: Any] {
@@ -137,7 +155,7 @@ import WebKit
         window.setContentSize(NSSize(width: Self.side, height: tall))
         web.frame = NSRect(x: 0, y: 0, width: Self.side, height: tall)
         _ = await js("window.scrollTo(0, 0)")
-        try? await Task.sleep(for: .milliseconds(500))
+        try? await Task.sleep(for: .milliseconds(250))
         let rows = (await js(BrowserProto.pageBoxes)).flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [[Double]] } ?? []
         let c = WKSnapshotConfiguration()
         c.rect = web.bounds

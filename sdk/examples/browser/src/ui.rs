@@ -9,7 +9,8 @@
 //! Phone → watch (and page.rs): `!text` what it is doing or why it couldn't; `H idx title` a recent page for the
 //! start screen; `Z` no page before this one; `K` a text field was tapped in page view (the keyboard up); `M 0|1` a
 //! video is playing (its frames: `I`/`D`…/`E`, examples/pixview rle.rs, drawn as they come); page view's page:
-//! `J h`, its bands, `j` (long.rs: shown once all of it came, a spinner till then, so it scrolls without waits);
+//! `J h`, its bands, `j` (long.rs: shown once its first screen came, a spinner till then; the rest comes while it
+//! is read, a small spinner where it hasn't yet);
 //! `G` go to page view (a page with no text, a video page); `Y` a tap changed nothing; `A n`, `a first (x y w h:i16 kind)…` the page's
 //! tappable places, page px (links 0, fields 1, buttons 2): a tap goes to the nearest one within reach, outlined.
 //! Watch → phone: `R` ready; `Q text` a search or an address; `O idx` a recent page; `L idx` a link; `B` back;
@@ -23,7 +24,7 @@ use crate::rle::{self, Decoder, Status};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::dial::Act;
-use cmf_wp2_ui::draw::{disc, rrect};
+use cmf_wp2_ui::draw::{arc, disc, rrect};
 use cmf_wp2_ui::font;
 use cmf_wp2_ui::haptic::{self, Motor};
 use cmf_wp2_ui::text::dots_centre;
@@ -81,9 +82,6 @@ const BOT: i32 = 398;
 /// The bottom bar in reader and page view: the search box (left), the Page / Text button (right): centre x, top, w, h.
 const SEARCH: (i32, i32, i32, i32) = (C - 46, 396, 148, 44);
 const SWITCH: (i32, i32, i32, i32) = (C + 78, 396, 84, 44);
-/// The spinner's dots round its middle (radius 34), clockwise from the top.
-const SPIN: [(i32, i32); 12] =
-    [(0, -34), (17, -29), (29, -17), (34, 0), (29, 17), (17, 29), (0, 34), (-17, 29), (-29, 17), (-34, 0), (-29, -17), (-17, -29)];
 /// Start: the pill, the recent rows.
 const WHERE: (i32, i32, i32) = (96, 56, 270);
 const ROWS_Y: i32 = 190;
@@ -340,8 +338,21 @@ impl Ui {
                         self.pictured = false;
                         Got::None
                     }
-                    // kept, not drawn: the spinner shows how much came; the page once all of it has
-                    long::Got::Band(..) => Got::None,
+                    // the page once its first screen came; then each band drawn if in view
+                    long::Got::Band(y0, y1) => {
+                        if !self.pictured {
+                            if long().came() >= 466.min(long().height) {
+                                self.pictured = true;
+                                self.n_note = 0;
+                                return Got::Redraw;
+                            }
+                            Got::None
+                        } else if y1 > self.pscroll && y0 < self.pscroll + 466 {
+                            Got::Redraw
+                        } else {
+                            Got::None
+                        }
+                    }
                     long::Got::Done => {
                         self.pictured = true;
                         self.n_note = 0;
@@ -423,7 +434,7 @@ impl Ui {
                 if !self.pictured && !self.video {
                     Surface::rect(&mut s, 0, 0, 466, 466, 0);
                     if self.loading() {
-                        self.draw_spinner();
+                        self.spinner_words();
                     } else {
                         let t = if self.n_note > 0 { self.note() } else { "Nothing to show" };
                         centre_fit(&mut s, C, 222, t, 320, GREY);
@@ -432,6 +443,9 @@ impl Ui {
                     self.draw_long();
                 }
                 self.draw_switch();
+                if self.loading() {
+                    self.draw_ring();
+                }
             }
         }
         self.shown();
@@ -465,7 +479,7 @@ impl Ui {
         centre_fit(&mut s, C, 28, title, 240, GREY);
         if p.n_blocks == 0 {
             if self.loading() {
-                self.draw_spinner();
+                self.spinner_words();
             } else {
                 let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
                 centre_fit(&mut s, C, 222, t, 320, GREY);
@@ -495,31 +509,44 @@ impl Ui {
             centre_fit(&mut s, C, TOP, self.note(), 270, W);
         }
         self.draw_switch();
+        if self.loading() {
+            self.draw_ring();
+        }
     }
 
     /// Something on its way: page view's page (till all of it came), or the reader's text.
     fn loading(&self) -> bool {
         match self.screen {
             // an error note ("Couldn't load") stops it
-            Screen::Page => !self.pictured && !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
+            Screen::Page if self.pictured => {
+                // the rest still coming, and the view reaches past what came
+                let l = long();
+                !self.video && l.done == 0 && self.pscroll + 466 > l.came()
+            }
+            Screen::Page => !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
             // a note that ends "…" is under way ("Loading…"); others ("Couldn't load") are not
             Screen::Reader => page().n_blocks == 0 && self.note[..self.n_note].ends_with(b"\xE2\x80\xA6"),
             _ => false,
         }
     }
 
-    /// A turning ring of dots and what is loading (how much of a page came).
-    fn draw_spinner(&self) {
+    /// The loading ring round the panel's edge: a turning arc while waiting, filling as the page comes.
+    fn draw_ring(&self) {
         let mut s = self.api;
-        let (cx, cy) = (C, 196);
-        let head = (self.api.now() / FRAME_MS) as usize % SPIN.len();
-        for (i, &(dx, dy)) in SPIN.iter().enumerate() {
-            // brightest at the head, fading behind it
-            let age = (head + SPIN.len() - i) % SPIN.len();
-            let v = 255u32.saturating_sub(age as u32 * 22).max(40) as u8;
-            let c = if age == 0 { RED } else { Rgb(v, v, v) };
-            disc(&mut s, cx + dx, cy + dy, 6, c, BLACK);
+        let l = long();
+        let bg = Rgb(0, 0, 0);
+        arc(&mut s, C, C, 226, 232, 0, 65536, Rgb(0x30, 0x30, 0x30), None, bg);
+        if self.screen == Screen::Page && l.height > 0 && l.done == 0 && l.came() > 0 {
+            let f = (l.came().clamp(0, l.height) as u32 * 65536 / l.height as u32).max(2048);
+            arc(&mut s, C, C, 226, 232, 49152, f, Rgb(0xFF, 0xFF, 0xFF), None, bg);
+        } else {
+            let a = (self.api.now().wrapping_mul(70) & 0xFFFF) as u16;
+            arc(&mut s, C, C, 226, 232, a, 14000, Rgb(0xFF, 0xFF, 0xFF), None, bg);
         }
+    }
+
+    fn spinner_words(&self) {
+        let mut s = self.api;
         let l = long();
         let mut buf = [0u8; 40];
         let t: &str = if self.n_note > 0 {
@@ -541,7 +568,7 @@ impl Ui {
         } else {
             "Loading\u{2026}"
         };
-        centre_fit(&mut s, C, 262, t, 320, GREY);
+        centre_fit(&mut s, C, 222, t, 320, GREY);
     }
 
     /// Page view's page where it is scrolled to; below what came, black (and why, at the end).
@@ -800,7 +827,10 @@ impl Ui {
         if self.video || !self.pictured {
             return;
         }
-        let max = (long().came() - 300).max(0);
+        // while the rest comes, as far as the page goes (a spinner where it hasn't come yet)
+        let l = long();
+        let to = if l.done == 0 { l.height.max(l.came()) } else { l.came() };
+        let max = (to - 300).max(0);
         let s = (self.pscroll + d).clamp(0, max);
         if s != self.pscroll {
             self.pscroll = s;
