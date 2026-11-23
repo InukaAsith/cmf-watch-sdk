@@ -9,61 +9,13 @@ WebKit), for trying the watch app on a real watch without a CMFX build:
 Reader view, Google search, links, page view with its tappable places, scrolling, typing into fields, back, and a
 playing video's frames on the watch (its sound on this Mac) work. Nothing is kept: recents live while it runs.
 """
-import argparse, asyncio, json, math, os, pathlib, subprocess, sys, urllib.parse
+import argparse, asyncio, json, math, pathlib, subprocess, sys, urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from PIL import Image, ImageDraw  # noqa: E402
-from wp2apps import channel  # noqa: E402
 from wp2apps.channel import Channel, NoApp, SimChannel, send_when_open  # noqa: E402
-
-
-class Fast:
-    """The watch link at full speed: every message through one sender, 4 in flight (channel.Pipe, about 7 KB/s on
-    the watch against 2 KB/s one at a time). One sender, so two never take each other's replies."""
-
-    def __init__(self, ch):
-        self.ch, self.lock = ch, asyncio.Lock()
-
-    async def send_many(self, msgs):
-        if not msgs:
-            return
-        async with self.lock:
-            if isinstance(self.ch, SimChannel):
-                for m in msgs:
-                    await self.ch.send(m)
-                return
-            for attempt in (0, 1):
-                session = await self.ch.connect()
-                try:
-                    return await channel.Pipe(session).stream(msgs)
-                except channel.LOST:
-                    # the link dropped: once more on a fresh one
-                    await self.ch.drop()
-                    if attempt:
-                        raise
-
-    async def send(self, m):
-        await self.send_many([m])
-
-    async def recv(self, *a, **k):
-        return await self.ch.recv(*a, **k)
 import pixhost  # noqa: E402
-
-# favourites: kept between runs (the owner's own file, never in the repo); BROWSER_FAVOURITES moves it
-FAVS = pathlib.Path(os.environ.get("BROWSER_FAVOURITES", "~/.cmf-browser-favourites.json")).expanduser()
-
-
-def load_favs():
-    try:
-        return [u for u in json.loads(FAVS.read_text()) if isinstance(u, str)]
-    except (OSError, ValueError):
-        return []
-
-
-def save_favs(favs):
-    FAVS.write_text(json.dumps(favs))
-    FAVS.chmod(0o600)
 
 PAGE = [
     (0, 255, "Watches get a browser"),
@@ -117,7 +69,7 @@ HUBKIT = ROOT.parent / "cmfx" / "ios" / "HubKit" / "Sources" / "HubKit"
 
 def build_tool():
     out = ROOT / "target" / "browsertool"
-    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji", "Layout", "Simple", "Video")]
+    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji")]
     if not out.exists() or any(p.stat().st_mtime > out.stat().st_mtime for p in srcs):
         out.parent.mkdir(exist_ok=True)
         # built beside it, then swapped in: macOS won't start a signed binary rewritten in place while it runs
@@ -136,10 +88,6 @@ class Tool:
 
     async def ask(self, line):
         async with self.lock:
-            if self.p.returncode is not None:
-                # it died: a fresh one (its cookies are on disk)
-                print("browser tool restarted", flush=True)
-                await self.start()
             self.p.stdin.write(line.encode() + b"\n")
             await self.p.stdin.drain()
             return json.loads(await self.p.stdout.readline() or b"{}")
@@ -155,70 +103,21 @@ def url_for(typed):
 
 
 async def web(ch, tool):
-    st = {"url": None, "links": [], "history": [], "page": False, "recent": [], "video": None,
-          # the start screen's rows: 0 recent, 1 history (this run's pages, newest first), 2 favourites (kept on file)
-          "list": 0, "visited": [], "favs": load_favs()}
-
-    def rows():
-        return [st["recent"], st["visited"], st["favs"]][st["list"]]
-
-    async def bar_label(u):
-        # the bar's words: what was searched on Google, else the site
-        p = urllib.parse.urlsplit(u or "")
-        q = urllib.parse.parse_qs(p.query).get("q", [""])[0] if "google." in (p.hostname or "") else ""
-        t = q or (p.hostname or "").removeprefix("www.").removeprefix("m.")
-        if t:
-            await ch.send(b"b" + t.encode()[:64])
+    st = {"url": None, "links": [], "history": [], "page": False, "recent": [], "video": None}
 
     async def frames():
-        # the watch's player: frames while it plays, its place while paused; as long as the video is there and page
-        # view is open (no timer stops it)
+        # as long as it plays and page view is open: no timer stops it
         await ch.send(b"M\x01")
-        rate = {"t": asyncio.get_running_loop().time(), "n": 0, "b": 0}
-        v = await tool.ask("vstate")
-        if v.get("title"):
-            await send(v["title"])
         n = 0
-        paused = False
-        title = None
-        loop = asyncio.get_running_loop()
         try:
             while st["page"]:
-                t0 = loop.time()
-                if n % 6 == 0:
-                    v = await tool.ask("vstate")
-                    if not v.get("exists") or v.get("ended"):
-                        break
-                    await send(v["msgs"])
-                    if v.get("title") and v["title"] != title:
-                        # the title, or "Ad" while one plays
-                        title = v["title"]
-                        await send(title)
-                if v.get("paused"):
-                    await asyncio.sleep(0.4)
-                    n = 0
-                    paused = True
-                    continue
-                if paused:
-                    # the pause sign is over the picture: a whole frame
-                    await tool.ask("vkey")
-                    paused = False
                 r = await tool.ask("frame")
-                n += 1
-                if r.get("none") or not r["msgs"]:
-                    # between an ad and the video, buffering, or nothing changed: wait (the video is still there)
-                    await asyncio.sleep(0.03)
-                    continue
+                if r.get("none"):
+                    break
                 await send(r["msgs"])
-                # at most 24 frames a second
-                await asyncio.sleep(max(0, 1 / 24 - (loop.time() - t0)))
-                # how fast it goes (frames a second, bytes a frame), every 2 s
-                rate["n"] += 1
-                rate["b"] += sum(len(h) // 2 for h in r["msgs"])
-                now = asyncio.get_running_loop().time()
-                if now - rate["t"] >= 2:
-                    print(f"video: {rate['n'] / (now - rate['t']):.1f} fps, {rate['b'] // max(rate['n'], 1)} B a frame", file=sys.stderr, flush=True)
-                    rate.update(t=now, n=0, b=0)
+                n += 1
+                if n % 8 == 0 and not (await tool.ask("playing")).get("playing"):
+                    break
         finally:
             await ch.send(b"M\x00")
         await answer(await tool.ask("page -"))
@@ -238,41 +137,15 @@ async def web(ch, tool):
                 pass
 
     async def send(msgs):
-        await ch.send_many([bytes.fromhex(h) for h in msgs])
+        for h in msgs:
+            await ch.send(bytes.fromhex(h))
 
     async def answer(r):
         if r.get("url"):
             st["url"] = r["url"]
         if "links" in r:
             st["links"] = r["links"]
-        if r.get("url"):
-            u = r["url"]
-            if u not in st["visited"][:1] and not u.startswith("about:"):
-                st["visited"] = ([u] + [x for x in st["visited"] if x != u])[:50]
-        ms = r.get("msgs", [])
-        print(f"answer: {r.get("mode", "")} {r.get("url", "")[:60]} {len(ms)} messages, {sum(len(x) for x in ms) // 2} B", file=sys.stderr, flush=True)
-        await send(ms)
-        if ms:
-            await bar_label(r.get("url") or st["url"])
-        if r.get("mode") in ("drawn", "picture"):
-            # pictures that weren't in yet (striped on the watch): sent as they come, 20 s at most
-            if st.get("late") and not st["late"].done():
-                st["late"].cancel()
-            st["late"] = asyncio.create_task(late(st["url"]))
-
-    async def late(url):
-        for _ in range(14):
-            await asyncio.sleep(1.5)
-            if st["url"] != url or (st["video"] and not st["video"].done()):
-                return
-            r = await tool.ask("late")
-            if st["url"] != url:
-                return
-            if r.get("msgs"):
-                print(f"late pictures: {len(r['msgs'])} messages", file=sys.stderr, flush=True)
-                await send(r["msgs"])
-            if not r.get("left"):
-                return
+        await send(r.get("msgs", []))
 
     async def to_page(u):
         # page view by itself: the watch is told, the page sent whole
@@ -284,9 +157,6 @@ async def web(ch, tool):
         if push and st["url"]:
             st["history"].append(st["url"])
         st["url"] = u
-        host = urllib.parse.urlsplit(u).hostname or ""
-        if "google." not in host and "duckduckgo" not in host and u not in st["recent"]:
-            st["recent"] = ([u] + st["recent"])[:4]
         if (await tool.ask("isvideo " + u)).get("video"):
             # a video: page view, played, straight to its frames (the page's picture once it stops)
             st["page"] = True
@@ -320,48 +190,26 @@ async def web(ch, tool):
         if "google." not in host and "duckduckgo" not in host and st["url"] not in st["recent"]:
             st["recent"] = ([st["url"]] + st["recent"])[:4]
 
-    if os.environ.get("BROWSERHOST_START"):
-        # testing: this page at once, in page view
-        st["page"] = True
-        await ch.send(b"G")
-        await open_(os.environ["BROWSERHOST_START"])
     while True:
         m = (await ch.recv()).data
         print(m[:1].decode(errors="replace"), m[1:40], flush=True)
         c = m[:1]
         if st["video"] and st["video"].done():
             st["video"] = None
-        if st["video"] and not st["video"].done() and c in (b"P", b"k"):
-            # the player's own: pause / play, skip
-            if c == b"P":
-                await tool.ask("toggle")
-            elif len(m) == 3:
-                await tool.ask(f"seek {int.from_bytes(m[1:3], 'little', signed=True)}")
-            continue
         if st["video"] and c != b"R":
             await stop_video()
             if c in (b"X", b"B") or m == b"V\x00":
                 await tool.ask("stop")
         try:
-            if c == b"R":
-                st["list"] = m[1] if len(m) == 2 and m[1] < 3 else 0
-                for i, u in enumerate(rows()[:4]):
+            if m == b"R":
+                for i, u in enumerate(st["recent"]):
                     await ch.send(b"H" + bytes([i]) + (urllib.parse.urlsplit(u).hostname or u).encode()[:60])
             elif c == b"Q":
-                # page view by default (the watch's reader button asks for text)
-                st["page"] = True
+                st["page"] = False
                 await open_(url_for(m[1:].decode(errors="replace")))
-            elif c == b"O" and len(m) == 2 and m[1] < len(rows()):
-                st["page"] = True
-                await open_(rows()[m[1]])
-            elif c == b"*" and len(m) > 1:
-                # a favourite typed on the start screen (an address, or words: their search), then the list again
-                u = url_for(m[1:].decode(errors="replace"))
-                st["favs"] = [u] + [x for x in st["favs"] if x != u]
-                save_favs(st["favs"])
-                st["list"] = 2
-                for i, f in enumerate(rows()[:3]):
-                    await ch.send(b"H" + bytes([i]) + (urllib.parse.urlsplit(f).hostname or f).encode()[:60])
+            elif c == b"O" and len(m) == 2 and m[1] < len(st["recent"]):
+                st["page"] = False
+                await open_(st["recent"][m[1]])
             elif c == b"L" and len(m) == 2 and m[1] < len(st["links"]):
                 await open_(st["links"][m[1]])
             elif m == b"B":
@@ -376,24 +224,18 @@ async def web(ch, tool):
                     st["url"] = None
                     await ch.send(b"Z")
             elif c == b"V" and len(m) == 2:
-                # 0 text, 1 page view drawn, 2 page view as a picture
-                st["page"] = m[1] >= 1
-                await tool.ask("picture " + ("1" if m[1] == 2 else "0"))
+                st["page"] = m[1] == 1
                 if st["url"]:
                     await open_(st["url"], push=False)
             elif c == b"T" and len(m) == 5:
                 x, y = int.from_bytes(m[1:3], "little"), int.from_bytes(m[3:5], "little")
                 r = await tool.ask(f"tap {x} {y}")
-                if r.get("open"):
-                    # a row of a simple screen: its video (the player) or page
-                    await open_(r["open"])
-                elif r.get("field"):
+                if r.get("field"):
                     await ch.send(b"K")
                 else:
                     await answer(r)
             elif c == b"S" and len(m) == 3:
-                # the end of what the watch has (1 down, -1 up): the real page's next part, or the feed's next posts
-                await answer(await tool.ask(f"more {1 if int.from_bytes(m[1:3], 'little', signed=True) > 0 else -1}"))
+                await answer(await tool.ask(f"scroll {int.from_bytes(m[1:3], 'little', signed=True)}"))
             elif c == b"W":
                 await answer(await tool.ask("type " + m[1:].decode(errors="replace").replace("\n", " ")))
             elif m == b"X":
@@ -423,7 +265,6 @@ async def main():
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
         await send_when_open(ch, b"!")
         if a.web:
-            ch = Fast(ch)
             # the app closed: wait for it to open again, a fresh start
             while True:
                 try:
