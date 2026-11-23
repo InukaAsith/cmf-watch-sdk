@@ -117,7 +117,7 @@ HUBKIT = ROOT.parent / "cmfx" / "ios" / "HubKit" / "Sources" / "HubKit"
 
 def build_tool():
     out = ROOT / "target" / "browsertool"
-    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji", "Layout", "Simple", "Video", "Pictures")]
+    srcs = [ROOT / "hosts" / "browsertool" / "main.swift"] + [HUBKIT / f"{n}.swift" for n in ("Reader", "Rle", "Quantize", "Proto", "Emoji", "Layout", "Simple", "Video")]
     if not out.exists() or any(p.stat().st_mtime > out.stat().st_mtime for p in srcs):
         out.parent.mkdir(exist_ok=True)
         # built beside it, then swapped in: macOS won't start a signed binary rewritten in place while it runs
@@ -129,8 +129,6 @@ def build_tool():
 
 class Tool:
     lock = asyncio.Lock()
-    # where parts of an answer go as they come ({"part": [...]} lines before it): the watch, at once
-    on_part = None
 
     async def start(self):
         self.p = await asyncio.create_subprocess_exec(str(build_tool()), stdin=asyncio.subprocess.PIPE,
@@ -142,16 +140,9 @@ class Tool:
                 # it died: a fresh one (its cookies are on disk)
                 print("browser tool restarted", flush=True)
                 await self.start()
-            if os.environ.get("BROWSERHOST_DEBUG"):
-                print("ask", line[:60], file=sys.stderr, flush=True)
             self.p.stdin.write(line.encode() + b"\n")
             await self.p.stdin.drain()
-            while True:
-                r = json.loads(await self.p.stdout.readline() or b"{}")
-                if "part" not in r:
-                    return r
-                if self.on_part:
-                    await self.on_part(r["part"])
+            return json.loads(await self.p.stdout.readline() or b"{}")
 
 
 def url_for(typed):
@@ -170,15 +161,6 @@ async def web(ch, tool):
 
     def rows():
         return [st["recent"], st["visited"], st["favs"]][st["list"]]
-
-    async def part(ms):
-        if os.environ.get("BROWSERHOST_DEBUG"):
-            for h in ms:
-                if h[:2] in ("49", "4a", "6a", "79"):
-                    print("part", bytes.fromhex(h)[:1], h[2:20], file=sys.stderr, flush=True)
-        await send(ms)
-
-    tool.on_part = part
 
     async def bar_label(u):
         # the bar's words: what was searched on Google, else the site
@@ -270,7 +252,7 @@ async def web(ch, tool):
         ms = r.get("msgs", [])
         print(f"answer: {r.get("mode", "")} {r.get("url", "")[:60]} {len(ms)} messages, {sum(len(x) for x in ms) // 2} B", file=sys.stderr, flush=True)
         await send(ms)
-        if ms or r.get("mode"):
+        if ms:
             await bar_label(r.get("url") or st["url"])
         if r.get("mode") in ("drawn", "picture"):
             # pictures that weren't in yet (striped on the watch): sent as they come, 20 s at most
