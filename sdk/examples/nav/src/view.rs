@@ -234,9 +234,15 @@ pub fn turn(api: &'static Api, n: &Nav) {
     let mut s = api;
     if n.rerouting {
         font::centre(&mut s, C, 200, "Rerouting\u{2026}", RED.rgb565());
+        if n.lost {
+            lost_notice(&mut s, false);
+        }
         return;
     }
     top_line(&mut s, n, 40, false);
+    if n.lost {
+        lost_notice(&mut s, false);
+    }
     arrow(&mut s, C, 140, 120, n.kind, n.dir);
     let mut ib = [0u8; 112];
     let what = instruction(n.kind, n.dir, n.street(), &mut ib);
@@ -276,10 +282,16 @@ pub fn turn_key(n: &Nav) -> [u8; 6] {
 pub fn turn_live(api: &'static Api, n: &Nav) {
     let mut s = api;
     if n.rerouting {
+        if n.lost {
+            lost_notice(&mut s, false);
+        }
         return;
     }
     Surface::rect(&mut s, C - 160, 36, 320, font::HEIGHT + 8, 0);
     top_line(&mut s, n, 40, false);
+    if n.lost {
+        lost_notice(&mut s, false);
+    }
     Surface::rect(&mut s, 40, 340, 386, 7 * 5 + 8, 0);
     big_distance(&mut s, n, C, 344, 5);
     Surface::rect(&mut s, C - 160, 400, 320, font::HEIGHT + 6, 0);
@@ -291,6 +303,43 @@ pub fn turn_live(api: &'static Api, n: &Nav) {
 #[allow(dead_code)] // Navigation's map view (Maps draws its own)
 pub fn map_erase(api: &'static Api, n: &Nav, k: i32) {
     route_lines(api, n, k, BLACK);
+    north_erase(api);
+}
+
+/// The north mark's place as last drawn (a red disc with N on the rim): wiped before the next.
+static mut NORTH_AT: Option<(i32, i32)> = None;
+const NORTH_R: i32 = 210;
+const NORTH_DOT: i32 = 15;
+
+/// The north mark off the panel, for a caller that draws over the old frame instead of clearing it.
+pub fn north_erase(api: &'static Api) {
+    let mut s = api;
+    if let Some((x, y)) = unsafe { (*core::ptr::addr_of_mut!(NORTH_AT)).take() } {
+        Surface::rect(&mut s, x - NORTH_DOT - 2, y - NORTH_DOT - 2, 2 * NORTH_DOT + 4, 2 * NORTH_DOT + 4, 0);
+    }
+}
+
+/// Where north is on the heading-up map: a red disc with N on the rim, as a compass.
+fn north(s: &mut &'static Api, heading: u16) {
+    let a = ((360 - u32::from(heading) % 360) * 65536 / 360) as u16;
+    let (x, y) = (C + (NORTH_R * sin(a) >> 14), C - (NORTH_R * cos(a) >> 14));
+    disc(s, x, y, NORTH_DOT, RED, BLACK);
+    let w = font::width("N");
+    font::draw(s, x - w / 2, y - 10, "N", W);
+    unsafe { *core::ptr::addr_of_mut!(NORTH_AT) = Some((x, y)) };
+}
+
+/// Nothing from the phone for a while (`Nav::lost`): a red notice where the time line is (`map`: the map view's
+/// pill). The next normal frame paints over it.
+fn lost_notice(s: &mut &'static Api, map: bool) {
+    let t = "No update \u{b7} retrying";
+    if map {
+        rrect(s, C - 140, 42, 280, 40, 20, RED, BLACK);
+        font::centre(s, C, 50, t, W);
+    } else {
+        rrect(s, C - 118, 38, 236, 26, 13, RED, BLACK);
+        font::centre(s, C, 40, t, W);
+    }
 }
 
 #[allow(dead_code)] // Navigation's map view (Maps draws its own)
@@ -322,6 +371,8 @@ pub fn map(api: &'static Api, n: &Nav, k: i32) {
 /// line on top, the next turn below.
 pub fn overlay(api: &'static Api, n: &Nav) {
     let mut s = api;
+    // north on the rim, under the marks and pills
+    north(&mut s, n.heading);
     // we are here: a white arrow on a red disc, pointing up
     ring(&mut s, C, ME_Y, 22, 26, WHITE, BLACK);
     disc(&mut s, C, ME_Y, 22, RED, BLACK);
@@ -335,6 +386,9 @@ pub fn overlay(api: &'static Api, n: &Nav) {
     // time left, distance left, arrival: low enough on the round panel for all three
     rrect(&mut s, C - 140, 42, 280, 40, 20, PILL, BLACK);
     top_line(&mut s, n, 50, true);
+    if n.lost {
+        lost_notice(&mut s, true);
+    }
     // the next turn: a small arrow and the distance on a dark pill
     rrect(&mut s, C - 120, 352, 240, 72, 36, PILL, BLACK);
     arrow(&mut s, C - 70, 388, 52, n.kind, n.dir);

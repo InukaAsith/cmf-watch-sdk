@@ -7,7 +7,8 @@ version=$2
 display=${3:-$name}
 svg=$root/sdk/examples/$name/icon.svg
 # a local icon for the owner's own watch (icon.local.svg, never committed) wins
-[ -f "$root/sdk/examples/$name/icon.local.svg" ] && svg=$root/sdk/examples/$name/icon.local.svg
+# (WP2_PUBLIC=1, a release: always the committed one)
+[ -z "${WP2_PUBLIC:-}" ] && [ -f "$root/sdk/examples/$name/icon.local.svg" ] && svg=$root/sdk/examples/$name/icon.local.svg
 if [ -f "$svg" ]; then
     export WP2_ICON=$root/sdk/target/icons/$name.wp2icon
     mkdir -p "$(dirname "$WP2_ICON")"

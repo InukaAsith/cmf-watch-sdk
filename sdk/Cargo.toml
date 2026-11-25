@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["cmf-wp2-app", "cmf-wp2-ui", "examples/hello", "examples/vibration-lab", "examples/motor-hog", "examples/motor-hold", "examples/agent-glow", "examples/api-demo", "examples/herdr-agents", "examples/kit-gallery", "examples/ui-gallery", "examples/lv-demo", "examples/back-owner", "examples/hr-probe", "examples/wake-probe", "examples/pixview", "examples/chats", "examples/assistant", "examples/nav", "examples/maps", "examples/spotify", "examples/photos", "examples/mail", "examples/notes", "examples/speaker", "examples/ytmusic", "examples/spplayer", "examples/atlas", "examples/browser"]
+members = ["cmf-wp2-app", "cmf-wp2-ui", "examples/hello", "examples/vibration-lab", "examples/motor-hog", "examples/motor-hold", "examples/agent-glow", "examples/api-demo", "examples/herdr-agents", "examples/kit-gallery", "examples/ui-gallery", "examples/lv-demo", "examples/back-owner", "examples/hr-probe", "examples/wake-probe", "examples/pixview", "examples/chats", "examples/assistant", "examples/nav", "examples/maps", "examples/spotify", "examples/photos", "examples/mail", "examples/notes", "examples/speaker", "examples/ytmusic", "examples/spplayer", "examples/atlas", "examples/browser", "examples/compass"]
 
 [workspace.package]
 edition = "2024"

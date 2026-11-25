@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# The watch apps CMFX bundles, as one GitHub release (tag apps-<date>-<sha>, assets <crate>.wp2app and apps.json):
+# CMFX's iOS build puts the newest one in the IPA (cmfx ios/fetch-apps.sh) and its Apps page installs them.
+#   scripts/release-apps [notes]
+# Built with the committed icons only (WP2_PUBLIC: no icon.local.svg brand logos). A release is built binaries,
+# never a commit (AGENTS.md rule 2). Needs llvm-objcopy and resvg on PATH (or nix-shell).
+set -euo pipefail
+notes=${1:-}
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+out=target/release-apps
+rm -rf "$out"
+mkdir -p "$out"
+json="["
+while IFS=$'\t' read -r crate version name; do
+    [[ -z "$crate" || "$crate" == \#* ]] && continue
+    WP2_PUBLIC=1 scripts/build-app "$crate" "$version" "$name" >/dev/null
+    cp "target/$crate.wp2app" "$out/$crate.wp2app"
+    json+="{\"file\":\"$crate.wp2app\",\"name\":\"$name\",\"version\":$version},"
+done < scripts/apps.tsv
+printf '%s]\n' "${json%,}" > "$out/apps.json"
+sha=$(git rev-parse HEAD)
+tag="apps-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
+dirty=$(git status --porcelain sdk | head -1)
+body="Watch apps for CMFX, built from $sha${dirty:+ with local changes in sdk/}.
+
+$(python3 -c 'import json,sys; [print(f"- {a[\"name\"]} v{a[\"version\"]}") for a in json.load(open(sys.argv[1]))]' "$out/apps.json")${notes:+
+
+$notes}"
+gh release create "$tag" "$out"/*.wp2app "$out/apps.json" --target "$sha" --title "Watch apps ($tag)" --notes "$body"
+echo "$tag"

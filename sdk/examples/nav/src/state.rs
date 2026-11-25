@@ -18,6 +18,10 @@ pub const MAX_PTS: usize = 400;
 /// fix about once a second: at 50 m a car at 50 km/h still has 3 s, so "now" isn't skipped between two fixes.
 pub const SOON_M: u16 = 200;
 pub const NOW_M: u16 = 50;
+/// Navigating and no turn or position from the phone for this long (it sends one at least every 4 s, standing
+/// still too): said on screen and `N` sent (the route and where we are, again), then again every RETRY_MS.
+pub const QUIET_MS: u32 = 12_000;
+pub const RETRY_MS: u32 = 5_000;
 
 /// The manoeuvre in words: "Turn left onto Galle Road", "At the roundabout, exit onto …", "Arrive at …". The
 /// phone's placeholders ("Arrive", "Continue", "") name no street.
@@ -84,6 +88,10 @@ pub struct Nav {
     pub rerouting: bool,
     /// the highest buzz already given for `step`
     buzzed: u8,
+    /// nothing from the phone for QUIET_MS while navigating: the screen says so and `N` goes out every RETRY_MS
+    pub lost: bool,
+    heard: u32,
+    asked: u32,
 }
 
 impl Nav {
@@ -106,7 +114,50 @@ impl Nav {
             arrived: false,
             rerouting: false,
             buzzed: 0,
+            lost: false,
+            heard: 0,
+            asked: 0,
         }
+    }
+
+    /// A turn or a position came at `now` (an `apply` that wasn't `None`/`Ended`). True: it ends a lost spell, so
+    /// the screen without the notice is drawn again.
+    pub fn heard(&mut self, now: u32) -> bool {
+        self.heard = now;
+        core::mem::replace(&mut self.lost, false)
+    }
+
+    fn following(&self) -> bool {
+        self.active && !self.arrived
+    }
+
+    /// Call after each event: true means send `N` now (the first time also draw again: `lost` turned on).
+    pub fn quiet(&mut self, now: u32) -> bool {
+        if !self.following() {
+            self.lost = false;
+            return false;
+        }
+        if now.wrapping_sub(self.heard) < QUIET_MS {
+            return false;
+        }
+        if !self.lost || now.wrapping_sub(self.asked) >= RETRY_MS {
+            self.lost = true;
+            self.asked = now;
+            return true;
+        }
+        false
+    }
+
+    /// The longest an event wait may be for `quiet` to be on time.
+    pub fn quiet_wait(&self, now: u32) -> Option<u32> {
+        if !self.following() {
+            return None;
+        }
+        Some(if self.lost {
+            RETRY_MS.saturating_sub(now.wrapping_sub(self.asked))
+        } else {
+            QUIET_MS.saturating_sub(now.wrapping_sub(self.heard))
+        })
     }
 
     /// No route on (stopped here or on the phone).
@@ -297,5 +348,29 @@ mod tests {
         n.heading = 90;
         assert_eq!(n.project((100, 0), 233, 300, k), (233, 200)); // east is up facing east
         assert_eq!(n.project((0, 100), 233, 300, k), (133, 300)); // and north is to the left
+    }
+
+    #[test]
+    fn quiet_link_is_said_and_asked_again() {
+        let mut n = Box::new(Nav::new());
+        // not navigating: never quiet
+        assert!(!n.quiet(60_000));
+        assert_eq!(n.quiet_wait(0), None);
+        n.apply(&[b'V', 0, 0, 5, 100, 0, 3, 0, 10, 0, 12, 30]);
+        n.heard(1_000);
+        assert!(!n.quiet(12_999));
+        assert_eq!(n.quiet_wait(5_000), Some(8_000));
+        assert!(n.quiet(13_000));
+        assert!(n.lost);
+        assert!(!n.quiet(17_999));
+        assert_eq!(n.quiet_wait(15_000), Some(3_000));
+        assert!(n.quiet(18_000));
+        // a turn again: the notice goes
+        assert!(n.heard(19_000));
+        assert!(!n.lost);
+        assert!(!n.heard(20_000));
+        // arrived: not quiet however long
+        n.apply(b"W");
+        assert!(!n.quiet(100_000));
     }
 }

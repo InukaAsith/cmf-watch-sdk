@@ -493,6 +493,7 @@ impl Ui {
                 .then(|| left(self.pic_at.wrapping_add(STALL_MS))),
             self.hold.map(|h| left(h.2.wrapping_add(HOLD_MS))),
             self.nav_due.then(|| left(self.drawn_at.wrapping_add(FRAME_MS))),
+            (self.screen == Screen::Nav).then(|| nav().quiet_wait(now)).flatten(),
         ]
         .into_iter()
         .flatten()
@@ -1515,6 +1516,7 @@ impl Ui {
             if self.map_up && sc.active && !sc.done {
                 // the next map is coming in (it replaces the old one as it comes): the map as it was stays on the
                 // panel, only the marks and numbers move, till it is all here
+                view::north_erase(self.api);
                 view::overlay(self.api, n);
                 return;
             }
@@ -2280,7 +2282,13 @@ impl Ui {
                     if self.screen != Screen::Nav {
                         continue;
                     }
-                    match nav().apply(m) {
+                    let effect = nav().apply(m);
+                    if !matches!(effect, Effect::None | Effect::Ended) && nav().heard(self.api.now()) {
+                        // the phone is back: the screen without the notice
+                        (self.nav_drawn, self.map_up) = (None, false);
+                        redraw = true;
+                    }
+                    match effect {
                         Effect::Turn { buzz } => {
                             view::buzz(&mut self.motor, buzz);
                             redraw = true;
@@ -2301,6 +2309,8 @@ impl Ui {
                                 );
                             }
                         }
+                        // the phone ended the route (Maps' phone side doesn't today): the screen says it waits
+                        Effect::Ended => redraw = true,
                         Effect::None => {}
                     }
                 }
@@ -2371,6 +2381,12 @@ fn main(api: &'static Api) -> i32 {
         ui.motor.update();
         if ask.due(api.now()) {
             ui.send(b"R");
+        }
+        // navigating and the phone went quiet: say so, and ask for the route and where we are again till it answers
+        if ui.screen == Screen::Nav && nav().quiet(api.now()) {
+            ui.send(b"N");
+            (ui.nav_drawn, ui.map_up) = (None, false);
+            ui.draw();
         }
         ui.timers();
         if ui.screen == Screen::Dial && ui.dial.tick(&mut ui.s, api.now()) == Act::Show {

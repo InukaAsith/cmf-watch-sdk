@@ -70,6 +70,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "compass"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "hello"
 version = "0.1.0"
 dependencies = [

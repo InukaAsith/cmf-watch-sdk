@@ -90,7 +90,8 @@ fn main(api: &'static Api) -> i32 {
         let pace = ui.due.then(|| FRAME_MS.saturating_sub(api.now().wrapping_sub(ui.shown_at)));
         let typing = !nav().active && ui.start.screen == Screen::Dial;
         let hold = typing.then(|| ui.start.dial.hold_wait(api.now())).flatten();
-        let w = [ui.motor.wait(), ask.wait(api.now()), pace, hold].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let quiet = nav().quiet_wait(api.now());
+        let w = [ui.motor.wait(), ask.wait(api.now()), pace, hold, quiet].into_iter().flatten().min().unwrap_or(u32::MAX);
         let e = api.event(w);
         ui.motor.update();
         if typing && ui.start.dial.tick(&mut ui.api, api.now()) == Act::Show {
@@ -103,6 +104,12 @@ fn main(api: &'static Api) -> i32 {
         }
         if ask.due(api.now()) {
             let _ = api.send(b"R");
+        }
+        // navigating and the phone went quiet: say so, and ask for everything again till it answers
+        if nav().quiet(api.now()) {
+            let _ = api.send(b"N");
+            ui.drawn = Drawn::Other;
+            ui.draw();
         }
         let Some(e) = e else { continue };
         if e.kind == MESSAGE {
@@ -238,7 +245,13 @@ fn main(api: &'static Api) -> i32 {
                         // its frame may be new: the streets asked again in it
                         ui.forget_map();
                     }
-                    match nav().apply(m) {
+                    let effect = nav().apply(m);
+                    if !matches!(effect, Effect::None | Effect::Ended) && nav().heard(api.now()) {
+                        // the phone is back: the screen without the notice
+                        ui.drawn = Drawn::Other;
+                        redraw = true;
+                    }
+                    match effect {
                         Effect::Turn { buzz } => {
                             view::buzz(&mut ui.motor, buzz);
                             redraw = true;
