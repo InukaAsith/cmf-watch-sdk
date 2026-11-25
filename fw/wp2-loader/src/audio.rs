@@ -20,8 +20,9 @@ const WAKE_ID: u32 = 0xF1;
 const VOLUME_UNSET: u8 = 0xFF;
 const MAX_LEVEL_DEFAULT: u8 = 16;
 
-/// 6 KiB: 190 ms at 16 kHz on top of the track's own 2 KiB; the UI tick runs every 10 ms.
-const RING_SIZE: usize = 6 * 1024;
+/// 5 KiB: 160 ms at 16 kHz on top of the track's own 2 KiB (64 ms); the UI tick runs every 10 ms. (6 KiB until loader 4:
+/// GPS, storage inspection and stub 10 needed the room in the loader's 64 KiB.)
+const RING_SIZE: usize = 5 * 1024;
 static mut RING: [u8; RING_SIZE] = [0; RING_SIZE];
 // free-running byte counts: HEAD written by the app thread, TAIL by the UI thread
 static HEAD: AtomicU32 = AtomicU32::new(0);
