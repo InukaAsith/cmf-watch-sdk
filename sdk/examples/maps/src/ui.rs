@@ -29,6 +29,8 @@ const W: u16 = 0xFFFF;
 const WHITE: Rgb = Rgb(0xFF, 0xFF, 0xFF);
 const RED: Rgb = Rgb(0xD7, 0x19, 0x21);
 const ORANGE: Rgb = Rgb(0xFF, 0x8C, 0x00);
+/// How often the phone is asked where it is (`l`).
+const ASK_MS: u32 = 2000;
 const CARD: Rgb = Rgb(0x14, 0x14, 0x14);
 const BTN: Rgb = Rgb(0x10, 0x10, 0x10);
 const TRACK_C: Rgb = Rgb(0xFF, 0xD0, 0x40);
@@ -119,6 +121,12 @@ struct Ui {
     /// you: frame metres, the last fix's time; course (degrees) once you moved
     me: Option<(i32, i32)>,
     fix_at: u32,
+    /// the last fix from the watch's GPS, the phone's (`L`), and when the phone was last asked (`l`)
+    watch_at: Option<u32>,
+    phone_at: Option<u32>,
+    asked_at: u32,
+    /// ◎ blinks while the watch's GPS looks for satellites (each GPS second)
+    blink: bool,
     course: Option<u16>,
     sats: u8,
     gps_on: bool,
@@ -439,8 +447,7 @@ impl Ui {
             disc(&mut s, C + dx * 212 / d, C + dy * 212 / d, 7, RED, BLACK);
             return;
         }
-        let fresh = self.api.now().wrapping_sub(self.fix_at) < 5000;
-        let c = if fresh { RED } else { DIM };
+        let c = if self.watch_ok() || self.phone_ok() { self.source(false) } else { DIM };
         if let Some(h) = self.course {
             // the way you go: a wedge out of the dot
             let a = (u32::from(h) * 65536 / 360) as u16;
@@ -512,16 +519,18 @@ impl Ui {
             put(int(mins as i32, &mut ib), &mut n);
             put(" min", &mut n);
             (core::str::from_utf8(&line_b[..n]).unwrap_or(""), Some(RED))
-        } else if !self.gps_on {
-            ("GPS needs loader 4", Some(DIM))
-        } else if self.me.is_some() && self.api.now().wrapping_sub(self.fix_at) < 5000 {
+        } else if self.watch_ok() {
             let mut ib = [0u8; 11];
             put("GPS \u{b7} ", &mut n);
             put(int(i32::from(self.sats), &mut ib), &mut n);
             put(" satellites", &mut n);
-            (core::str::from_utf8(&line_b[..n]).unwrap_or(""), Some(Rgb(0x34, 0xA8, 0x53)))
+            (core::str::from_utf8(&line_b[..n]).unwrap_or(""), Some(self.source(false)))
+        } else if self.phone_ok() {
+            ("iPhone GPS", Some(self.source(false)))
+        } else if !self.gps_on {
+            ("GPS needs loader 4", Some(DIM))
         } else {
-            ("Looking for GPS\u{2026}", Some(ORANGE))
+            ("Looking for GPS\u{2026}", Some(RED))
         };
         let w = font::width(text).min(176) + if dot.is_some() { 52 } else { 36 };
         rrect(&mut s, C - w / 2, 30, w, 36, 18, CARD, BG);
@@ -599,13 +608,41 @@ impl Ui {
         for k in -1..=1 {
             Surface::rect(&mut s, x - 10, y + k * 7 - 1, 20, 3, W);
         }
-        // ◎ back to you: red with a fix and following, white not following, grey with no fix
+        self.draw_me_button();
+    }
+
+    /// ◎ back to you, in the colour of where the position comes from (`source`); the centre dot while following.
+    fn draw_me_button(&self) {
+        let mut s = self.s;
         self.button(B_ME, false);
         let (x, y, _) = B_ME;
-        let fresh = self.me.is_some() && self.api.now().wrapping_sub(self.fix_at) < 5000;
-        let c = if !fresh { DIM } else if self.follow { RED } else { WHITE };
+        let c = self.source(true);
         ring(&mut s, x, y, 9, 12, c, BTN);
-        disc(&mut s, x, y, 5, c, BTN);
+        if self.follow {
+            disc(&mut s, x, y, 5, c, BTN);
+        }
+    }
+
+    fn watch_ok(&self) -> bool {
+        self.watch_at.is_some_and(|t| self.api.now().wrapping_sub(t) < 5000)
+    }
+
+    fn phone_ok(&self) -> bool {
+        self.phone_at.is_some_and(|t| self.api.now().wrapping_sub(t) < 6000)
+    }
+
+    /// Where the position comes from, as Maps' ◎: blue the iPhone's GPS (the watch's off), orange both (blinking:
+    /// the iPhone's while the watch looks for satellites), red the watch's only (blinking: it looks, no iPhone).
+    /// `blink`: the looking ones blink.
+    fn source(&self, blink: bool) -> Rgb {
+        let (p, w) = (self.phone_ok(), self.watch_ok());
+        let c = match (p, w) {
+            (true, false) if !self.gps_on => BLUE,
+            (true, _) => ORANGE,
+            (false, _) if self.gps_on => RED,
+            (false, _) => DIM,
+        };
+        if blink && self.gps_on && !w && self.blink { DIM } else { c }
     }
 
     fn draw_zoom(&self) {
@@ -759,16 +796,45 @@ impl Ui {
         let Some(f) = self.api.gps_fix() else { return };
         self.sats = f.sats;
         if f.fix == 0 {
-            self.dirty |= self.screen == Screen::Map && self.api.now().wrapping_sub(self.fix_at) > 5000;
+            self.blink = !self.blink;
+            let map = self.screen == Screen::Map && self.loading.is_none();
+            if self.watch_at.is_some_and(|t| self.api.now().wrapping_sub(t) >= 5000) {
+                // the watch's fix lost: the dot and the banner again
+                self.watch_at = None;
+                self.dirty |= map;
+            }
+            if map && !self.dirty {
+                // only ◎ blinks
+                self.draw_me_button();
+                self.api.show();
+            }
             return;
         }
+        self.watch_at = Some(self.api.now());
+        self.place(f.lat_e7, f.lon_e7);
+    }
+
+    /// The phone's fix (`L`): used while the watch's GPS has none.
+    fn phone_fix(&mut self, lat_e7: i32, lon_e7: i32) {
+        let had = self.phone_ok();
+        self.phone_at = Some(self.api.now());
+        if !self.watch_ok() {
+            self.place(lat_e7, lon_e7);
+        } else if !had {
+            // ◎ red to orange
+            self.dirty |= self.screen == Screen::Map;
+        }
+    }
+
+    /// You are at this place now (a fix from the watch or the phone).
+    fn place(&mut self, lat_e7: i32, lon_e7: i32) {
         if self.frame.is_none() {
             // no map: a frame round this first fix
-            let a = ((i64::from(f.lat_e7) * 65536 / 3_600_000_000).rem_euclid(65536)) as u16;
+            let a = ((i64::from(lat_e7) * 65536 / 3_600_000_000).rem_euclid(65536)) as u16;
             let mm = (111_320_000i64 * i64::from(cos(a)) / 16384) as u32;
-            self.frame = Some(Frame { lat0_e7: f.lat_e7, lon0_e7: f.lon_e7, mm_per_deg_lon: mm });
+            self.frame = Some(Frame { lat0_e7: lat_e7, lon0_e7: lon_e7, mm_per_deg_lon: mm });
         }
-        let p = self.frame.unwrap().xy(f.lat_e7, f.lon_e7);
+        let p = self.frame.unwrap().xy(lat_e7, lon_e7);
         if let Some(old) = self.me {
             if dist(old, p) >= 4 {
                 self.course = Some(geo::bearing(old, p));
@@ -1100,6 +1166,16 @@ impl Ui {
                 self.dirty = true;
             }
         }
+        // where the phone is, every 2 s (it answers `L`; nothing while a map comes or the storage is cleaned)
+        if now.wrapping_sub(self.asked_at) >= ASK_MS && self.loading.is_none() && self.clean.is_none() {
+            self.asked_at = now;
+            self.send(b"l");
+        }
+        // the phone's fix gone stale: ◎ again
+        if self.phone_at.is_some_and(|t| now.wrapping_sub(t) >= 6000) {
+            self.phone_at = None;
+            self.dirty |= self.screen == Screen::Map;
+        }
         // a note that ran out
         if self.n_note > 0 && now.wrapping_sub(self.note_at) >= NOTE_MS {
             self.n_note = 0;
@@ -1119,6 +1195,10 @@ impl Ui {
         if self.n_note > 0 {
             w = w.min(left(self.note_at.wrapping_add(NOTE_MS)));
         }
+        w = w.min(left(self.asked_at.wrapping_add(ASK_MS)));
+        if let Some(t) = self.phone_at {
+            w = w.min(left(t.wrapping_add(6000)));
+        }
         w
     }
 
@@ -1130,6 +1210,15 @@ impl Ui {
             let u16_at = |i: usize| u16::from_le_bytes([m[i], m[i + 1]]);
             let u32_at = |i: usize| u32::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]]);
             match m.first() {
+                Some(b'L') => {
+                    // the phone's fix (lat, lon e7, accuracy m), or none
+                    if m.len() == 11 {
+                        let i32_at = |i: usize| u32_at(i) as i32;
+                        self.phone_fix(i32_at(1), i32_at(5));
+                    } else if self.phone_at.take().is_some() {
+                        self.dirty |= self.screen == Screen::Map;
+                    }
+                }
                 Some(b'W') => {
                     self.flush();
                     self.inc.on = false;
@@ -1343,6 +1432,10 @@ fn main(api: &'static Api) -> i32 {
         follow: true,
         me: None,
         fix_at: 0,
+        watch_at: None,
+        phone_at: None,
+        asked_at: 0,
+        blink: false,
         course: None,
         sats: 0,
         gps_on: false,
