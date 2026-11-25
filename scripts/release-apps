@@ -24,7 +24,7 @@ tag="apps-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
 dirty=$(git status --porcelain sdk | head -1)
 body="Watch apps for CMFX, built from $sha${dirty:+ with local changes in sdk/}.
 
-$(python3 -c 'import json,sys; [print(f"- {a[\"name\"]} v{a[\"version\"]}") for a in json.load(open(sys.argv[1]))]' "$out/apps.json")${notes:+
+$(python3 -c 'import json,sys; [print("- %s v%s" % (a["name"], a["version"])) for a in json.load(open(sys.argv[1]))]' "$out/apps.json")${notes:+
 
 $notes}"
 gh release create "$tag" "$out"/*.wp2app "$out/apps.json" --target "$sha" --title "Watch apps ($tag)" --notes "$body"
