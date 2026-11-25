@@ -11,7 +11,9 @@
 //! video is playing (its frames: `I`/`D`…/`E`, examples/pixview rle.rs, drawn as they come); page view's page:
 //! `J h`, its bands, `j` (long.rs: shown once its first screen came, a spinner till then; the rest comes while it
 //! is read, a small spinner where it hasn't yet);
-//! `G` go to page view (a page with no text, a video page); `Y` a tap changed nothing; `A n`, `a first (x y w h:i16 kind)…` the page's
+//! `G` go to page view (a page with no text, a video page); `Y` a tap changed nothing (a spinner turns from a tap
+//! till the phone answers); the video player (page view while `M 1`): its frames, `U title`, `u cur dur paused`
+//! (seconds), a tap pauses or plays (`P` to the phone), the crown skips 10 s a step (`k dt:i16`); `A n`, `a first (x y w h:i16 kind)…` the page's
 //! tappable places, page px (links 0, fields 1, buttons 2): a tap goes to the nearest one within reach, outlined.
 //! Watch → phone: `R` ready; `Q text` a search or an address; `O idx` a recent page; `L idx` a link; `B` back;
 //! `V 0|1` reader or page view; `T x:u16 y:u16` a tap on the page view, page px (from the page's top); `W text`
@@ -80,13 +82,15 @@ const TOP: i32 = 64;
 const BOT: i32 = 398;
 /// The round button at the bottom: reader ⇄ page view.
 /// The bottom bar in reader and page view: the search box (left), the Page / Text button (right): centre x, top, w, h.
-const SEARCH: (i32, i32, i32, i32) = (C - 46, 396, 148, 44);
-const SWITCH: (i32, i32, i32, i32) = (C + 78, 396, 84, 44);
+const SEARCH: (i32, i32, i32, i32) = (C - 26, 394, 196, 46);
+const SWITCH: (i32, i32, i32, i32) = (C + 100, 394, 46, 46);
 /// Start: the pill, the recent rows.
 const WHERE: (i32, i32, i32) = (96, 56, 270);
-const ROWS_Y: i32 = 190;
+const ROWS_Y: i32 = 166;
 const ROW_H: i32 = 58;
 const RECENT: usize = 4;
+/// A recent row held this long (ms) is taken off the list (`D idx` to the phone).
+const HOLD_MS: u32 = 550;
 /// Moved more than this from down to up: a drag.
 const DRAG: i32 = 24;
 const FRAME_MS: u32 = 80;
@@ -123,6 +127,8 @@ struct Ui {
     n_note: usize,
     recent: [([u8; 48], usize); RECENT],
     n_recent: usize,
+    /// when the finger went down (a recent row held: taken off)
+    down_at: u32,
     pic: Decoder,
     /// page view has a picture on the panel
     pictured: bool,
@@ -131,6 +137,25 @@ struct Ui {
     pscroll: i32,
     /// where the keyboard was opened from (back returns there)
     keys_from: Screen,
+    /// a tap in page view waits for the phone's answer (since `tap_at`): a spinner
+    tapping: bool,
+    /// page view as a picture of the page (the mode button: default → picture → text → default)
+    pmode: bool,
+    /// the page has more below (1), above (2) what came; the watch's drawn view isn't for this site (4)
+    more: u8,
+    /// the next part asked for (one at a time)
+    asking: bool,
+    /// the last search or address typed: shown in the bottom bar
+    searched: [u8; 64],
+    n_searched: usize,
+    tap_at: u32,
+    /// the video player: its title, where it is (s), paused, a frame on the panel
+    vtitle: [u8; 80],
+    n_vtitle: usize,
+    vcur: u16,
+    vdur: u16,
+    vpaused: bool,
+    vframe: bool,
     /// page view's tappable places: x, y (page px), w, h, kind
     boxes: [(i16, i16, i16, i16, u8); BOXES],
     n_boxes: usize,
@@ -153,11 +178,25 @@ fn main(api: &'static Api) -> i32 {
         n_note: 0,
         recent: [([0; 48], 0); RECENT],
         n_recent: 0,
+        down_at: 0,
         pic: Decoder::new(),
         pictured: false,
         video: false,
         pscroll: 0,
         keys_from: Screen::Start,
+        tapping: false,
+        pmode: false,
+        more: 0,
+        asking: false,
+        searched: [0; 64],
+        n_searched: 0,
+        tap_at: 0,
+        vtitle: [0; 80],
+        n_vtitle: 0,
+        vcur: 0,
+        vdur: 0,
+        vpaused: false,
+        vframe: false,
         boxes: [(0, 0, 0, 0, 0); BOXES],
         n_boxes: 0,
         shown_at: 0,
@@ -222,7 +261,9 @@ fn main(api: &'static Api) -> i32 {
                 if redraw {
                     ui.later();
                 } else if drew {
-                    if ui.screen == Screen::Page {
+                    if ui.screen == Screen::Page && ui.video {
+                        ui.draw_player();
+                    } else if ui.screen == Screen::Page {
                         ui.draw_switch();
                     }
                     ui.shown();
@@ -288,6 +329,12 @@ impl Ui {
                 }
                 if self.screen == Screen::Start { Got::Redraw } else { Got::None }
             }
+            Some(b'b') => {
+                let t = cmf_wp2_ui::text::fit(&m[1..], 64).as_bytes();
+                self.searched[..t.len()].copy_from_slice(t);
+                self.n_searched = t.len();
+                if self.screen == Screen::Page || self.screen == Screen::Reader { Got::Redraw } else { Got::None }
+            }
             Some(b'Z') => {
                 self.to_start();
                 Got::Redraw
@@ -316,10 +363,39 @@ impl Ui {
             Some(b'M') if m.len() == 2 => {
                 let was = self.video;
                 self.video = m[1] == 1;
-                // stopped: the page again
-                if was && !self.video && self.screen == Screen::Page { Got::Redraw } else { Got::None }
+                self.tapping = false;
+                if self.video && !was {
+                    // the player: black till its first frame
+                    self.vframe = false;
+                    self.vpaused = false;
+                    self.vcur = 0;
+                    self.vdur = 0;
+                    self.n_vtitle = 0;
+                }
+                if self.screen == Screen::Page && was != self.video { Got::Redraw } else { Got::None }
             }
-            Some(b'Y') if self.screen == Screen::Page => Got::Redraw,
+            Some(b'U') => {
+                let t = cmf_wp2_ui::text::fit(&m[1..], 80).as_bytes();
+                self.vtitle[..t.len()].copy_from_slice(t);
+                self.n_vtitle = t.len();
+                if self.video && self.screen == Screen::Page { Got::Drew } else { Got::None }
+            }
+            Some(b'u') if m.len() == 6 => {
+                self.vcur = u16::from_le_bytes([m[1], m[2]]);
+                self.vdur = u16::from_le_bytes([m[3], m[4]]);
+                self.vpaused = m[5] == 1;
+                if self.video && self.screen == Screen::Page { Got::Drew } else { Got::None }
+            }
+            // the page just begun: where the view starts on it, what more there is
+            Some(b'y') if m.len() == 4 && self.screen == Screen::Page && !self.video => {
+                self.pscroll = i32::from(u16::from_le_bytes([m[1], m[2]]));
+                self.more = m[3];
+                Got::None
+            }
+            Some(b'Y') if self.screen == Screen::Page => {
+                self.tapping = false;
+                Got::Redraw
+            }
             Some(b'G') => {
                 // page view, whether asked or not: no text here, or a video
                 if self.screen != Screen::Keys {
@@ -330,18 +406,25 @@ impl Ui {
                 self.n_note = 0;
                 Got::Redraw
             }
-            Some(b'J' | b'j') | Some(b'I' | b'D' | b'E') if self.screen == Screen::Page && !self.video => {
+            Some(b'J' | b'j' | b'o' | b'p') | Some(b'I' | b'D' | b'E') if self.screen == Screen::Page && !self.video => {
                 match long().message(m) {
+                    // a new page: the last one goes at once (nothing of it left under the new one)
                     long::Got::Begin => {
+                        self.tapping = false;
                         self.pscroll = 0;
                         self.n_boxes = 0;
                         self.pictured = false;
-                        Got::None
+                        self.more = 0;
+                        // the next part of the same page: what is on screen stays till it is there
+                        if core::mem::replace(&mut self.asking, false) { Got::None } else { Got::Redraw }
                     }
-                    // the page once its first screen came; then each band drawn if in view
+                    // the page shown whole once its first screen came (the ring round the edge fills till then);
+                    // then what comes in view is drawn
                     long::Got::Band(y0, y1) => {
                         if !self.pictured {
-                            if long().came() >= 466.min(long().height) {
+                            // all of the first screen: something below it came (the page's own colour, one entry the
+                            // page tall, comes first: no measure)
+                            if y0 >= (self.pscroll + 466).min(long().height) {
                                 self.pictured = true;
                                 self.n_note = 0;
                                 return Got::Redraw;
@@ -363,6 +446,9 @@ impl Ui {
             }
             Some(b'I' | b'D' | b'E') if self.screen == Screen::Page => {
                 let st = self.pic.message(m, &mut Screen565(self.api));
+                if matches!(st, Status::Done(_)) {
+                    self.vframe = true;
+                }
                 if st == Status::Begin && !self.pictured {
                     // the first picture: the loading words go
                     self.pictured = true;
@@ -431,15 +517,21 @@ impl Ui {
             }
             Screen::Reader => self.draw_reader(),
             Screen::Page => {
-                if !self.pictured && !self.video {
-                    Surface::rect(&mut s, 0, 0, 466, 466, 0);
-                    if self.loading() {
-                        self.spinner_words();
-                    } else {
-                        let t = if self.n_note > 0 { self.note() } else { "Nothing to show" };
-                        centre_fit(&mut s, C, 222, t, 320, GREY);
+                if self.video {
+                    // the player: a redraw keeps the frame on the panel (black till the first)
+                    if !self.vframe {
+                        Surface::rect(&mut s, 0, 0, 466, 466, 0);
+                        centre_fit(&mut s, C, 222, "Starting the video\u{2026}", 300, GREY);
                     }
-                } else if !self.video {
+                    self.draw_player();
+                    self.shown();
+                    return;
+                }
+                if !self.pictured {
+                    Surface::rect(&mut s, 0, 0, 466, 466, 0);
+                    let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
+                    centre_fit(&mut s, C, 222, t, 320, GREY);
+                } else {
                     self.draw_long();
                 }
                 self.draw_switch();
@@ -459,9 +551,11 @@ impl Ui {
         rrect(&mut s, C - w / 2, y, w, h, h / 2, CARD, BLACK);
         centre_fit(&mut s, C, y + h / 2 - 12, "Search or address", w - 30, W);
         if self.n_note > 0 {
-            centre_fit(&mut s, C, 166, self.note(), 320, SOFT);
+            centre_fit(&mut s, C, 412, self.note(), 260, SOFT);
+        } else if self.n_recent > 0 {
+            centre_fit(&mut s, C, 412, "Hold a page to remove it", 260, GREY);
         }
-        for i in 0..self.n_recent {
+        for i in 0..self.n_recent.min(RECENT) {
             let y = ROWS_Y + 4 + i as i32 * ROW_H;
             let (x0, x1) = cmf_wp2_ui::geom::chord(y, y + ROW_H - 8, 30);
             rrect(&mut s, x0, y, x1 - x0, ROW_H - 8, 18, CARD, BLACK);
@@ -478,12 +572,8 @@ impl Ui {
         let title = if p.n_blocks == 0 && self.n_note > 0 { "" } else { p.title() };
         centre_fit(&mut s, C, 28, title, 240, GREY);
         if p.n_blocks == 0 {
-            if self.loading() {
-                self.spinner_words();
-            } else {
-                let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
-                centre_fit(&mut s, C, 222, t, 320, GREY);
-            }
+            let t = if self.n_note > 0 { self.note() } else { "Loading\u{2026}" };
+            centre_fit(&mut s, C, 222, t, 320, GREY);
         }
         let x0 = C - page::WIDTH / 2;
         for l in &p.lines[..p.n_lines] {
@@ -518,57 +608,57 @@ impl Ui {
     fn loading(&self) -> bool {
         match self.screen {
             // an error note ("Couldn't load") stops it
+            Screen::Page if self.video => false,
             Screen::Page if self.pictured => {
-                // the rest still coming, and the view reaches past what came
+                // a tap waiting for its answer (10 s at most); the rest still coming, and the view reaches past it
                 let l = long();
-                !self.video && l.done == 0 && self.pscroll + 466 > l.came()
+                (self.tapping && self.api.now().wrapping_sub(self.tap_at) < 10_000)
+                    || (l.done == 0 && self.pscroll + 466 > l.came())
             }
             Screen::Page => !self.video && (self.n_note == 0 || self.note[..self.n_note].ends_with(b"\xE2\x80\xA6")),
             // a note that ends "…" is under way ("Loading…"); others ("Couldn't load") are not
-            Screen::Reader => page().n_blocks == 0 && self.note[..self.n_note].ends_with(b"\xE2\x80\xA6"),
+            Screen::Reader => self.note[..self.n_note].ends_with(b"\xE2\x80\xA6"),
             _ => false,
         }
     }
 
-    /// The loading ring round the panel's edge: a turning arc while waiting, filling as the page comes.
+    /// The loading ring round the panel's edge (as Maps'): a turning arc while waiting, filling as the page comes.
     fn draw_ring(&self) {
         let mut s = self.api;
         let l = long();
         let bg = Rgb(0, 0, 0);
         arc(&mut s, C, C, 226, 232, 0, 65536, Rgb(0x30, 0x30, 0x30), None, bg);
-        if self.screen == Screen::Page && l.height > 0 && l.done == 0 && l.came() > 0 {
+        if self.screen == Screen::Page && self.pictured && !self.tapping && l.height > 0 && l.done == 0 {
             let f = (l.came().clamp(0, l.height) as u32 * 65536 / l.height as u32).max(2048);
-            arc(&mut s, C, C, 226, 232, 49152, f, Rgb(0xFF, 0xFF, 0xFF), None, bg);
+            arc(&mut s, C, C, 226, 232, 49152, f, WHITE, None, bg);
         } else {
             let a = (self.api.now().wrapping_mul(70) & 0xFFFF) as u16;
-            arc(&mut s, C, C, 226, 232, a, 14000, Rgb(0xFF, 0xFF, 0xFF), None, bg);
+            arc(&mut s, C, C, 226, 232, a, 14000, WHITE, None, bg);
         }
     }
 
-    fn spinner_words(&self) {
+    /// The player's title (top), where it is (a bar and the times, bottom), and a pause sign while paused.
+    fn draw_player(&self) {
         let mut s = self.api;
-        let l = long();
-        let mut buf = [0u8; 40];
-        let t: &str = if self.n_note > 0 {
-            self.note()
-        } else if self.screen == Screen::Page && l.height > 0 {
-            let pc = (l.came() * 100 / l.height).clamp(0, 99) as u32;
-            let mut n = 0;
-            for &b in b"Loading the page " {
-                buf[n] = b;
-                n += 1;
-            }
-            if pc >= 10 {
-                buf[n] = b'0' + (pc / 10) as u8;
-                n += 1;
-            }
-            buf[n] = b'0' + (pc % 10) as u8;
-            buf[n + 1] = b'%';
-            core::str::from_utf8(&buf[..n + 2]).unwrap_or("")
-        } else {
-            "Loading\u{2026}"
-        };
-        centre_fit(&mut s, C, 222, t, 320, GREY);
+        let t = core::str::from_utf8(&self.vtitle[..self.n_vtitle]).unwrap_or("");
+        Surface::rect(&mut s, 80, 24, 306, 30, 0);
+        centre_fit(&mut s, C, 28, if t.is_empty() { "Video" } else { t }, 290, W);
+        let (x, y, w) = (C - 140, 392, 280);
+        Surface::rect(&mut s, x - 10, y - 8, w + 20, 56, 0);
+        Surface::rect(&mut s, x, y, w, 4, rgb565(0x50, 0x50, 0x50));
+        if self.vdur > 0 {
+            let f = (i32::from(self.vcur) * w / i32::from(self.vdur)).clamp(0, w);
+            Surface::rect(&mut s, x, y, f, 4, rgb565(0xD7, 0x19, 0x21));
+            disc(&mut s, x + f, y + 2, 6, RED, BLACK);
+        }
+        let mut buf = [0u8; 24];
+        let n = clock(&mut buf, self.vcur, self.vdur);
+        centre_fit(&mut s, C, y + 14, core::str::from_utf8(&buf[..n]).unwrap_or(""), 200, GREY);
+        if self.vpaused {
+            disc(&mut s, C, 230, 36, CARD, BLACK);
+            Surface::rect(&mut s, C - 12, 214, 8, 32, 0xFFFF);
+            Surface::rect(&mut s, C + 4, 214, 8, 32, 0xFFFF);
+        }
     }
 
     /// Page view's page where it is scrolled to; below what came, black (and why, at the end).
@@ -584,7 +674,7 @@ impl Ui {
                 centre_fit(&mut s, C, end.max(0) + 30, t, 300, GREY);
             }
         }
-        l.draw(&mut self.pic, &mut Screen565(self.api), self.pscroll, 0, end.min(466));
+        l.draw(&mut self.pic, &mut Screen565(self.api), &mut s, self.pscroll, 0, end.min(466));
         if self.n_note > 0 {
             rrect(&mut s, C - 150, 20, 300, 36, 18, CARD, BLACK);
             centre_fit(&mut s, C, 28, self.note(), 270, W);
@@ -600,11 +690,32 @@ impl Ui {
         disc(&mut s, cx - w / 2 + 24, y + 19, 8, Rgb(0x80, 0x80, 0x80), CARD);
         disc(&mut s, cx - w / 2 + 24, y + 19, 5, CARD, Rgb(0x80, 0x80, 0x80));
         Surface::rect(&mut s, cx - w / 2 + 29, y + 25, 3, 7, GREY);
-        font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search", w - 56, GREY);
+        match core::str::from_utf8(&self.searched[..self.n_searched]) {
+            Ok(t) if !t.is_empty() => font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, t, w - 56, 0xFFFF),
+            _ => font::fitted(&mut s, cx - w / 2 + 42, y + h / 2 - 12, "Search or address", w - 56, GREY),
+        };
+        // the round button, the mode it goes to: a photo (picture, from drawn), lines (text, from picture), a page's
+        // frame (drawn, from text)
         let (cx, y, w, h) = SWITCH;
-        let label = if self.screen == Screen::Page { "Text" } else { "Page" };
-        rrect(&mut s, cx - w / 2, y, w, h, h / 2, WHITE, BLACK);
-        centre_fit(&mut s, cx, y + h / 2 - 12, label, w - 16, 0);
+        disc(&mut s, cx, y + h / 2, w / 2, WHITE, BLACK);
+        let (x0, cy) = (cx - 11, y + h / 2);
+        if self.screen == Screen::Page && !self.pmode && self.more & 4 == 0 {
+            Surface::rect(&mut s, x0, cy - 9, 22, 18, 0);
+            Surface::rect(&mut s, x0 + 3, cy - 6, 16, 12, 0xFFFF);
+            Surface::rect(&mut s, x0 + 4, cy + 1, 6, 4, 0);
+            Surface::rect(&mut s, x0 + 9, cy - 2, 6, 7, 0);
+            disc(&mut s, x0 + 15, cy - 3, 2, RED, WHITE);
+        } else if self.screen == Screen::Page {
+            for (k, len) in [22, 22, 14].into_iter().enumerate() {
+                Surface::rect(&mut s, x0, cy - 8 + 7 * k as i32, len, 3, 0);
+            }
+        } else {
+            Surface::rect(&mut s, x0, cy - 9, 22, 3, 0);
+            Surface::rect(&mut s, x0, cy + 6, 22, 3, 0);
+            Surface::rect(&mut s, x0, cy - 9, 3, 18, 0);
+            Surface::rect(&mut s, x0 + 19, cy - 9, 3, 18, 0);
+            Surface::rect(&mut s, x0 + 6, cy - 3, 10, 6, rgb565(0xD7, 0x19, 0x21));
+        }
     }
 
     fn on_search(&self, x: i32, y: i32) -> bool {
@@ -632,6 +743,7 @@ impl Ui {
     fn touch_down(&mut self, e: Event) {
         let (x, y) = (i32::from(e.x), i32::from(e.y));
         self.down = Some((x, y));
+        self.down_at = self.api.now();
         if self.screen != Screen::Keys {
             return;
         }
@@ -686,18 +798,31 @@ impl Ui {
         m[0] = if self.field { b'W' } else { b'Q' };
         m[1..1 + n].copy_from_slice(&self.keys.text[..n]);
         self.send(&m[..1 + n]);
+        if !self.field && n > 0 {
+            let k = n.min(self.searched.len());
+            self.searched[..k].copy_from_slice(&self.keys.text[..k]);
+            self.n_searched = k;
+        }
         if self.field {
             self.field = false;
             self.screen = Screen::Page;
             self.pictured = false;
             self.set_note(b"Sending\xE2\x80\xA6");
         } else {
-            page().clear();
-            self.scroll = 0;
-            self.screen = Screen::Reader;
-            self.set_note(b"Loading\xE2\x80\xA6");
+            // page view by default (the reader's button is next to the search box)
+            self.to_page_view();
         }
         self.draw();
+    }
+
+    fn to_page_view(&mut self) {
+        self.scroll = 0;
+        self.pscroll = 0;
+        self.screen = Screen::Page;
+        self.pictured = false;
+        self.video = false;
+        self.tapping = false;
+        self.set_note(b"Loading\xE2\x80\xA6");
     }
 
     fn touch_up(&mut self, e: Event) {
@@ -712,8 +837,18 @@ impl Ui {
         let dy = i32::from(e.y) - y;
         let dragged = dy.abs() > DRAG && e.y != 0;
         match self.screen {
+            Screen::Start if !dragged && self.api.now().wrapping_sub(self.down_at) >= HOLD_MS => self.start_hold(y),
             Screen::Start if !dragged => self.start_tap(x, y),
             Screen::Reader if dragged => self.scroll_by(-dy),
+            Screen::Page if self.video && !dragged => {
+                // the player: pause / play
+                self.motor.play(haptic::TICK);
+                self.vpaused = !self.vpaused;
+                self.send(b"P");
+                self.draw_player();
+                self.shown();
+            }
+            Screen::Page if self.video => {}
             Screen::Page if dragged => self.page_scroll(-dy),
             _ if self.on_switch(x, y) => self.switch(),
             _ if self.on_search(x, y) => self.search(),
@@ -737,6 +872,8 @@ impl Ui {
                 };
                 let (a, b) = ((x.clamp(0, 465) as u16).to_le_bytes(), (y.clamp(0, 65535) as u16).to_le_bytes());
                 self.send(&[b'T', a[0], a[1], b[0], b[1]]);
+                self.tapping = true;
+                self.tap_at = self.api.now();
             }
             _ => {}
         }
@@ -759,6 +896,22 @@ impl Ui {
         best.map(|(b, _)| b)
     }
 
+    /// A recent row held: off the list here and on the phone (`D idx`).
+    fn start_hold(&mut self, y: i32) {
+        let r = (y - ROWS_Y).div_euclid(ROW_H);
+        if y < ROWS_Y || !(0..self.n_recent as i32).contains(&r) {
+            return;
+        }
+        let r = r as usize;
+        self.motor.play(haptic::DOUBLE);
+        self.send(&[b'D', r as u8]);
+        self.recent.copy_within(r + 1..self.n_recent, r);
+        self.n_recent -= 1;
+        let mut s = self.api;
+        Surface::rect(&mut s, 0, ROWS_Y, 466, 466 - ROWS_Y, 0);
+        self.draw();
+    }
+
     fn start_tap(&mut self, x: i32, y: i32) {
         let (wy, wh, ww) = WHERE;
         if (wy - 8..wy + wh + 8).contains(&y) && (x - C).abs() <= ww / 2 + 8 {
@@ -773,10 +926,7 @@ impl Ui {
         if y >= ROWS_Y && (0..self.n_recent as i32).contains(&r) {
             self.motor.play(haptic::TICK);
             self.send(&[b'O', r as u8]);
-            page().clear();
-            self.scroll = 0;
-            self.screen = Screen::Reader;
-            self.set_note(b"Loading\xE2\x80\xA6");
+            self.to_page_view();
             self.draw();
         }
     }
@@ -802,10 +952,19 @@ impl Ui {
         self.motor.play(haptic::TICK);
         if self.screen == Screen::Reader {
             self.screen = Screen::Page;
+            self.pmode = false;
             self.pictured = false;
             self.n_note = 0;
             self.send(b"V\x01");
+        } else if !self.pmode && self.more & 4 == 0 {
+            // a picture of the page: page view still, the phone sends it again
+            self.pmode = true;
+            self.pictured = false;
+            self.video = false;
+            self.set_note(b"Loading\xE2\x80\xA6");
+            self.send(b"V\x02");
         } else {
+            self.pmode = false;
             self.screen = Screen::Reader;
             self.video = false;
             self.send(b"V\x00");
@@ -831,7 +990,17 @@ impl Ui {
         let l = long();
         let to = if l.done == 0 { l.height.max(l.came()) } else { l.came() };
         let max = (to - 300).max(0);
-        let s = (self.pscroll + d).clamp(0, max);
+        // at an end with more there: the real page's next part (the phone scrolls it), the feed's next posts
+        let want = self.pscroll + d;
+        if l.done != 0 && !self.asking && ((want > max && self.more & 1 != 0) || (want < 0 && self.more & 2 != 0)) {
+            self.asking = true;
+            let b = (if want > max { 1i16 } else { -1 }).to_le_bytes();
+            self.send(&[b'S', b[0], b[1]]);
+            self.set_note(b"Loading more\xE2\x80\xA6");
+            self.later();
+            return;
+        }
+        let s = want.clamp(0, max);
         if s != self.pscroll {
             self.pscroll = s;
             self.later();
@@ -845,10 +1014,51 @@ impl Ui {
                 self.dial(a);
             }
             Screen::Reader => self.scroll_by(d.signum() * 3 * page::LH / 2),
+            Screen::Page if self.video => {
+                // the player: 10 s a step
+                let dt = (d.signum() * 10) as i16;
+                let b = dt.to_le_bytes();
+                self.send(&[b'k', b[0], b[1]]);
+                self.vcur = (i32::from(self.vcur) + i32::from(dt)).clamp(0, i32::from(self.vdur.max(self.vcur))) as u16;
+                self.draw_player();
+                self.shown();
+            }
             Screen::Page => self.page_scroll(d.signum() * 140),
             _ => {}
         }
     }
+}
+
+/// "m:ss / m:ss" (or "m:ss" with no length yet) into `buf`: its length.
+fn clock(buf: &mut [u8; 24], cur: u16, dur: u16) -> usize {
+    fn put(buf: &mut [u8; 24], mut n: usize, v: u16) -> usize {
+        let (m, s) = (v / 60, v % 60);
+        let mut d = [0u8; 5];
+        let (mut k, mut mm) = (0, m);
+        loop {
+            d[k] = b'0' + (mm % 10) as u8;
+            k += 1;
+            mm /= 10;
+            if mm == 0 || k == 5 {
+                break;
+            }
+        }
+        while k > 0 {
+            k -= 1;
+            buf[n] = d[k];
+            n += 1;
+        }
+        buf[n] = b':';
+        buf[n + 1] = b'0' + (s / 10) as u8;
+        buf[n + 2] = b'0' + (s % 10) as u8;
+        n + 3
+    }
+    let mut n = put(buf, 0, cur);
+    if dur > 0 {
+        buf[n..n + 3].copy_from_slice(b" / ");
+        n = put(buf, n + 3, dur);
+    }
+    n
 }
 
 fn centre_fit(s: &mut &'static Api, cx: i32, y: i32, text: &str, px: i32, c: u16) {
