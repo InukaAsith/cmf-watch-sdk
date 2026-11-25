@@ -383,6 +383,14 @@ pub fn pin_in(s: &mut &'static Api, x: i32, y: i32, c: Rgb) {
     disc(s, x, y - 13, 3, Rgb(0xFF, 0xFF, 0xFF), c);
 }
 
+/// Draws over what is there instead of filling the panel first (Offline Maps draws a few cells into one picture).
+static mut OVER: bool = false;
+
+#[allow(dead_code)]
+pub fn draw_over(on: bool) {
+    unsafe { OVER = on };
+}
+
 /// The map: fills the panel with it. `route`: frame points drawn on top of the streets.
 /// `keep`: panel boxes the screen's buttons take (no names under them).
 pub fn draw(
@@ -393,7 +401,9 @@ pub fn draw(
     keep: &[(i32, i32, i32, i32)],
 ) {
     let mut s = api;
-    Surface::rect(&mut s, 0, 0, 466, 466, BG.rgb565());
+    if !unsafe { OVER } {
+        Surface::rect(&mut s, 0, 0, 466, 466, BG.rgb565());
+    }
     // areas
     for r in sc.recs() {
         if let Rec::Area { class, pts } = r {

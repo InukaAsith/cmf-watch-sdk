@@ -1,110 +1,125 @@
-//! Offline map pack on the watch (loader FILE service; hosts/mapbuild.py writes it):
+//! The offline map on the watch (loader FILE service), drawn by the watch itself as Maps draws its map: CMFX cuts
+//! OpenStreetMap's vector tiles (OpenFreeMap) for an area into square cells, a few levels of them (fewer roads the
+//! farther out), each cell a file of Maps' scene records (atlas scene.rs) in metres of the pack's frame, clipped to
+//! its square.
 //!
-//! - file `idx`: `WMP1`, levels: u8, palette 16 × u16 (RGB565, shared by every tile), then per level (ascending z)
-//!   `z: u8, x0: u32, y0: u32, w: u8, h: u8, mm_per_px: u32` (the tile grid in OSM numbering; ground mm per pixel
-//!   at the centre, for the scale bar), then `x: u32, y: u32`: the centre the pack was built round, in world pixels
-//!   at zoom 20 (no floats on the watch: positions are always z20 world pixels).
-//! - files `t<level>_<col>_<row>`: one 256 × 256 px tile, `scale: u8` (1, or 2 for a 128² tile drawn doubled) then
-//!   pixview run tokens (rle.rs).
+//! - file `idx`: `WMV1`, `lat0:i32 lon0:i32` (1e-7°, the frame's centre), `mm_per_deg_lon:u32`, `n:u8`, then per
+//!   level, coarse to fine, `side:u16 x0:i16 y0:i16 cols:u8 rows:u8 min_k:u8` (metres; the grid's south-west corner;
+//!   the level is drawn from zoom `min_k` on, px a metre × 256).
+//! - files `v<level>_<col>_<row>` (col east, row north from the corner): the cell's records; none: nothing there.
 //!
-//! Phone → watch: `W` delete the map (watch acks `w`), `F name…` a new file, `f data…` its next bytes, `c` file complete (watch acks `a`),
-//! `P done:u16 total:u16` progress, `Z` pack complete, `X x:u32 y:u32` the phone's position (z20 world px).
-//! Watch → phone: `R` ready, `a` file stored, `k` pack loaded.
+//! Phone → watch: `W` delete the map (`w` back), `F name…` a new file, `f data…` its next bytes, `c` file complete
+//! (`a` back), `P done:u16 total:u16` progress, `Z` the map complete (`k` back); a route: `G n:u16 metres:u32
+//! secs:u32` then `g seq:u8 (x:i16 y:i16)…` (30 points a message), `E text` it failed.
+//! Watch → phone: `R` ready, `D mode lat0:i32 lon0:i32 from_x:i16 from_y:i16 to_x:i16 to_y:i16` a route (mode 0
+//! drive, 2 walk; from i16::MIN: where the phone is), metres of the frame given.
 
-pub const TILE: i32 = 256;
-pub const WORLD_Z: u8 = 20;
-pub const MAX_LEVELS: usize = 6;
+use crate::geo::Frame;
+
+pub const MAX_LEVELS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Level {
-    pub z: u8,
-    pub x0: u32,
-    pub y0: u32,
-    pub w: u8,
-    pub h: u8,
-    pub mm_per_px: u32,
+    pub side: i32,
+    pub x0: i32,
+    pub y0: i32,
+    pub cols: u8,
+    pub rows: u8,
+    pub min_k: i32,
 }
 
+impl Level {
+    /// The cells (col, row) a square round `c` of half side `r` touches.
+    pub fn cells(&self, c: (i32, i32), r: i32) -> (core::ops::Range<i32>, core::ops::Range<i32>) {
+        let s = self.side.max(1);
+        let lo = |v: i32, o: i32, n: u8| (v - o).div_euclid(s).clamp(0, i32::from(n));
+        let hi = |v: i32, o: i32, n: u8| ((v - o).div_euclid(s) + 1).clamp(0, i32::from(n));
+        (lo(c.0 - r, self.x0, self.cols)..hi(c.0 + r, self.x0, self.cols), lo(c.1 - r, self.y0, self.rows)..hi(c.1 + r, self.y0, self.rows))
+    }
+
+    /// Cell (col, row)'s south-west corner, frame metres.
+    pub fn corner(&self, col: i32, row: i32) -> (i32, i32) {
+        (self.x0 + col * self.side, self.y0 + row * self.side)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Pack {
-    pub palette: [u16; 16],
+    pub frame: Frame,
     pub levels: [Level; MAX_LEVELS],
     pub n: usize,
-    pub centre: (u32, u32),
 }
 
 impl Pack {
-    pub const fn empty() -> Self {
-        Pack { palette: [0; 16], levels: [Level { z: 0, x0: 0, y0: 0, w: 0, h: 0, mm_per_px: 0 }; MAX_LEVELS], n: 0, centre: (0, 0) }
-    }
-
     pub fn parse(b: &[u8]) -> Option<Pack> {
-        if b.len() < 5 + 32 || &b[..4] != b"WMP1" {
+        if b.len() < 17 || &b[..4] != b"WMV1" {
             return None;
         }
-        let n = usize::from(b[4]).min(MAX_LEVELS);
-        let mut p = Pack::empty();
-        for (i, c) in p.palette.iter_mut().enumerate() {
-            *c = u16::from_le_bytes([b[5 + 2 * i], b[6 + 2 * i]]);
-        }
-        let u = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
-        let mut at = 37;
-        for l in p.levels[..n].iter_mut() {
-            if b.len() < at + 15 {
+        let i32_at = |i: usize| i32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let i16_at = |i: usize| i32::from(i16::from_le_bytes([b[i], b[i + 1]]));
+        let mut p = Pack {
+            frame: Frame { lat0_e7: i32_at(4), lon0_e7: i32_at(8), mm_per_deg_lon: i32_at(12) as u32 },
+            ..Pack::default()
+        };
+        p.n = usize::from(b[16]).min(MAX_LEVELS);
+        for (k, l) in p.levels[..p.n].iter_mut().enumerate() {
+            let at = 17 + 9 * k;
+            if b.len() < at + 9 {
                 return None;
             }
-            *l = Level { z: b[at], x0: u(at + 1), y0: u(at + 5), w: b[at + 9], h: b[at + 10], mm_per_px: u(at + 11) };
-            if l.z > WORLD_Z {
-                return None;
-            }
-            at += 15;
+            *l = Level {
+                side: i32::from(u16::from_le_bytes([b[at], b[at + 1]])),
+                x0: i16_at(at + 2),
+                y0: i16_at(at + 4),
+                cols: b[at + 6],
+                rows: b[at + 7],
+                min_k: i32::from(b[at + 8]),
+            };
         }
-        if b.len() >= at + 8 {
-            p.centre = (u(at), u(at + 4));
-        }
-        p.n = n;
-        (n > 0).then_some(p)
+        (p.n > 0).then_some(p)
     }
 
-    /// The `I` header pixview's decoder wants for a tile of this pack.
-    pub fn header(&self, scale: u8) -> [u8; crate::rle::HEADER] {
-        let mut h = [0u8; crate::rle::HEADER];
-        let n = (TILE / i32::from(scale.max(1))) as u16;
-        h[0] = b'I';
-        h[1..3].copy_from_slice(&n.to_le_bytes());
-        h[3..5].copy_from_slice(&n.to_le_bytes());
-        h[5] = scale;
-        for (i, c) in self.palette.iter().enumerate() {
-            h[10 + 2 * i..12 + 2 * i].copy_from_slice(&c.to_le_bytes());
+    /// The finest level drawn at zoom `k`.
+    pub fn level_for(&self, k: i32) -> usize {
+        (0..self.n).rev().find(|&i| k >= self.levels[i].min_k).unwrap_or(0)
+    }
+
+    /// The area's square (all levels): centre and half side, metres.
+    pub fn bounds(&self) -> ((i32, i32), (i32, i32)) {
+        let mut lo = (i32::MAX, i32::MAX);
+        let mut hi = (i32::MIN, i32::MIN);
+        for l in &self.levels[..self.n] {
+            lo = (lo.0.min(l.x0), lo.1.min(l.y0));
+            hi = (hi.0.max(l.x0 + l.side * i32::from(l.cols)), hi.1.max(l.y0 + l.side * i32::from(l.rows)));
         }
-        h
+        (lo, hi)
     }
 }
 
-/// `t<level>_<col>_<row>` into `out`.
-pub fn tile_name(level: usize, col: u32, row: u32, out: &mut [u8; 20]) -> usize {
+/// `v<level>_<col>_<row>` into `out`; its length.
+pub fn cell_name(level: usize, col: i32, row: i32, out: &mut [u8; 20]) -> usize {
     let mut n = 0;
-    let mut put = |b: u8| {
-        out[n] = b;
-        n += 1;
+    let mut put = |b: u8, n: &mut usize| {
+        out[*n] = b;
+        *n += 1;
     };
-    put(b't');
-    for (i, v) in [level as u32, col, row].into_iter().enumerate() {
-        if i > 0 {
-            put(b'_');
-        }
-        let mut d = [0u8; 10];
+    put(b'v', &mut n);
+    put(b'0' + level as u8, &mut n);
+    for v in [col, row] {
+        put(b'_', &mut n);
+        let mut d = [0u8; 4];
         let mut k = 0;
-        let mut v = v;
+        let mut v = v.max(0) as u32;
         loop {
             d[k] = b'0' + (v % 10) as u8;
             k += 1;
             v /= 10;
-            if v == 0 {
+            if v == 0 || k == 4 {
                 break;
             }
         }
-        for j in (0..k).rev() {
-            put(d[j]);
+        for i in (0..k).rev() {
+            put(d[i], &mut n);
         }
     }
     n
@@ -115,34 +130,46 @@ mod tests {
     use super::*;
     extern crate std;
 
-    #[test]
-    fn names() {
-        let mut b = [0u8; 20];
-        let n = tile_name(2, 13, 0, &mut b);
-        assert_eq!(&b[..n], b"t2_13_0");
+    fn idx() -> std::vec::Vec<u8> {
+        let mut b = b"WMV1".to_vec();
+        b.extend(69_271_000i32.to_le_bytes());
+        b.extend(798_612_000i32.to_le_bytes());
+        b.extend(110_511_000u32.to_le_bytes());
+        b.push(2);
+        // 6 km cells, 4 × 4 round the centre, from k 0; 1.5 km cells, 8 × 8, from k 80
+        for (side, x0, n, k) in [(6000u16, -12000i16, 4u8, 0u8), (1500, -6000, 8, 80)] {
+            b.extend(side.to_le_bytes());
+            b.extend(x0.to_le_bytes());
+            b.extend(x0.to_le_bytes());
+            b.extend([n, n, k]);
+        }
+        b
     }
 
     #[test]
-    fn idx_round_trip() {
-        let mut b = std::vec::Vec::from(*b"WMP1");
-        b.push(2);
-        for i in 0..16u16 {
-            b.extend((i * 3).to_le_bytes());
-        }
-        for (z, x0, y0, w, h) in [(15u8, 16370u32, 10896u32, 4u8, 3u8), (16, 32740, 21792, 8, 6)] {
-            b.push(z);
-            b.extend(x0.to_le_bytes());
-            b.extend(y0.to_le_bytes());
-            b.extend([w, h]);
-            b.extend(1490u32.to_le_bytes());
-        }
-        b.extend(134_103_000u32.to_le_bytes());
-        b.extend(89_255_000u32.to_le_bytes());
-        let p = Pack::parse(&b).unwrap();
+    fn parses_and_picks_levels() {
+        let p = Pack::parse(&idx()).unwrap();
         assert_eq!(p.n, 2);
-        assert_eq!(p.palette[2], 6);
-        assert_eq!(p.levels[1], Level { z: 16, x0: 32740, y0: 21792, w: 8, h: 6, mm_per_px: 1490 });
-        assert_eq!(p.centre, (134_103_000, 89_255_000));
-        assert!(Pack::parse(b"WMP0").is_none());
+        assert_eq!(p.frame.lon0_e7, 798_612_000);
+        assert_eq!(p.levels[1], Level { side: 1500, x0: -6000, y0: -6000, cols: 8, rows: 8, min_k: 80 });
+        assert_eq!(p.level_for(30), 0);
+        assert_eq!(p.level_for(80), 1);
+        assert_eq!(p.bounds(), ((-12000, -12000), (12000, 12000)));
+        assert!(Pack::parse(b"WMP1").is_none());
+    }
+
+    #[test]
+    fn cells_round_a_point() {
+        let l = Level { side: 1500, x0: -6000, y0: -6000, cols: 8, rows: 8, min_k: 80 };
+        // the centre with 700 m round it: cells 3 and 4 each way
+        assert_eq!(l.cells((0, 0), 700), (3..5, 3..5));
+        // the edge: cut to the grid
+        assert_eq!(l.cells((-5800, 5900), 400), (0..1, 7..8));
+        // wholly outside: none
+        assert_eq!(l.cells((-6500, 0), 400).0, 0..0);
+        assert_eq!(l.corner(3, 4), (-1500, 0));
+        let mut n = [0u8; 20];
+        let k = cell_name(1, 12, 7, &mut n);
+        assert_eq!(&n[..k], b"v1_12_7");
     }
 }
