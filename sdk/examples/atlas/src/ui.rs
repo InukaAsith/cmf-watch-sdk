@@ -133,8 +133,10 @@ const ROUTE_SCENE: (i32, i32) = (i32::MIN, i32::MIN);
 const FOCUS_SCENE: (i32, i32) = (i32::MIN, i32::MAX);
 /// A touch held this long on the map drops a pin.
 const HOLD_MS: u32 = 600;
-/// The ◎ button held this long: the watch's own GPS on or off (orange at once, then red: blinking while it looks for
-/// satellites, steady with a fix; each fix goes to the phone as `Y`, which uses it instead of its own).
+/// The ◎ button held this long: the watch's own GPS on or off; each fix goes to the phone as `Y`, which uses it
+/// instead of its own. ◎'s colour (as Offline Maps'): blue the iPhone's GPS, orange the iPhone's and the watch's
+/// (blinking: the iPhone's while the watch looks for satellites), red the watch's only (blinking: it looks, no
+/// iPhone fix).
 const GPS_HOLD_MS: u32 = 800;
 const ORANGE: Rgb = Rgb(0xFF, 0x8C, 0x00);
 // --- Results: the sheet under the map
@@ -392,12 +394,12 @@ struct Ui {
     pending: Option<usize>,
     /// ◎ down since (held GPS_HOLD_MS: the watch's GPS toggles)
     me_down: Option<u32>,
-    /// the watch's GPS: 0 off, 1 on, looking for satellites (orange), 2 a fix (red: blinking till the phone says it
-    /// uses it, `y`, steady while it does)
+    /// the watch's GPS: 0 off, 1 on, looking for satellites (◎ blinking), 2 a fix
     gps: u8,
     blink: bool,
-    /// the phone's last `y`
+    /// the phone's last `y`, and whether it had its own fix then
     used_at: Option<u32>,
+    phone_fix: bool,
 }
 
 /// A line of the results list.
@@ -746,7 +748,7 @@ impl Ui {
         }
     }
 
-    /// ◎ back to us (its colour: the watch's GPS).
+    /// ◎ back to us (its colour: where the place comes from, `gps_colour`).
     fn draw_me(&mut self) {
         let mut s = self.s;
         let fill = |on: bool| if on { WHITE } else { BUTTONC };
@@ -1988,12 +1990,14 @@ impl Ui {
         self.draw();
     }
 
-    /// ◎'s colour while the watch's GPS is on.
+    /// ◎'s colour while the watch's GPS is on: orange with the iPhone's own fix too (its last `y`), red without;
+    /// blinking while the watch looks for satellites.
     fn gps_colour(&self) -> Option<Rgb> {
+        let phone = self.used() && self.phone_fix;
         match self.gps {
-            1 => Some(ORANGE),
-            2 if self.used() || self.blink => Some(RED),
-            2 => Some(Rgb(0x50, 0x50, 0x50)),
+            1 if self.blink => Some(Rgb(0x50, 0x50, 0x50)),
+            1 | 2 if phone => Some(ORANGE),
+            1 | 2 => Some(RED),
             _ => None,
         }
     }
@@ -2020,7 +2024,6 @@ impl Ui {
         match self.api.gps_fix() {
             Some(f) if f.fix > 0 => {
                 self.gps = 2;
-                self.blink = !self.blink;
                 let mut m = [0u8; 14];
                 m[0] = b'Y';
                 m[1..5].copy_from_slice(&f.lat_e7.to_le_bytes());
@@ -2029,7 +2032,14 @@ impl Ui {
                 m[13] = f.sats;
                 self.send(&m);
             }
-            _ => self.gps = 1,
+            _ => {
+                self.gps = 1;
+                self.blink = !self.blink;
+                if self.blink {
+                    // looking: every 2 s a bare `Y`, the phone says whether it has its own fix (`y`)
+                    self.send(b"Y");
+                }
+            }
         }
         self.me_changed(was);
     }
@@ -2259,10 +2269,11 @@ impl Ui {
         let show = false;
         while let Some(m) = self.api.recv(&mut buf) {
             ask.answered();
-            if m == b"y" {
-                // the phone uses the watch's GPS: ◎ steady red
+            if m.first() == Some(&b'y') && m.len() <= 2 {
+                // the phone uses the watch's GPS, with (orange) or without (red) its own fix
                 let was = self.gps_colour();
                 self.used_at = Some(self.api.now());
+                self.phone_fix = m.get(1) == Some(&1);
                 self.me_changed(was);
                 continue;
             }
@@ -2469,6 +2480,7 @@ fn main(api: &'static Api) -> i32 {
         me_down: None,
         gps: 0,
         blink: false,
+        phone_fix: false,
         used_at: None,
     };
     api.own_back(true);
