@@ -12,6 +12,8 @@
 //!   `f x:i16 y:u16 w:u16 h:u16 c:u16` a frame (a 2 px border),
 //!   `t x:i16 y:u16 w:u16 c:u16 flags:u8 n:u8 text` a line of text from its top left, cut to `w` (flags: 1 bold,
 //!   2 underlined);
+//!   `g x:i16 y:u16 w:u16 h:u16 id:u8` the site's logo, built into this app (0 Google, 1 YouTube, 2 Wikipedia,
+//!   3 Fandom: scripts/browser-logos), in the middle of the box;
 //! `j` all of it came.
 
 use crate::rle::{Decoder, Surface as PicSurface, HEADER};
@@ -20,7 +22,7 @@ use cmf_wp2_ui::draw::rrect;
 use cmf_wp2_ui::{font, Surface};
 
 /// Shares its memory with the reader page (ui.rs): the two are never shown at once.
-pub const STORE: usize = 56 * 1024;
+pub const STORE: usize = 50 * 1024;
 pub const ENTRIES: usize = 200;
 const NONE: u16 = 0xFFFF;
 const BAND: u8 = 0;
@@ -220,6 +222,7 @@ fn draw_ops(ops: &[u8], s: &mut impl Surface, scroll: i32, top: i32, bottom: i32
         let need = match k {
             b'r' => 14,
             b'f' => 11,
+            b'g' => 10,
             b't' if m.len() >= 11 => 11 + usize::from(m[10]),
             _ => return,
         };
@@ -231,6 +234,10 @@ fn draw_ops(ops: &[u8], s: &mut impl Surface, scroll: i32, top: i32, bottom: i32
         let y = i32::from(u16_at(m, 3)) - scroll;
         let w = i32::from(u16_at(m, 5));
         match k {
+            b'g' => {
+                let h = i32::from(u16_at(m, 7));
+                logo(s, m[9], x + w / 2, y + h / 2, top, bottom);
+            }
             b'r' | b'f' => {
                 let h = i32::from(u16_at(m, 7));
                 let c = u16_at(m, 9);
@@ -272,6 +279,43 @@ fn draw_ops(ops: &[u8], s: &mut impl Surface, scroll: i32, top: i32, bottom: i32
                 if flags & 2 != 0 {
                     s.rect(x, y + font::HEIGHT, font::width(t).min(w), 1, c);
                 }
+            }
+        }
+    }
+}
+
+/// The built-in logos (scripts/browser-logos; none when it wasn't run): `count`, an offset:u16 each, then each
+/// `w h n palette565×n runs…`, a run a byte: colour (0 clear) high nibble, length − 1 low nibble, row after row.
+static LOGOS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/logos.bin"));
+
+/// Logo `id` centred on `cx`, `cy` (panel), only its rows in `top..bottom`.
+fn logo(s: &mut impl Surface, id: u8, cx: i32, cy: i32, top: i32, bottom: i32) {
+    let n = usize::from(LOGOS[0]);
+    let id = usize::from(id);
+    if id >= n {
+        return;
+    }
+    let o = usize::from(u16_at(LOGOS, 1 + 2 * id));
+    let (w, h, k) = (i32::from(LOGOS[o]), i32::from(LOGOS[o + 1]), usize::from(LOGOS[o + 2]));
+    let pal = o + 3;
+    let (x0, y0) = (cx - w / 2, cy - h / 2);
+    let (mut px, mut py) = (0, 0);
+    for &b in &LOGOS[pal + 2 * k..] {
+        if py >= h {
+            break;
+        }
+        let (c, mut len) = (usize::from(b >> 4), i32::from(b & 15) + 1);
+        while len > 0 {
+            let run = len.min(w - px);
+            let y = y0 + py;
+            if c != 0 && c <= k && y >= top && y < bottom {
+                s.rect(x0 + px, y, run, 1, u16_at(LOGOS, pal + 2 * (c - 1)));
+            }
+            px += run;
+            len -= run;
+            if px >= w {
+                px = 0;
+                py += 1;
             }
         }
     }
