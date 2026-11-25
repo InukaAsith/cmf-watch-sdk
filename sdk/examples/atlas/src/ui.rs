@@ -25,7 +25,7 @@ use crate::render::{self, View};
 use crate::scene::{Ev, Scene};
 use crate::state::{Effect, Nav, instruction};
 use crate::view::{self, ZOOMS};
-use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
+use cmf_wp2_app::{Api, BUTTON, CROWN, GPS, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::ask::Ask;
 use cmf_wp2_ui::color::{BLACK, Rgb, rgb565};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
@@ -133,6 +133,10 @@ const ROUTE_SCENE: (i32, i32) = (i32::MIN, i32::MIN);
 const FOCUS_SCENE: (i32, i32) = (i32::MIN, i32::MAX);
 /// A touch held this long on the map drops a pin.
 const HOLD_MS: u32 = 600;
+/// The ◎ button held this long: the watch's own GPS on or off (orange at once, then red: blinking while it looks for
+/// satellites, steady with a fix; each fix goes to the phone as `Y`, which uses it instead of its own).
+const GPS_HOLD_MS: u32 = 800;
+const ORANGE: Rgb = Rgb(0xFF, 0x8C, 0x00);
 // --- Results: the sheet under the map
 const SHEET_Y: i32 = 318;
 // --- Place: the card under the map
@@ -386,6 +390,14 @@ struct Ui {
     adding: bool,
     /// a row of the other group tapped: its map asked (`F`), it opens when the rows come placed
     pending: Option<usize>,
+    /// ◎ down since (held GPS_HOLD_MS: the watch's GPS toggles)
+    me_down: Option<u32>,
+    /// the watch's GPS: 0 off, 1 on, looking for satellites (orange), 2 a fix (red: blinking till the phone says it
+    /// uses it, `y`, steady while it does)
+    gps: u8,
+    blink: bool,
+    /// the phone's last `y`
+    used_at: Option<u32>,
 }
 
 /// A line of the results list.
@@ -456,6 +468,10 @@ impl Ui {
         if self.nav_due && now.wrapping_sub(self.drawn_at) >= FRAME_MS {
             self.draw();
         }
+        if self.me_down.is_some_and(|t| now.wrapping_sub(t) >= GPS_HOLD_MS) {
+            self.me_down = None;
+            self.toggle_gps();
+        }
         if let Some((x, y, t)) = self.hold {
             if now.wrapping_sub(t) >= HOLD_MS {
                 self.hold = None;
@@ -492,6 +508,7 @@ impl Ui {
             (sc.want != 0 && !(sc.done && sc.id == sc.want) && self.pic_tries > 0)
                 .then(|| left(self.pic_at.wrapping_add(STALL_MS))),
             self.hold.map(|h| left(h.2.wrapping_add(HOLD_MS))),
+            self.me_down.map(|t| left(t.wrapping_add(GPS_HOLD_MS))),
             self.nav_due.then(|| left(self.drawn_at.wrapping_add(FRAME_MS))),
             (self.screen == Screen::Nav).then(|| nav().quiet_wait(now)).flatten(),
         ]
@@ -700,31 +717,7 @@ impl Ui {
                 rrect(&mut s, x - 5, y + k * 10 - 2, 20, 5, 2, ink(on), fill(on));
             }
         }
-        // ◎ back to us
-        let on = self.pressed == Some(2);
-        let (x, y, r) = ME;
-        disc(&mut s, x, y, r, fill(on), BLACK);
-        let c = if on {
-            Rgb(0, 0, 0)
-        } else if self.at.is_none() {
-            BLUE
-        } else {
-            WHITE
-        };
-        ring(&mut s, x, y, 11, 14, c, fill(on));
-        disc(&mut s, x, y, 6, c, fill(on));
-        for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
-            line(
-                &mut s,
-                x + dx * 14,
-                y + dy * 14,
-                x + dx * 20,
-                y + dy * 20,
-                3,
-                c,
-                fill(on),
-            );
-        }
+        self.draw_me();
         // search
         let on = self.pressed == Some(3);
         let (cx, cy, w, h) = LIST;
@@ -750,6 +743,38 @@ impl Ui {
         if model().n_error > 0 {
             rrect(&mut s, C - 160, 52, 320, 40, 20, CARD, BLACK);
             centre_fit(&mut s, C, 60, model().error(), 290, SOFT);
+        }
+    }
+
+    /// ◎ back to us (its colour: the watch's GPS).
+    fn draw_me(&mut self) {
+        let mut s = self.s;
+        let fill = |on: bool| if on { WHITE } else { BUTTONC };
+        let on = self.pressed == Some(2);
+        let (x, y, r) = ME;
+        disc(&mut s, x, y, r, fill(on), BLACK);
+        let c = if on {
+            Rgb(0, 0, 0)
+        } else if let Some(g) = self.gps_colour() {
+            g
+        } else if self.at.is_none() {
+            BLUE
+        } else {
+            WHITE
+        };
+        ring(&mut s, x, y, 11, 14, c, fill(on));
+        disc(&mut s, x, y, 6, c, fill(on));
+        for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+            line(
+                &mut s,
+                x + dx * 14,
+                y + dy * 14,
+                x + dx * 20,
+                y + dy * 20,
+                3,
+                c,
+                fill(on),
+            );
         }
     }
 
@@ -1773,6 +1798,7 @@ impl Ui {
             }
             _ => {
                 if let Some(b) = self.hit(x, y) {
+                    self.me_down = (b == 2).then(|| self.api.now());
                     self.pressed = Some(b);
                     self.motor.play(haptic::TICK);
                     self.draw_pressed();
@@ -1785,6 +1811,7 @@ impl Ui {
 
     /// The finger lifted off the map before a long press.
     fn up(&mut self, x: i32, y: i32) {
+        self.me_down = None;
         let Some((x0, y0, _)) = self.hold.take() else {
             return;
         };
@@ -1942,6 +1969,69 @@ impl Ui {
             }
         }
         self.api.show();
+    }
+
+    /// The watch's own GPS on or off (◎ held).
+    fn toggle_gps(&mut self) {
+        let on = self.gps == 0;
+        if self.api.gps(on) < 0 {
+            // a loader without GPS (before loader 4)
+            self.motor.play(haptic::DOUBLE);
+            return;
+        }
+        self.gps = if on { 1 } else { 0 };
+        self.used_at = None;
+        self.motor.play(haptic::DOUBLE);
+        if !on {
+            self.send(b"y");
+        }
+        self.draw();
+    }
+
+    /// ◎'s colour while the watch's GPS is on.
+    fn gps_colour(&self) -> Option<Rgb> {
+        match self.gps {
+            1 => Some(ORANGE),
+            2 if self.used() || self.blink => Some(RED),
+            2 => Some(Rgb(0x50, 0x50, 0x50)),
+            _ => None,
+        }
+    }
+
+    /// ◎ again when its colour changed.
+    fn me_changed(&mut self, was: Option<Rgb>) {
+        if self.gps_colour() != was && self.screen == Screen::Home {
+            self.draw_me();
+            self.api.show();
+        }
+    }
+
+    /// The phone said it uses the watch's fixes in the last 6 s.
+    fn used(&self) -> bool {
+        self.used_at.is_some_and(|t| self.api.now().wrapping_sub(t) < 6000)
+    }
+
+    /// The GPS's second: its fix to the phone, the button's colour.
+    fn gps_event(&mut self) {
+        if self.gps == 0 {
+            return;
+        }
+        let was = self.gps_colour();
+        match self.api.gps_fix() {
+            Some(f) if f.fix > 0 => {
+                self.gps = 2;
+                self.blink = !self.blink;
+                let mut m = [0u8; 14];
+                m[0] = b'Y';
+                m[1..5].copy_from_slice(&f.lat_e7.to_le_bytes());
+                m[5..9].copy_from_slice(&f.lon_e7.to_le_bytes());
+                m[9..13].copy_from_slice(&f.alt_dm.to_le_bytes());
+                m[13] = f.sats;
+                self.send(&m);
+            }
+            _ => self.gps = 1,
+        }
+        self.me_changed(was);
     }
 
     fn press(&mut self, b: u8) {
@@ -2169,6 +2259,13 @@ impl Ui {
         let show = false;
         while let Some(m) = self.api.recv(&mut buf) {
             ask.answered();
+            if m == b"y" {
+                // the phone uses the watch's GPS: ◎ steady red
+                let was = self.gps_colour();
+                self.used_at = Some(self.api.now());
+                self.me_changed(was);
+                continue;
+            }
             if matches!(m.first(), Some(b'S' | b'd')) && !(m[0] == b'S' && m.len() != 14) {
                 match scene().message(m) {
                     Ev::Begin => {
@@ -2369,6 +2466,10 @@ fn main(api: &'static Api) -> i32 {
         expanded: false,
         adding: false,
         pending: None,
+        me_down: None,
+        gps: 0,
+        blink: false,
+        used_at: None,
     };
     api.own_back(true);
     ui.draw();
@@ -2426,6 +2527,7 @@ fn main(api: &'static Api) -> i32 {
             TOUCH_UP => ui.up(i32::from(e.x), i32::from(e.y)),
             CROWN => ui.crown(i32::from(e.delta).signum()),
             MESSAGE => ui.messages(&mut ask),
+            GPS => ui.gps_event(),
             _ => {}
         }
     }
