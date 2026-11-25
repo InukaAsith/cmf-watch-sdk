@@ -240,7 +240,15 @@ pub struct State {
     pub sent: VecDeque<String>,
     log: out::Log,
     tcp: Option<TcpStream>,
+    /// the app holds the GPS (SENSOR record 2): a GPS event every GPS_MS from `gps_at`
+    gps_on: bool,
+    gps_at: u32,
+    /// the receiver's latest: lat_e7, lon_e7, alt_dm, fix, sats (script `gps`)
+    gps: (i32, i32, i32, u8, u8),
 }
+
+/// The loader's GPS event period (wp2_core::gps::EMIT_MS).
+const GPS_MS: u32 = 1000;
 
 impl State {
     pub fn new(cfg: Config) -> State {
@@ -277,6 +285,9 @@ impl State {
             sent: VecDeque::new(),
             log,
             tcp: None,
+            gps_on: false,
+            gps_at: 0,
+            gps: (0, 0, 0, 0, 0),
         }
     }
 
@@ -312,6 +323,13 @@ impl State {
                 self.deliver(&m);
             }
         }
+        if self.gps_on && !self.paused && now >= self.gps_at {
+            self.gps_at = now + GPS_MS;
+            let (.., fix, sats) = self.gps;
+            if self.queue.len() < QUEUE_MAX {
+                self.queue.push_back(Event { kind: cmf_wp2_app::GPS, x: fix.into(), y: sats.into(), ..Event::default() });
+            }
+        }
         if self.since != 0 && pwm::over_cap(now, self.since) {
             self.since = 0;
             self.motor = None;
@@ -335,6 +353,7 @@ impl State {
                 .filter(|_| !(self.owned && self.consumed))
                 .map(|b| if self.owned { b.max(self.event_at) + HANG_MS } else { b + ESCAPE_MS }),
             (!self.outbox.is_empty()).then(|| self.polled + POLL_MS),
+            (self.gps_on && !self.paused).then_some(self.gps_at),
             self.cfg.until,
         ]
         .into_iter()
@@ -368,6 +387,10 @@ impl State {
                 }
             }
             Action::Shot(name) => self.shot(&name),
+            Action::Gps(lat, lon, alt, fix, sats) => {
+                self.gps = (lat, lon, alt, fix, sats);
+                self.log("gps", &[("fix", V::I(fix.into())), ("sats", V::I(sats.into()))]);
+            }
         }
     }
 
@@ -817,6 +840,30 @@ extern "C" fn own_back(on: bool) {
 extern "C" fn lv_submit(buf: *const u8, len: usize) -> i32 {
     use wp2_core::lvcmd::{file, FileCmd};
     let rec = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) };
+    // GPS (loader of 2026-11-19): SENSOR record 2 on/off, GPS_FIX record 0x18 the latest fix
+    if let [0x13, 2, 0, 0, 2, on @ (0 | 1)] = *rec {
+        let mut st = sim().lock();
+        st.gps_on = on == 1;
+        st.gps_at = st.now();
+        st.log("gps_hold", &[("on", V::B(on == 1))]);
+        return 0;
+    }
+    if wp2_core::lvcmd::gps_fix(rec) {
+        let st = sim().lock();
+        if !st.gps_on {
+            return -1;
+        }
+        let (lat, lon, alt, fix, sats) = st.gps;
+        let p = &mut rec[4..];
+        p[0..4].copy_from_slice(&lat.to_le_bytes());
+        p[4..8].copy_from_slice(&lon.to_le_bytes());
+        p[8..12].copy_from_slice(&alt.to_le_bytes());
+        p[12..16].copy_from_slice(&st.now().to_le_bytes());
+        p[16] = fix;
+        p[17] = sats;
+        p[18..20].copy_from_slice(&(if fix > 0 { 30u16 } else { 0 }).to_le_bytes());
+        return 0;
+    }
     let Some(cmd) = file(unsafe { std::slice::from_raw_parts(buf, len) }) else { return -95 };
     let dir = sim().lock().cfg.store.join("files");
     let _ = fs::create_dir_all(&dir);
