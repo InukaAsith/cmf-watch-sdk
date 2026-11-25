@@ -1,5 +1,5 @@
 //! Offline Maps on the watch: the saved map drawn as Maps draws its own (render.rs, a few cells of pack.rs at a
-//! time), you on it from the watch's GPS (on while the app is open), markers, guidance to a marker or along a path
+//! time), you on it from the watch's GPS (on while the app is open; the iPhone's, `l`/`L`, while it has no fix), markers, guidance to a marker or along a path
 //! (a route the phone found, or your track back to its start), all without the phone once the map is saved.
 //!
 //! Map: crown zooms, a drag pans, a tap moves there, a tap on a marker opens it, a hold on the map opens that place.
