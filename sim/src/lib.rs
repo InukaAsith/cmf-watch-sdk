@@ -836,10 +836,56 @@ extern "C" fn own_back(on: bool) {
     call(|s| s.own_back(on))
 }
 
+/// The storage service's scan of the sim: `files/` as `/NAND:/wp2apps/0_<name>`, collected whole at once.
+fn storage(rec: &mut [u8]) -> i32 {
+    static SCAN: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
+    let (op, index) = (rec[4], usize::from(u16::from_le_bytes([rec[5], rec[6]])));
+    let out = &mut rec[8..];
+    out.fill(0);
+    match op {
+        0 => {
+            out[0] = 1;
+            out[2] = 16;
+            out[4] = 96;
+            out[6] = 16;
+            out[8] = 96;
+        }
+        5 => {
+            let dir = sim().lock().cfg.store.join("files");
+            let mut v: Vec<(String, u32)> = fs::read_dir(dir)
+                .map(|d| d.flatten().map(|e| (format!("/NAND:/wp2apps/0_{}", e.file_name().to_string_lossy()), e.metadata().map(|m| m.len() as u32).unwrap_or(0))).collect())
+                .unwrap_or_default();
+            v.sort();
+            *SCAN.lock().unwrap() = v;
+        }
+        6 => {
+            let n = SCAN.lock().unwrap().len();
+            out[..2].copy_from_slice(&(n.min(96) as u16).to_le_bytes());
+            out[2] = 1;
+            out[3] = u8::from(n > 96);
+        }
+        7 => SCAN.lock().unwrap().clear(),
+        8 => {
+            let v = SCAN.lock().unwrap();
+            let Some((p, size)) = v.get(index) else { return -22 };
+            out[..4].copy_from_slice(&size.to_le_bytes());
+            let b = p.as_bytes();
+            out[4..4 + b.len().min(95)].copy_from_slice(&b[..b.len().min(95)]);
+        }
+        1..=4 => return -95,
+        _ => return -22,
+    }
+    0
+}
+
 /// ABI 1.2: LVGL apps are not simulated (a later plan); FILE records (offline data) are: runs/sim/<app>/files/.
 extern "C" fn lv_submit(buf: *const u8, len: usize) -> i32 {
     use wp2_core::lvcmd::{file, FileCmd};
     let rec = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) };
+    // storage inspection v1 (docs/storage-inspection.md), enough for a scan: the app's files as slot 0's
+    if len == 132 && rec[..4] == [0x19, 128, 0, 0] {
+        return storage(rec);
+    }
     // GPS (loader of 2026-11-19): SENSOR record 2 on/off, GPS_FIX record 0x18 the latest fix
     if let [0x13, 2, 0, 0, 2, on @ (0 | 1)] = *rec {
         let mut st = sim().lock();

@@ -12,6 +12,7 @@ use crate::pack::{cell_name, Pack};
 use crate::ram::{self, ram, ROUTE};
 use crate::render::{self, View, BG, ROUTE as BLUE};
 use crate::scene::Scene;
+use cmf_wp2_app::storage::{Clean, Cleaned};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, FILE_CHUNK, GPS, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::draw::{disc, line, ring, rrect};
@@ -81,8 +82,10 @@ enum Screen {
     /// a place: a marker (Some index) or a point held on the map
     Sheet,
     List,
-    /// "Delete this map?"
+    /// "Delete this map?" (or, `clean`, everything)
     Confirm,
+    /// deleting every file
+    Cleaning,
 }
 
 /// What the banner guides you to.
@@ -140,6 +143,11 @@ struct Ui {
     route_want: usize,
     route_got: usize,
     route_metres: u32,
+    /// Confirm asks about cleaning everything, not the map
+    confirm_clean: bool,
+    clean: Option<Clean<'static>>,
+    /// the phone asked for the clean (it is told how it went)
+    clean_for_phone: bool,
     dirty: bool,
 }
 
@@ -301,6 +309,7 @@ impl Ui {
             (Screen::Sheet, _) => self.draw_sheet(),
             (Screen::List, _) => self.draw_list(),
             (Screen::Confirm, _) => self.draw_confirm(),
+            (Screen::Cleaning, _) => self.draw_cleaning(),
         }
         self.api.show();
     }
@@ -668,6 +677,8 @@ impl Ui {
             out[n] = (3, 0);
             n += 1;
         }
+        out[n] = (4, 0);
+        n += 1;
         (out, n)
     }
 
@@ -676,22 +687,21 @@ impl Ui {
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
         font::centre(&mut s, C, 34, "Pins", W);
         let (rows, n) = self.rows();
-        if n == 0 {
-            font::centre(&mut s, C, 200, "No pins yet", GREY);
-            font::centre(&mut s, C, 228, "Mark drops one where you are", GREY);
-            return;
+        if marks().n == 0 && self.list_top == 0 && n <= 2 {
+            font::centre(&mut s, C, 300, "No pins yet: Mark drops one", GREY);
         }
         let mut b = [0u8; 16];
         for (k, &(kind, i)) in rows[..n].iter().enumerate().skip(self.list_top).take(ROWS) {
             let y = ROW_Y + (k - self.list_top) as i32 * ROW_H;
             let (x0, x1) = cmf_wp2_ui::geom::chord(y, y + ROW_H - 8, 30);
-            let fill = if kind == 3 { Rgb(0x3A, 0x10, 0x12) } else { CARD };
+            let fill = if kind >= 3 { Rgb(0x3A, 0x10, 0x12) } else { CARD };
             rrect(&mut s, x0, y, x1 - x0, ROW_H - 8, 20, fill, BLACK);
             let t = match kind {
                 0 => marks().v[i].name(),
                 1 => "Stop guiding",
                 2 => "Clear the track",
-                _ => "Delete the map",
+                3 => "Delete the map",
+                _ => "Clean storage",
             };
             font::fitted(&mut s, x0 + 22, y + 13, t, x1 - x0 - 140, W);
             if kind == 0 {
@@ -706,8 +716,14 @@ impl Ui {
     fn draw_confirm(&self) {
         let mut s = self.s;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
-        font::centre(&mut s, C, 150, "Delete this map?", W);
-        font::centre(&mut s, C, 182, "Pins and the track stay", GREY);
+        if self.confirm_clean {
+            font::centre(&mut s, C, 134, "Clean all storage?", W);
+            font::centre(&mut s, C, 166, "Every file Offline Maps keeps:", GREY);
+            font::centre(&mut s, C, 192, "the map, leftovers and pins", GREY);
+        } else {
+            font::centre(&mut s, C, 150, "Delete this map?", W);
+            font::centre(&mut s, C, 182, "Pins and the track stay", GREY);
+        }
         rrect(&mut s, C - 150, 240, 140, 64, 32, RED, BLACK);
         font::centre(&mut s, C - 80, 260, "Delete", W);
         rrect(&mut s, C + 10, 240, 140, 64, 32, CARD, BLACK);
@@ -998,7 +1014,14 @@ impl Ui {
                 }
                 self.screen = Screen::Map;
             }
-            _ => self.screen = Screen::Confirm,
+            (3, _) => {
+                self.confirm_clean = false;
+                self.screen = Screen::Confirm;
+            }
+            _ => {
+                self.confirm_clean = true;
+                self.screen = Screen::Confirm;
+            }
         }
     }
 
@@ -1045,12 +1068,17 @@ impl Ui {
                     Screen::Sheet => self.sheet_tap(x, y),
                     Screen::List => self.list_tap(y),
                     Screen::Confirm => {
-                        if (230..320).contains(&y) && x < C {
-                            self.delete_pack();
-                            self.set_note("Map deleted");
-                        }
                         self.screen = Screen::Map;
+                        if (230..320).contains(&y) && x < C {
+                            if self.confirm_clean {
+                                self.start_clean(false);
+                            } else {
+                                self.delete_pack();
+                                self.set_note("Map deleted");
+                            }
+                        }
                     }
+                    Screen::Cleaning => {}
                 }
                 self.dirty = true;
             }
@@ -1189,6 +1217,7 @@ impl Ui {
                     self.dirty = true;
                 }
                 Some(b'?') => self.send(b"R"),
+                Some(b'X') => self.start_clean(true),
                 _ => {}
             }
         }
@@ -1206,8 +1235,91 @@ impl Ui {
         self.inc.len = 0;
     }
 
+    /// Everything Offline Maps keeps goes: its files (the map, a v3 picture map, anything an older version left)
+    /// and the pins. The track and a route are in RAM.
+    fn start_clean(&mut self, phone: bool) {
+        self.flush();
+        self.inc.on = false;
+        self.loading = None;
+        self.clean_for_phone = phone;
+        match Clean::new(self.api) {
+            Ok(c) => {
+                self.clean = Some(c);
+                self.screen = Screen::Cleaning;
+            }
+            Err(_) => {
+                // no storage service (an older loader): what this version knows of
+                self.delete_pack();
+                self.end_clean(Cleaned::Partial(0));
+            }
+        }
+        self.dirty = true;
+    }
+
+    fn clean_step(&mut self) {
+        let Some(c) = self.clean.as_mut() else { return };
+        if let Some(r) = c.step() {
+            self.clean = None;
+            self.end_clean(r);
+        }
+    }
+
+    fn end_clean(&mut self, r: Cleaned) {
+        self.pack = None;
+        *marks() = Marks::new();
+        let _ = self.api.save(&[]);
+        if matches!(self.guide, Guide::To(_, Some(_))) {
+            self.guide = Guide::None;
+        }
+        let mut t = [0u8; 40];
+        let mut b = [0u8; 11];
+        let (head, n) = match r {
+            Cleaned::Done(n) => ("Cleaned ", n),
+            Cleaned::Partial(n) => ("Some left, cleaned ", n),
+            Cleaned::Failed(_) => ("Only the map deleted", 0),
+        };
+        let mut k = 0;
+        let num = int(i32::from(n), &mut b);
+        for part in [head, if matches!(r, Cleaned::Failed(_)) { "" } else { num }, if matches!(r, Cleaned::Failed(_)) { "" } else { " files" }] {
+            for &ch in part.as_bytes() {
+                if k < 40 {
+                    t[k] = ch;
+                    k += 1;
+                }
+            }
+        }
+        if matches!(r, Cleaned::Failed(_)) {
+            self.delete_pack();
+        }
+        self.set_note(core::str::from_utf8(&t[..k]).unwrap_or(""));
+        if self.clean_for_phone {
+            let mut m = [b'x', 0, 0, 0];
+            m[1..3].copy_from_slice(&n.to_le_bytes());
+            m[3] = match r {
+                Cleaned::Done(_) => 0,
+                Cleaned::Partial(_) => 1,
+                Cleaned::Failed(_) => 2,
+            };
+            self.send(&m);
+        }
+        self.screen = Screen::Map;
+        self.dirty = true;
+    }
+
+    fn draw_cleaning(&self) {
+        let mut s = self.s;
+        Surface::rect(&mut s, 0, 0, 466, 466, 0);
+        font::centre(&mut s, C, 200, "Cleaning storage\u{2026}", W);
+        let n = self.clean.as_ref().map(|c| c.deleted).unwrap_or(0);
+        let mut b = [0u8; 11];
+        font::centre(&mut s, C, 232, int(i32::from(n), &mut b), GREY);
+    }
+
     /// Back (the side button): to the map, else closes.
     fn back(&mut self) -> bool {
+        if self.screen == Screen::Cleaning {
+            return true;
+        }
         if self.screen == Screen::Map {
             return false;
         }
@@ -1253,6 +1365,9 @@ fn main(api: &'static Api) -> i32 {
         route_want: 0,
         route_got: 0,
         route_metres: 0,
+        confirm_clean: false,
+        clean: None,
+        clean_for_phone: false,
         dirty: true,
     };
     {
@@ -1269,7 +1384,13 @@ fn main(api: &'static Api) -> i32 {
     ui.draw();
     ui.send(b"R");
     loop {
-        let e = api.event(ui.wait());
+        let e = api.event(if ui.clean.is_some() { 0 } else { ui.wait() });
+        if ui.clean.is_some() {
+            ui.clean_step();
+            if ui.clean.is_some() && api.now() % 8 == 0 {
+                ui.dirty = true;
+            }
+        }
         ui.motor.update();
         ui.timers();
         if let Some(e) = e {
