@@ -246,6 +246,26 @@ impl Ui {
     }
 
     fn delete_pack(&mut self) {
+        // a picture map from Offline Maps 3 (`WMP1`: its tiles t<level>_<col>_<row>) goes too
+        let idx = unsafe { &mut *core::ptr::addr_of_mut!(IDX) };
+        let got = self.api.file_read("idx", 0, idx);
+        if got > 37 && &idx[..4] == b"WMP1" {
+            let mut name = [0u8; 20];
+            for li in 0..usize::from(idx[4]).min(6) {
+                let at = 37 + li * 15;
+                if (got as usize) < at + 15 {
+                    break;
+                }
+                let (w, h) = (i32::from(idx[at + 9]), i32::from(idx[at + 10]));
+                for r in 0..h {
+                    for c in 0..w {
+                        let n = cell_name(li, c, r, &mut name);
+                        name[0] = b't';
+                        let _ = self.api.file_delete(core::str::from_utf8(&name[..n]).unwrap_or(""));
+                    }
+                }
+            }
+        }
         if let Some(p) = self.pack.take() {
             let mut name = [0u8; 20];
             for (li, l) in p.levels[..p.n].iter().enumerate() {
