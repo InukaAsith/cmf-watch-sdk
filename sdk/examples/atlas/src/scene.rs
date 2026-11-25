@@ -275,6 +275,15 @@ impl Scene {
         self.got = [0; SEQS.div_ceil(8)];
     }
 
+    /// A whole scene from a file (Offline Maps' cells): `fill` puts its bytes in and says how many.
+    #[allow(dead_code)]
+    pub fn load(&mut self, fill: impl FnOnce(&mut [u8]) -> usize) {
+        self.clear();
+        let n = fill(&mut self.data).min(CAP);
+        (self.total, self.avail, self.active, self.done) = (n, n, true, true);
+        self.scan();
+    }
+
     /// 0 … 256 of it here.
     pub fn progress(&self) -> u32 {
         if self.total == 0 {

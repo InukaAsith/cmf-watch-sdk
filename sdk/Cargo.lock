@@ -19,10 +19,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "assistant"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "atlas"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "back-owner"
 version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
+]
+
+[[package]]
+name = "browser"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "chats"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
 ]
 
 [[package]]
@@ -35,6 +67,14 @@ version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
  "wp2-core",
+]
+
+[[package]]
+name = "compass"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
 ]
 
 [[package]]
@@ -85,6 +125,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mail"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "maps"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
 name = "motor-hog"
 version = "0.1.0"
 dependencies = [
@@ -96,6 +152,60 @@ name = "motor-hold"
 version = "0.1.0"
 dependencies = [
  "cmf-wp2-app",
+]
+
+[[package]]
+name = "nav"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "notes"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "photos"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "pixview"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+]
+
+[[package]]
+name = "speaker"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+]
+
+[[package]]
+name = "spotify"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
+
+[[package]]
+name = "spplayer"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
 ]
 
 [[package]]
@@ -131,3 +241,11 @@ dependencies = [
 [[package]]
 name = "wp2-core"
 version = "0.1.0"
+
+[[package]]
+name = "ytmusic"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+ "cmf-wp2-ui",
+]
