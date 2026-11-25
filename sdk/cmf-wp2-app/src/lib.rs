@@ -335,7 +335,7 @@ impl Api {
     }
 
     /// Queues samples (little-endian i16) for the speaker; returns how many **bytes** it took (0 when the loader's
-    /// 6 KiB queue is full: try again after a short wait), `-107` when not open, `-12` when the speaker could not
+    /// 5 KiB queue is full: try again after a short wait), `-107` when not open, `-12` when the speaker could not
     /// be opened, `-22` for a buffer outside the app block or an odd length. `pcm` must be a `static` (the stack
     /// is not in the app block).
     pub fn audio_write(&self, pcm: &[u8]) -> i32 {
