@@ -8,7 +8,7 @@ Tiles are cached in runs/vtiles (OpenFreeMap: no key, no limit; still one at a t
 """
 import argparse, gzip, json, math, pathlib, struct, urllib.request
 
-CAP = 30 * 1024
+CAP = 26 * 1024
 MAX_RING = 512
 AREA, LINE, NAME, LABEL = 0x10, 0x20, 0x30, 0x40
 WATER, PARK = 0, 1
