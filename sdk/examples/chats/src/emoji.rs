@@ -12,7 +12,8 @@ use cmf_wp2_app::Api;
 pub const SIZE: i32 = 22;
 const SRC: usize = 30;
 const MAX: usize = 64;
-const SLOTS: usize = 22;
+/// (fewer where voice notes take the rest of the icon's memory: voice.rs)
+const SLOTS: usize = if crate::VOICE { 17 } else { 22 };
 const PX: usize = (SIZE * SIZE) as usize;
 /// A pixel not drawn.
 const CLEAR: u16 = 0xF81F;
@@ -25,6 +26,14 @@ struct Mem {
 
 const ROOM: usize = 96 * 96 * 3;
 const _: () = assert!(core::mem::size_of::<Mem>() + 8 <= ROOM, "emoji outgrow the icon");
+/// What the emoji leave of the icon's memory, for voice notes.
+pub const SPARE: usize = ROOM - 8 - core::mem::size_of::<Mem>();
+
+/// The spare bytes' start (SPARE of them).
+#[cfg(target_os = "none")]
+pub fn spare() -> *mut u8 {
+    unsafe { (mem() as *mut Mem as *mut u8).add(core::mem::size_of::<Mem>()) }
+}
 
 #[cfg(target_os = "none")]
 fn mem() -> &'static mut Mem {

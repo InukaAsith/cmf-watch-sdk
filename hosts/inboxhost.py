@@ -111,19 +111,26 @@ class Notes:
             4: dict(kind="note", name="Watch ideas", lines=[[0, "Crown scroll speed feels right now"], [0, "Maps: Apple tiles are much clearer"]]),
             5: dict(kind="note", name="Wi-Fi at home", lines=[[0, "Network: HomeNet-5G"], [0, "Router is behind the TV"]]),
         }
-        self.next = 6
+        self.items[6] = dict(kind="rem", name="Call mum", due="Today 17:00", lines=[[3, "Call mum"], [0, "Due Today 17:00"]])
+        self.items[7] = dict(kind="rem", name="Pay rent", due="Tomorrow 9:00", lines=[[3, "Pay rent"], [0, "Due Tomorrow 9:00"]])
+        self.items[8] = dict(kind="rem", name="Dentist", due="Fri 15:30", lines=[[3, "Dentist"], [0, "Due Fri 15:30"]])
+        self.next = 9
+        self.tab = 0
 
     def rows(self):
         # new note, notes newest first, then reminder lists
-        # the watch's buttons: +, a to-do list, a reminder
-        out = [(self.NEW, "New note", NEW_ROW, ""), (self.NEW_LIST, "New to-do list", NEW_ROW, ""),
-               (self.REMIND, "Reminder", NEW_ROW, "")]
+        # the watch's tab: its own + first, then notes, to-do lists, or reminders by when
+        new = [(self.NEW, "New note"), (self.NEW_LIST, "New to-do list"), (self.REMIND, "Reminder")][self.tab]
+        out = [(new[0], new[1], NEW_ROW, "")]
         for i, it in reversed(self.items.items()):
-            if it["kind"] == "note":
+            if it["kind"] == "note" and self.tab == 0:
                 out.append((i, it["name"], 0, it["lines"][0][1] if it["lines"] else "No text yet"))
         for i, it in self.items.items():
-            if it["kind"] == "list":
+            if it["kind"] == "list" and self.tab == 1:
                 out.append((i, it["name"], 0, f"{sum(k == 3 for k, _ in it['lines'])} to do"))
+        for i, it in self.items.items():
+            if it["kind"] == "rem" and self.tab == 2:
+                out.append((i, it["name"], 0, it["due"] + " · Reminders"))
         return out
 
     def title(self, i):
@@ -144,7 +151,9 @@ class Notes:
 
     def send(self, i, text):
         if i == self.REMIND:
-            return [(0, 3, text)], False
+            self.items[self.next] = dict(kind="rem", name=text, due="No time", lines=[[3, text]])
+            self.next += 1
+            return [(0, 3, text)], True
         if i == self.NEW_LIST:
             self.items[self.next] = dict(kind="list", name=text[:40], lines=[])
             self.next += 1
@@ -205,6 +214,11 @@ class Inbox:
     async def handle(self, ch, m):
         box = self.box
         if m == b"R":
+            if hasattr(box, "tab"):
+                box.tab = 0
+            await self.send_list(ch)
+        elif m[:1] == b"f" and len(m) == 2 and hasattr(box, "tab"):
+            box.tab = min(m[1], 2)
             await self.send_list(ch)
         elif m[:1] == b"o" and len(m) == 2 and hasattr(box, "picker") and m[1] == box.NEW:
             # + : whom to write to, as a list under its title

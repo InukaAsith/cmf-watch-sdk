@@ -23,6 +23,8 @@ cmf_wp2_app::entry!(main);
 
 #[path = "emoji.rs"]
 mod emoji;
+#[path = "voice.rs"]
+mod voice;
 cmf_wp2_app::app_icon!();
 
 static mut MODEL: Model = Model::new();
@@ -330,8 +332,13 @@ fn mic_glyph(s: &mut impl Surface, cx: i32, cy: i32, c: Rgb, bg: Rgb) {
 }
 
 // --- list
-const HEAD_H: i32 = 96;
-const LIST_TOP: i32 = 104;
+/// (Notes: taller, the tabs under the title)
+const HEAD_H: i32 = if crate::TABS.is_empty() { 96 } else { 112 };
+const LIST_TOP: i32 = HEAD_H + 8;
+/// Notes' tabs: one bar of segments, the chosen one in the accent
+const TAB_Y: i32 = 74;
+const TAB_W: i32 = 112;
+const TAB_X: i32 = C - TAB_W * 3 / 2;
 const CARD_H: i32 = 84;
 const PITCH: i32 = 94;
 // --- chat
@@ -346,7 +353,7 @@ const SPIN_MS: u32 = 70;
 /// Widest text line in a bubble, px.
 const TEXT_W: i32 = 262;
 const GAP: i32 = 10;
-const BTN_Y: i32 = 424;
+const BTN_Y: i32 = if crate::VOICE { 416 } else { 424 };
 /// the list's + button (a new chat, note, mail)
 const NEW_Y: i32 = 414;
 /// the sync bar: light green, a step every SYNC_MS
@@ -356,7 +363,8 @@ const SYNC_MS: u32 = 60;
 /// Moved more than this between down and up: a drag, not a tap.
 const DRAG: i32 = 14;
 /// The space bar under the dial's centre letter: top and height.
-const BTN_X: [i32; 3] = [C - 72, C, C + 72];
+/// keyboard, quick replies, voice typing; WhatsApp: and a voice note
+const BTN_X: [i32; 4] = if crate::VOICE { [C - 93, C - 31, C + 31, C + 93] } else { [C - 72, C, C + 72, 999] };
 // --- quick replies
 const Q_TOP: i32 = 100;
 const Q_PITCH: i32 = 66;
@@ -508,6 +516,11 @@ struct Ui {
     asked_n: usize,
     /// Notes: the kept list is shown, the phone has not answered yet
     syncing: bool,
+    /// Notes: the tab shown (notes, to-do lists, reminders)
+    tab: u8,
+    /// WhatsApp's voice notes: the one playing; the recording under way is one (not voice typing)
+    voice: voice::Voice,
+    note: bool,
     /// the sync bar as drawn (0..=1000) and when it moves next
     sync_shown: i32,
     sync_at: u32,
@@ -561,6 +574,9 @@ fn main(api: &'static Api) -> i32 {
         asked: [0; MSG_MAX],
         asked_n: 0,
         syncing: false,
+        tab: 0,
+        voice: voice::Voice::new(),
+        note: false,
         sync_shown: 0,
         sync_at: 0,
         spin: (0, 0),
@@ -615,7 +631,7 @@ fn main(api: &'static Api) -> i32 {
         let paced = ui.due.then(|| FRAME_MS.saturating_sub(now.wrapping_sub(ui.shown_at)).max(1));
         ui.sync_step();
         let sync = (ui.sync_bar() && ui.screen == Screen::List).then_some(SYNC_MS);
-        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist, sync].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist, sync, ui.voice.wait().filter(|_| crate::VOICE)].into_iter().flatten().min().unwrap_or(u32::MAX);
         let wait = ui.dict.wait_ms(wait);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
@@ -678,6 +694,10 @@ fn main(api: &'static Api) -> i32 {
             let o = ui.dict.tick(api);
             ui.voice_out(o);
         }
+        if crate::VOICE && ui.voice.tick(api) && ui.screen == Screen::Chat {
+            // the note ended: its bubble's play button again
+            ui.refresh();
+        }
         let Some(e) = e else { continue };
         match e.kind {
             TOUCH_UP if ui.screen == Screen::Dial => {
@@ -711,6 +731,10 @@ fn main(api: &'static Api) -> i32 {
             }
             PAUSE => {
                 ui.motor.off();
+                // the loader drops the sound while paused: the note stops
+                if crate::VOICE {
+                    ui.voice.stop(api);
+                }
                 // the loader stops the mic while paused: dictation ends with it
                 if ui.dict.active() {
                     let o = ui.dict.cancel(api);
@@ -755,6 +779,9 @@ fn main(api: &'static Api) -> i32 {
                 while let Some(m) = api.recv(&mut msg) {
                     if let Some(o) = ui.dict.message(m) {
                         ui.voice_out(o);
+                        continue;
+                    }
+                    if crate::VOICE && ui.voice.message(m) {
                         continue;
                     }
                     if m.first() == Some(&b'T') || (m.first() == Some(&b'A') && m.get(1) == Some(&0)) {
@@ -814,6 +841,9 @@ impl Ui {
     }
 
     fn go(&mut self, to: Screen) {
+        if crate::VOICE && to == Screen::List {
+            self.voice.stop(self.api);
+        }
         if RELIST && to == Screen::List && self.screen != Screen::List {
             self.ask_list();
         }
@@ -976,8 +1006,23 @@ impl Ui {
         self.scroll_dots(self.list_scroll, self.list_max());
     }
 
+    /// Notes' tabs: Notes | To-do | Reminders, connected, the chosen one filled.
+    fn tabs(&self, s: &mut Dot) {
+        let n = crate::TABS.len() as i32;
+        rrect(s, TAB_X, TAB_Y, TAB_W * n, 32, 16, CARD, BLACK);
+        let k = i32::from(self.tab);
+        rrect(s, TAB_X + k * TAB_W, TAB_Y, TAB_W, 32, 16, ACCENT, CARD);
+        for (i, t) in crate::TABS.iter().enumerate() {
+            let ink = if i as i32 == k { 0 } else { SOFT };
+            centre(s, TAB_X + i as i32 * TAB_W + TAB_W / 2, TAB_Y + 4, t, ink);
+        }
+    }
+
     fn unread_line(&self, s: &mut Dot) {
         let m = model();
+        if !crate::TABS.is_empty() {
+            return self.tabs(s);
+        }
         if !m.picker.as_str().is_empty() {
             return;
         }
@@ -1133,6 +1178,11 @@ impl Ui {
         }
         disc(s, BTN_X[2], BTN_Y, 26, KEYC, BLACK);
         mic_glyph(s, BTN_X[2], BTN_Y, WHITE, KEYC);
+        if crate::VOICE {
+            // a voice note: a red dot to record
+            disc(s, BTN_X[3], BTN_Y, 26, KEYC, BLACK);
+            disc(s, BTN_X[3], BTN_Y, 11, RED, KEYC);
+        }
     }
 
     /// Where the newest message ends: the feed's foot (chats), or a page's text from the top while it fits (notes).
@@ -1187,7 +1237,8 @@ impl Ui {
             let h = bubble_h(msg);
             let top = bottom - h;
             if top < FEED_END && bottom > FEED_TOP {
-                draw_bubble(&mut s, m, msg, top);
+                let i = (msg as *const Msg as usize - m.msgs.as_ptr() as usize) / core::mem::size_of::<Msg>();
+                draw_bubble(&mut s, m, msg, top, self.voice.idx == Some(i as u8));
             }
             Surface::rect(&mut s, 0, top - GAP, 466, GAP, 0);
             bottom = top - GAP;
@@ -1466,6 +1517,11 @@ impl Ui {
                     self.draw();
                 }
             }
+            DictOut::Done | DictOut::Cancel if self.note => {
+                // a voice note: the phone sends it and the chat comes again with it
+                self.note = false;
+                self.go(Screen::Chat);
+            }
             DictOut::Done => {
                 // the words after what is typed, a space between
                 let t = self.dict.text().trim();
@@ -1730,6 +1786,15 @@ impl Ui {
         match self.screen {
             Screen::List => {
                 if y < HEAD_H {
+                    let k = (x - TAB_X).div_euclid(TAB_W);
+                    if (TAB_Y - 6..TAB_Y + 38).contains(&y) && (0..crate::TABS.len() as i32).contains(&k) && k as u8 != self.tab {
+                        // another tab: the phone sends its list (and its + makes one of those)
+                        self.tab = k as u8;
+                        self.motor.play(haptic::TICK);
+                        let _ = self.api.send(&[b'f', self.tab]);
+                        self.list_scroll = 0;
+                        self.draw();
+                    }
                     return;
                 }
                 let (news, n) = self.news();
@@ -1789,8 +1854,18 @@ impl Ui {
                     for i in (0..m.n_msgs).rev() {
                         let top = bottom - bubble_h(&m.msgs[i]);
                         if (top..bottom).contains(&y) {
-                            let _ = self.api.send(&[b't', i as u8]);
                             self.motor.play(haptic::TICK);
+                            if crate::VOICE && m.msgs[i].kind == VOICE_KIND {
+                                // play it, or stop it
+                                if self.voice.idx == Some(i as u8) {
+                                    self.voice.stop(self.api);
+                                } else {
+                                    self.voice.start(self.api, i as u8);
+                                }
+                                self.refresh();
+                                break;
+                            }
+                            let _ = self.api.send(&[b't', i as u8]);
                             if matches!(m.msgs[i].kind, 1 | 2) && m.msgs[i].img.is_none() {
                                 m.msgs[i].pic = 1;
                                 self.refresh();
@@ -1801,8 +1876,16 @@ impl Ui {
                     }
                     return;
                 }
-                if let Some(b) = BTN_X.iter().position(|&bx| (x - bx).abs() < 34) {
+                if let Some(b) = BTN_X.iter().position(|&bx| (x - bx).abs() < 30) {
                     self.motor.play(haptic::TICK);
+                    if b == 3 {
+                        // a voice note: recorded, sent by the phone when it ends
+                        self.voice.stop(self.api);
+                        self.note = true;
+                        self.voice_from = Screen::Chat;
+                        self.dict.start(self.api, true);
+                        return self.go(Screen::Voice);
+                    }
                     if b == 2 {
                         // voice typing: the words come into the keyboard, to send or change
                         self.voice_from = Screen::Chat;
@@ -1870,7 +1953,44 @@ fn bubble_h(msg: &Msg) -> i32 {
     }
 }
 
-fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
+/// A voice note's kind (WhatsApp): its text the length.
+const VOICE_KIND: u8 = 5;
+const VOICE_W: i32 = 230;
+
+/// A voice note: play (or stop, while it plays), a waveform, its length.
+fn voice_bubble(s: &mut Band, msg: &Msg, top: i32, playing: bool) {
+    let h = LINE + 18;
+    let x = if msg.me { BUBBLE_X1 - VOICE_W } else { BUBBLE_X0 };
+    let fill = if msg.me { MINE } else { THEIRS };
+    surround(s, x, top, VOICE_W, h, 20);
+    let rest = bubble_h(msg) - h;
+    if rest > 0 {
+        Surface::rect(s, 0, top + h, 466, rest, 0);
+    }
+    rrect(s, x, top, VOICE_W, h, 20, fill, BLACK);
+    let (cx, cy) = (x + 24, top + h / 2);
+    disc(s, cx, cy, 15, ACCENT, fill);
+    if playing {
+        Surface::rect(s, cx - 6, cy - 6, 12, 12, 0);
+    } else {
+        for k in 0..12 {
+            Surface::rect(s, cx - 4 + k / 2, cy - 6 + k / 2, 1, 12 - k, 0);
+        }
+    }
+    // the waveform: bars from the text's bytes (the same note, the same look)
+    let mut seed = msg.text.as_str().bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b)));
+    for k in 0..18 {
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        let bh = 4 + (seed >> 16) as i32 % 18;
+        Surface::rect(s, x + 48 + k * 6, cy - bh / 2, 3, bh, if playing { ACCENT.rgb565() } else { SOFT });
+    }
+    font::draw(s, x + VOICE_W - 50, top + 9, msg.text.as_str(), GREY);
+}
+
+fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32, playing: bool) {
+    if crate::VOICE && msg.kind == VOICE_KIND {
+        return voice_bubble(s, msg, top, playing);
+    }
     if let Some(img) = msg.img.filter(|i| i.ok) {
         let (w, h) = img.size();
         let x = if msg.me { BUBBLE_X1 - w } else { BUBBLE_X0 };
