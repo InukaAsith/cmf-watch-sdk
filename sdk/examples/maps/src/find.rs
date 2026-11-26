@@ -5,9 +5,7 @@
 //!   interest (scene.rs), 2 water, 20 a street). Search reads it with no phone; a tap on the map finds the name
 //!   drawn there.
 //! - Search: a QWERTY keyboard (Maps'), then the places that match nearest first (Results, crown or drag scroll).
-//! - Ways: route planning. The mode (car, bike, walk) on top; the phone finds up to three routes (`D mode …` →
-//!   `O n`, `o k secs:u32 metres:u32` each); a tap picks one (`p k`), which comes as `G` + `g` and is followed with
-//!   no phone.
+//! - Directions and turn by turn: trip.rs.
 
 use super::*;
 
@@ -33,11 +31,6 @@ pub const STREET: u8 = 20;
 const KH: i32 = 58;
 const KEY_Y: [i32; 4] = [184, 242, 300, 358];
 const KEYC: Rgb = Rgb(0x2A, 0x2A, 0x2A);
-/// Ways: the modes' pills, the routes' rows.
-const MODE_Y: i32 = 96;
-const WAY_Y: i32 = 168;
-const WAY_H: i32 = 76;
-pub const MODES: [&str; 3] = ["Car", "Bike", "Walk"];
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum K {
@@ -90,7 +83,7 @@ fn each_key(sym: bool, mut f: impl FnMut(K, i32, i32, i32)) {
 
 /// What a kind of name is called on its card.
 pub fn kind_name(k: u8) -> &'static str {
-    const POI: [&str; 10] = ["Food", "Shop", "Park", "Transit", "Health", "Learning", "Stay", "Culture", "Money", "Car"];
+    const POI: [&str; 10] = ["Food", "Shop", "Park", "Transit", "Health", "Public place", "Stay", "Culture", "Money", "Car"];
     match k {
         0 => "Place",
         2 => "Water",
@@ -324,98 +317,6 @@ impl Ui {
         self.sheet = (h.p, None);
         self.place = h;
         self.screen = Screen::Sheet;
-    }
-
-    // --- route planning
-
-    /// Ways to the sheet's place by the mode picked: asked of the phone.
-    pub fn ask_ways(&mut self) {
-        let to = self.sheet.0;
-        self.n_ways = 0;
-        self.ways_wait = true;
-        self.ask_route(self.mode, to);
-        self.screen = Screen::Ways;
-    }
-
-    pub fn draw_ways(&mut self) {
-        let mut s = self.s;
-        Surface::rect(&mut s, 0, 0, 466, 466, 0);
-        let to = if self.place.n > 0 { self.place.name() } else { "Directions" };
-        font::centre(&mut s, C, 40, to, W);
-        for (i, m) in MODES.iter().enumerate() {
-            let x = C - 165 + i as i32 * 112;
-            let on = i == usize::from(self.mode_ix());
-            rrect(&mut s, x, MODE_Y, 106, 50, 25, if on { BLUE } else { CARD }, BLACK);
-            font::centre(&mut s, x + 53, MODE_Y + 13, m, W);
-        }
-        if self.n_ways == 0 {
-            let t = if self.ways_wait {
-                "Finding routes\u{2026}"
-            } else if let Some(n) = self.note() {
-                n
-            } else {
-                "No route: needs the iPhone"
-            };
-            font::centre(&mut s, C, 240, t, GREY);
-            return;
-        }
-        let mut b = [0u8; 16];
-        for k in 0..self.n_ways {
-            let (secs, metres) = self.ways[k];
-            let y = WAY_Y + k as i32 * WAY_H;
-            let (x0, x1) = cmf_wp2_ui::geom::chord(y, y + WAY_H - 10, 34);
-            rrect(&mut s, x0, y, x1 - x0, WAY_H - 10, 24, CARD, BLACK);
-            let mut t = [0u8; 24];
-            let mut n = 0;
-            let mins = (secs + 59) / 60;
-            let mut ib = [0u8; 11];
-            let parts: [&str; 2] = if mins >= 60 {
-                let h = int((mins / 60) as i32, &mut ib);
-                let mut tb = [0u8; 11];
-                let m = int((mins % 60) as i32, &mut tb);
-                for p in [h, " h ", m, " min"] {
-                    t[n..n + p.len()].copy_from_slice(p.as_bytes());
-                    n += p.len();
-                }
-                ["", ""]
-            } else {
-                [int(mins as i32, &mut ib), " min"]
-            };
-            for p in parts {
-                t[n..n + p.len()].copy_from_slice(p.as_bytes());
-                n += p.len();
-            }
-            font::draw(&mut s, x0 + 26, y + 10, core::str::from_utf8(&t[..n]).unwrap_or(""), W);
-            let d = fmt_dist(metres as i32, &mut b);
-            font::draw(&mut s, x0 + 26, y + 36, d, GREY);
-            if k == 0 {
-                font::draw(&mut s, x1 - 24 - font::width("Fastest"), y + 22, "Fastest", rgb565(0x34, 0xA8, 0x53));
-            }
-        }
-    }
-
-    /// 0 car, 1 bike, 2 walk (the protocol's mode is the same).
-    fn mode_ix(&self) -> u8 {
-        self.mode.min(2)
-    }
-
-    pub fn ways_tap(&mut self, x: i32, y: i32) {
-        if (MODE_Y..MODE_Y + 50).contains(&y) {
-            let i = ((x - (C - 165)) / 112).clamp(0, 2) as u8;
-            if i != self.mode {
-                self.motor.play(haptic::TICK);
-                self.mode = i;
-                self.ask_ways();
-            }
-            return;
-        }
-        let k = (y - WAY_Y).div_euclid(WAY_H);
-        if y >= WAY_Y && (k as usize) < self.n_ways {
-            self.motor.play(haptic::DOUBLE);
-            self.send(&[b'p', k as u8]);
-            self.set_note("Loading the route\u{2026}");
-            self.screen = Screen::Map;
-        }
     }
 }
 

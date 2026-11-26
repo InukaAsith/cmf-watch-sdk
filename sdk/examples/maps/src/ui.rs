@@ -27,6 +27,9 @@ use cmf_wp2_ui::{Surface, C};
 #[path = "find.rs"]
 mod find;
 use find::{Hit, HITS, QUERY};
+#[path = "trip.rs"]
+mod trip;
+use trip::Trip;
 
 cmf_wp2_app::entry!(main);
 cmf_wp2_app::app_icon!();
@@ -99,7 +102,11 @@ enum Screen {
     /// search's keyboard, its places, route planning (find.rs)
     Keys,
     Results,
+    /// directions, a mode's routes, the route before Start, navigating (trip.rs)
     Ways,
+    Routes,
+    Preview,
+    Drive,
 }
 
 /// What the banner guides you to.
@@ -172,11 +179,8 @@ struct Ui {
     sym: bool,
     hits: [Hit; HITS],
     n_hits: usize,
-    /// 0 car, 1 bike, 2 walk; the routes (secs, metres) the phone found
-    mode: u8,
-    ways: [(u32, u32); 3],
-    n_ways: usize,
-    ways_wait: bool,
+    /// directions and turn by turn
+    trip: Trip,
     /// ◎ held: the watch's GPS only (the iPhone's isn't asked)
     watch_only: bool,
     clean: Option<Clean<'static>>,
@@ -348,6 +352,9 @@ impl Ui {
             (Screen::Keys, _) => self.draw_keys(),
             (Screen::Results, _) => self.draw_results(),
             (Screen::Ways, _) => self.draw_ways(),
+            (Screen::Routes, _) => self.draw_routes(),
+            (Screen::Preview, _) => self.draw_preview(),
+            (Screen::Drive, _) => self.draw_drive(),
         }
         self.api.show();
     }
@@ -383,7 +390,9 @@ impl Ui {
 
     /// The pack's cells round the view: the level for this zoom, a coarser one under it where it doesn't reach.
     fn draw_cells(&mut self, p: &Pack, v: &View) {
-        let half = 233 * 256 / v.k.max(1) + 40;
+        // (navigating: where you are low on the panel and the map turned, so further round it)
+        let reach = if v.heading != 0 || v.screen != (C, C) { 330 } else { 233 };
+        let half = reach * 256 / v.k.max(1) + 40;
         let l = p.level_for(v.k);
         let covers = |li: usize| {
             let lv = p.levels[li];
@@ -407,7 +416,7 @@ impl Ui {
                     if scene().total == 0 {
                         continue;
                     }
-                    if li > first {
+                    if li > first && v.heading == 0 {
                         // over the coarser level: its own ground first (the cells are squares, north up)
                         let (x0, y0) = v.px(lv.corner(c, r));
                         let (x1, y1) = v.px(lv.corner(c + 1, r + 1));
@@ -933,8 +942,11 @@ impl Ui {
         self.off_said = off;
         if left < ARRIVED && !self.arrived {
             self.arrived = true;
-            self.motor.play(haptic::DONE);
+            if !self.trip.driving {
+                self.motor.play(haptic::DONE);
+            }
         }
+        self.nav_update();
     }
 
     fn start_guide(&mut self, g: Guide) {
@@ -964,8 +976,9 @@ impl Ui {
 
     /// Routes to `to` from the phone (mode 0 car, 1 bike, 2 walk): their times (`O`, `o`), then the one picked as
     /// `G` + `g`.
-    fn ask_route(&mut self, mode: u8, to: (i32, i32)) {
-        let Some(f) = self.frame else { return };
+    /// False: not sent (no iPhone).
+    fn ask_route(&mut self, mode: u8, to: (i32, i32)) -> bool {
+        let Some(f) = self.frame else { return false };
         let mut m = [0u8; 18];
         m[0] = b'D';
         m[1] = mode;
@@ -976,9 +989,8 @@ impl Ui {
         m[12..14].copy_from_slice(&fy.to_le_bytes());
         m[14..16].copy_from_slice(&(to.0.clamp(-32767, 32767) as i16).to_le_bytes());
         m[16..18].copy_from_slice(&(to.1.clamp(-32767, 32767) as i16).to_le_bytes());
-        self.send(&m);
         self.route_want = 0;
-        self.set_note("Asking iPhone\u{2026}");
+        self.api.send(&m) >= 0
     }
 
     // --- input
@@ -1022,9 +1034,13 @@ impl Ui {
                 self.centre = (0, 0);
             }
         } else if self.guide != Guide::None && (C - 150..C + 150).contains(&x) && (16..96).contains(&y) {
-            // the banner: guiding ends
+            // the banner: back to turn by turn, else guiding ends
             self.motor.play(haptic::TICK);
-            self.guide = Guide::None;
+            if self.trip.driving {
+                self.screen = Screen::Drive;
+            } else {
+                self.guide = Guide::None;
+            }
         } else {
             return false;
         }
@@ -1158,6 +1174,7 @@ impl Ui {
                 }
             }
             CROWN if matches!(self.screen, Screen::List | Screen::Results) => self.scroll(i32::from(e.delta).signum()),
+            CROWN if self.screen == Screen::Drive => self.drive_crown(i32::from(e.delta).signum()),
             TOUCH_DOWN => {
                 self.down = Some((i32::from(e.x), i32::from(e.y), now));
                 self.held = false;
@@ -1186,7 +1203,10 @@ impl Ui {
                     Screen::List => self.list_tap(y),
                     Screen::Results => self.results_tap(y),
                     Screen::Keys => self.keys_tap(x, y),
-                    Screen::Ways => self.ways_tap(x, y),
+                    Screen::Ways => self.ways_tap(y),
+                    Screen::Routes => self.routes_tap(y),
+                    Screen::Preview => self.preview_tap(y),
+                    Screen::Drive => self.drive_tap(),
                     Screen::Confirm => {
                         self.screen = Screen::Map;
                         if (230..320).contains(&y) && x < C {
@@ -1241,6 +1261,7 @@ impl Ui {
             self.phone_at = None;
             self.dirty |= self.screen == Screen::Map;
         }
+        self.trip_timers(now);
         // a note that ran out
         if self.n_note > 0 && now.wrapping_sub(self.note_at) >= NOTE_MS {
             self.n_note = 0;
@@ -1274,6 +1295,9 @@ impl Ui {
         while let Some(m) = self.api.recv(&mut buf) {
             let u16_at = |i: usize| u16::from_le_bytes([m[i], m[i + 1]]);
             let u32_at = |i: usize| u32::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]]);
+            if self.trip_message(m) {
+                continue;
+            }
             match m.first() {
                 Some(b'L') if !self.watch_only => {
                     // the phone's fix (lat, lon e7, accuracy m), or none
@@ -1350,34 +1374,11 @@ impl Ui {
                     if self.route_got >= self.route_want {
                         r.path_n = self.route_want;
                         self.route_want = 0;
-                        let mut b = [0u8; 16];
-                        let mut t = [0u8; 40];
-                        let d = fmt_dist(self.route_metres as i32, &mut b);
-                        let mut n = 0;
-                        for part in ["Route: ", d] {
-                            t[n..n + part.len()].copy_from_slice(part.as_bytes());
-                            n += part.len();
-                        }
-                        self.set_note(core::str::from_utf8(&t[..n]).unwrap_or(""));
-                        self.start_guide(Guide::Path { back: false });
-                        self.dirty = true;
+                        self.route_ready();
                     }
                 }
-                Some(b'O') if m.len() == 2 => {
-                    // the routes found: their times and lengths come next
-                    self.n_ways = 0;
-                    self.ways_wait = m[1] > 0;
-                    self.dirty |= self.screen == Screen::Ways;
-                }
-                Some(b'o') if m.len() == 10 && usize::from(m[1]) < 3 => {
-                    let k = usize::from(m[1]);
-                    self.ways[k] = (u32_at(2), u32_at(6));
-                    self.n_ways = self.n_ways.max(k + 1);
-                    self.ways_wait = false;
-                    self.dirty |= self.screen == Screen::Ways;
-                }
                 Some(b'E') => {
-                    self.ways_wait = false;
+                    self.trip.loading = None;
                     let t = cmf_wp2_ui::text::fit(&m[1..], 40);
                     let mut b = [0u8; 40];
                     b[..t.len()].copy_from_slice(t.as_bytes());
@@ -1490,6 +1491,9 @@ impl Ui {
             Screen::Map => return false,
             Screen::Results => Screen::Keys,
             Screen::Ways => Screen::Sheet,
+            Screen::Routes => Screen::Ways,
+            Screen::Preview if self.trip.n_alts[usize::from(self.trip.mode)] > 1 => Screen::Routes,
+            Screen::Preview => Screen::Ways,
             _ => Screen::Map,
         };
         self.dirty = true;
@@ -1544,10 +1548,7 @@ fn main(api: &'static Api) -> i32 {
         sym: false,
         hits: [Hit::NONE; HITS],
         n_hits: 0,
-        mode: 0,
-        ways: [(0, 0); 3],
-        n_ways: 0,
-        ways_wait: false,
+        trip: Trip::new(),
         watch_only: false,
         clean: None,
         clean_for_phone: false,
