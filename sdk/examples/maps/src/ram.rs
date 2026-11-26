@@ -30,8 +30,6 @@ pub struct Ram {
     pub steps: [Step; STEPS],
     /// turn by turn, as Navigation's (all zero is its empty state)
     pub nav: crate::state::Nav,
-    /// a file's chunk on its way in or out (a map from the phone, a search through it)
-    pub chunk: [u8; cmf_wp2_app::FILE_CHUNK],
 }
 
 const ROOM: usize = 96 * 96 * 3;
