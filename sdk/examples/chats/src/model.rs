@@ -235,11 +235,14 @@ impl Model {
                 Effect::List
             }
             b'H' if !a.is_empty() => {
+                // the open chat sent again (WhatsApp synced): its picture and last seen stay
+                if !(self.headed && self.open == Some(a[0])) {
+                    self.online = false;
+                    self.seen = Str::EMPTY;
+                    self.dp_parts = 0;
+                }
                 self.open = Some(a[0]);
                 self.headed = true;
-                self.online = false;
-                self.seen = Str::EMPTY;
-                self.dp_parts = 0;
                 self.title.set(&a[1..]);
                 self.n_msgs = 0;
                 self.used = 0;

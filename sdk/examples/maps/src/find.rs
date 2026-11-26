@@ -320,6 +320,10 @@ impl Ui {
     }
 }
 
+pub fn place_hit(kind: u8, p: (i32, i32), t: &[u8]) -> Hit {
+    make_hit(kind, p, t)
+}
+
 fn make_hit(kind: u8, p: (i32, i32), t: &[u8]) -> Hit {
     let mut h = Hit { p, kind, ..Hit::NONE };
     let n = t.len().min(32);

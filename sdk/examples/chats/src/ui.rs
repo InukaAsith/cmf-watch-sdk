@@ -796,7 +796,8 @@ fn main(api: &'static Api) -> i32 {
                 if let Some((x, y)) = ui.down.take() {
                     let (dx, dy) = (e.x as i32 - x, e.y as i32 - y);
                     let held = api.now().wrapping_sub(ui.down_at) > 450 && dy.abs() <= DRAG && dx.abs() <= DRAG;
-                    let swipe = dx > 70 && dy.abs() < 50;
+                    // either way across (right to left as WhatsApp on the phone, or left to right)
+                    let swipe = dx.abs() > 70 && dy.abs() < 50;
                     let at = if crate::VOICE && ui.screen == Screen::Chat && ui.menu.is_none() && (held || swipe) {
                         ui.msg_at(y)
                     } else {
@@ -813,7 +814,7 @@ fn main(api: &'static Api) -> i32 {
                         ui.doomed = Some(id);
                         ui.draw();
                     } else if let Some(i) = at {
-                        // WhatsApp: a swipe to the right replies to it, a hold opens its menu
+                        // WhatsApp: a swipe across replies to it, a hold opens its menu
                         if swipe {
                             ui.reply_to(i);
                         } else {

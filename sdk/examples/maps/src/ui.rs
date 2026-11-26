@@ -252,6 +252,47 @@ fn clip(a: (i32, i32), b: (i32, i32), m: i32) -> Option<((i32, i32), (i32, i32))
     Some((at(t0), at(t1)))
 }
 
+/// The places drawn on the map (each cell's scene goes before the next is drawn): their names and pins, for a tap.
+const SHOWN: usize = 24;
+static mut PLACES: [(find::Hit, (i16, i16)); SHOWN] = [(find::Hit::NONE, (0, 0)); SHOWN];
+static mut N_SHOWN: usize = 0;
+
+/// The pins the cell just drawn put up, with their names from its scene.
+fn keep_pins() {
+    let (places, n) = unsafe { (&mut *core::ptr::addr_of_mut!(PLACES), &mut *core::ptr::addr_of_mut!(N_SHOWN)) };
+    for &(px, at) in render::drawn_pins() {
+        if *n == SHOWN {
+            return;
+        }
+        for r in scene().recs() {
+            if let crate::scene::Rec::Label { class, x, y, text, .. } = r {
+                if (x, y) == at {
+                    places[*n] = (find::place_hit(class, at, text.as_bytes()), px);
+                    *n += 1;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// The place whose pin or name was drawn at (x, y) (the name beside the pin, as render.rs puts it).
+pub fn place_at(x: i32, y: i32) -> Option<find::Hit> {
+    let (places, n) = unsafe { (&*core::ptr::addr_of!(PLACES), *core::ptr::addr_of!(N_SHOWN)) };
+    let mut best: Option<(i32, find::Hit)> = None;
+    for (h, (px, py)) in &places[..n] {
+        let (px, py) = (i32::from(*px), i32::from(*py));
+        let w = font::width(h.name()).min(150);
+        let (x0, x1) = if px + 12 + w < 440 { (px - 16, px + 16 + w) } else { (px - 16 - w, px + 16) };
+        let on_name = (x0..x1).contains(&x) && (py - 34..py + 8).contains(&y);
+        let d = (x - px).pow(2) + (y - py + 13).pow(2);
+        if (on_name || d < 34 * 34) && best.is_none_or(|(b, _)| d < b) {
+            best = Some((d, *h));
+        }
+    }
+    best.map(|(_, h)| h)
+}
+
 impl Ui {
     fn k(&self) -> i32 {
         k_of(self.zoom)
@@ -404,6 +445,7 @@ impl Ui {
             first -= 1;
         }
         let mut name = [0u8; 20];
+        unsafe { *core::ptr::addr_of_mut!(N_SHOWN) = 0 };
         for li in first..=l {
             let lv = p.levels[li];
             let (cols, rows) = lv.cells(v.at, half);
@@ -426,6 +468,7 @@ impl Ui {
                     render::draw_over(true);
                     render::draw(self.api, scene(), v, &[], &KEEP);
                     render::draw_over(false);
+                    keep_pins();
                 }
             }
         }
@@ -1072,8 +1115,8 @@ impl Ui {
             self.screen = Screen::Sheet;
             return;
         }
-        // a named place drawn there: its card
-        if let Some(h) = self.name_at(x, y) {
+        // a place drawn there (its pin or its name), or a named place: its card
+        if let Some(h) = place_at(x, y).or_else(|| self.name_at(x, y)) {
             self.motor.play(haptic::TICK);
             self.open_place(h);
             return;

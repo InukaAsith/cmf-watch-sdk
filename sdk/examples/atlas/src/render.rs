@@ -340,6 +340,12 @@ fn pins() -> (&'static mut [((i16, i16), (i32, i32)); MAX_PINS], &'static mut us
     }
 }
 
+/// The pins the last draw put up: (panel point, frame point).
+pub fn drawn_pins() -> &'static [((i16, i16), (i32, i32))] {
+    let (p, n) = pins();
+    &p[..*n]
+}
+
 /// The pin drawn nearest a tap at (x, y), if one is near: its frame point and name.
 pub fn pin_at(sc: &'static Scene, x: i32, y: i32) -> Option<((i32, i32), &'static str)> {
     let (ps, n) = pins();
