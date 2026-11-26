@@ -12,7 +12,11 @@
 //!   new state for message idx. `P online` the open chat's contact is online (1) or not (0); `H` resets it.
 //! - `W text…` the open chat's line under its name ("last seen today at 17:20", "online"); `G part px…` its
 //!   picture: 12 × 12 RGB565 LE in 3 parts of 4 rows (96 B each); `H` resets both.
-//! - A `C` row with `unread` 255 is a status line ("Syncing..."), not a chat: drawn in red, not opened.
+//! - A `C` row with `unread` 255 is a status line ("Syncing..."), not a chat: drawn in red, not opened (a
+//!   "Syncing" one is the list's filling bar instead); `unread` 254 is the new-chat row (New chat, New note,
+//!   New mail): the + button at the bottom opens it.
+//! - `K title…` the list that follows is a picker (whom to write to), under that title; the watch's back asks
+//!   the usual list again (`R`). `Y pct` how far the sync is (the bar).
 //!
 //! Watch → phone: `R` ready, `o id` open chat, `s id text…` send, `t idx` a message tapped (Notes ticks a
 //! reminder; WhatsApp sends a sticker's or a photo's picture).
@@ -25,6 +29,8 @@ pub const MAX_MSGS: usize = 12;
 pub const MAX_QUICK: usize = 6;
 /// `C`'s unread for a status row
 pub const STATUS_ROW: u8 = 255;
+/// `C`'s unread for the new-chat row (the + button)
+pub const NEW_ROW: u8 = 254;
 pub const POOL: usize = 24 * 1024;
 
 #[derive(Clone, Copy)]
@@ -116,6 +122,12 @@ pub struct Model {
     pub online: bool,
     /// the open chat's line under its name
     pub seen: Str<40>,
+    /// the open chat's H came (its messages, if any, with it): an empty chat is empty, not loading
+    pub headed: bool,
+    /// the list is a picker under this title (empty: the usual list)
+    pub picker: Str<24>,
+    /// how far the phone's sync is, 0..=100
+    pub sync: u8,
     /// the open chat's picture, 12 × 12 RGB565, and which of its 3 parts came (bits)
     pub dp: [u16; DP * DP],
     pub dp_parts: u8,
@@ -142,6 +154,9 @@ impl Model {
             n_quick: 0,
             online: false,
             seen: Str::EMPTY,
+            headed: false,
+            picker: Str::EMPTY,
+            sync: 0,
             dp: [0; DP * DP],
             dp_parts: 0,
         }
@@ -199,6 +214,7 @@ impl Model {
             }
             b'H' if !a.is_empty() => {
                 self.open = Some(a[0]);
+                self.headed = true;
                 self.online = false;
                 self.seen = Str::EMPTY;
                 self.dp_parts = 0;
@@ -236,6 +252,14 @@ impl Model {
             b'P' if a.len() == 1 => {
                 self.online = a[0] != 0;
                 on_open(self)
+            }
+            b'K' => {
+                self.picker.set(a);
+                Effect::List
+            }
+            b'Y' if a.len() == 1 => {
+                self.sync = a[0].min(100);
+                Effect::List
             }
             b'W' => {
                 self.seen.set(a);
@@ -452,5 +476,16 @@ mod tests {
         assert_eq!(m.apply(&[b'G', 0, 1, 2]), Effect::None);
         m.apply(&[b'H', 4, b'T']);
         assert_eq!((m.dp_parts, m.seen.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn picker_and_sync() {
+        let mut m = model();
+        assert_eq!(m.apply(b"KNew chat"), Effect::List);
+        assert_eq!(m.picker.as_str(), "New chat");
+        assert_eq!(m.apply(&[b'Y', 140]), Effect::List);
+        assert_eq!(m.sync, 100);
+        m.apply(b"K");
+        assert_eq!(m.picker.as_str(), "");
     }
 }

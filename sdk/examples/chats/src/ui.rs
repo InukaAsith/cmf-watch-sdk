@@ -5,7 +5,7 @@
 //! turns the selection, a tap on the middle types it, a tap on the rim types that letter). Taps are TOUCH_DOWN (its
 //! position is the reliable one). The button goes back (own_back), and leaves the app from the list.
 
-use crate::model::{Effect, Model, Msg, MAX_MSGS, STATUS_ROW};
+use crate::model::{Chat, Effect, Model, Msg, MAX_CHATS, MAX_MSGS, NEW_ROW, STATUS_ROW};
 use crate::rle::{self, Decoder};
 use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
@@ -241,6 +241,11 @@ impl Surface for Band {
 
 /// Black around a box drawn over the last frame: its rows left and right of it, and outside its rounded corners
 /// (rrect leaves those untouched).
+/// The sync line ("Syncing..."): drawn as the bar, not a card.
+fn is_sync(c: &Chat) -> bool {
+    c.unread == STATUS_ROW && c.name.as_str().starts_with("Syncing")
+}
+
 fn surround(s: &mut impl Surface, x: i32, y: i32, w: i32, h: i32, r: i32) {
     Surface::rect(s, 0, y, x, h, 0);
     Surface::rect(s, x + w, y, 466 - x - w, h, 0);
@@ -342,6 +347,11 @@ const SPIN_MS: u32 = 70;
 const TEXT_W: i32 = 262;
 const GAP: i32 = 10;
 const BTN_Y: i32 = 424;
+/// the list's + button (a new chat, note, mail)
+const NEW_Y: i32 = 414;
+/// the sync bar: light green, a step every SYNC_MS
+const SYNC: Rgb = Rgb(0x8E, 0xE6, 0xA8);
+const SYNC_MS: u32 = 60;
 /// Dial letters per crown detent, in 1/100s: a slow turn, a fast spin (ui.crown).
 /// Moved more than this between down and up: a drag, not a tap.
 const DRAG: i32 = 14;
@@ -498,6 +508,9 @@ struct Ui {
     asked_n: usize,
     /// Notes: the kept list is shown, the phone has not answered yet
     syncing: bool,
+    /// the sync bar as drawn (0..=1000) and when it moves next
+    sync_shown: i32,
+    sync_at: u32,
     /// a picture loading: the spinner's next frame and its angle
     spin: (u32, u16),
     /// when the last frame was shown; the phone's messages (a chat or a picture coming in pieces) redraw at most
@@ -548,6 +561,8 @@ fn main(api: &'static Api) -> i32 {
         asked: [0; MSG_MAX],
         asked_n: 0,
         syncing: false,
+        sync_shown: 0,
+        sync_at: 0,
         spin: (0, 0),
         shown_at: 0,
         due: false,
@@ -590,13 +605,17 @@ fn main(api: &'static Api) -> i32 {
         if ui.due && now.wrapping_sub(ui.shown_at) >= FRAME_MS {
             ui.refresh();
         }
-        if PERIODIC && ui.screen == Screen::List && now.wrapping_sub(ui.list_ask) >= LIST_MS {
+        // (not while the picker is up: it would be replaced)
+        let periodic = PERIODIC && ui.screen == Screen::List && model().picker.as_str().is_empty();
+        if periodic && now.wrapping_sub(ui.list_ask) >= LIST_MS {
             ui.ask_list();
         }
-        let relist = (PERIODIC && ui.screen == Screen::List)
+        let relist = periodic
             .then(|| LIST_MS.saturating_sub(now.wrapping_sub(ui.list_ask)).max(1));
         let paced = ui.due.then(|| FRAME_MS.saturating_sub(now.wrapping_sub(ui.shown_at)).max(1));
-        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist].into_iter().flatten().min().unwrap_or(u32::MAX);
+        ui.sync_step();
+        let sync = (ui.sync_bar() && ui.screen == Screen::List).then_some(SYNC_MS);
+        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist, sync].into_iter().flatten().min().unwrap_or(u32::MAX);
         let wait = ui.dict.wait_ms(wait);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
@@ -669,6 +688,12 @@ fn main(api: &'static Api) -> i32 {
                 ui.motor.off();
                 ui.dial.cancel();
                 match ui.screen {
+                    Screen::List if !model().picker.as_str().is_empty() => {
+                        // out of the picker: the usual list
+                        ui.ask_list();
+                        ui.list_scroll = 0;
+                        ui.draw();
+                    }
                     Screen::List => {
                         if crate::PLAIN {
                             kept().save(api);
@@ -783,6 +808,7 @@ fn rule(s: &mut impl Surface, y: i32) {
 impl Ui {
     /// The phone's list again (`R`: it answers with the chats as they are now).
     fn ask_list(&mut self) {
+        model().picker.set(b"");
         self.list_ask = self.api.now();
         let _ = self.api.send(b"R");
     }
@@ -833,7 +859,76 @@ impl Ui {
     // --- list
 
     fn list_max(&self) -> i32 {
-        (model().n_chats as i32 * PITCH - (466 - LIST_TOP - 30)).max(0)
+        // room under the last card for the + button
+        let room = if self.new_row().is_some() { 70 } else { 0 };
+        (self.vis().1 as i32 * PITCH + room - (466 - LIST_TOP - 30)).max(0)
+    }
+
+    /// The rows drawn as cards, in order: not the new-chat row (the + button), not the sync line (the bar).
+    fn vis(&self) -> ([usize; MAX_CHATS], usize) {
+        let m = model();
+        let mut v = [0; MAX_CHATS];
+        let mut n = 0;
+        for (i, c) in m.chats[..m.n_chats].iter().enumerate() {
+            if c.unread != NEW_ROW && !is_sync(c) {
+                v[n] = i;
+                n += 1;
+            }
+        }
+        (v, n)
+    }
+
+    /// The new-chat row's id (New chat, New note, New mail), behind the + button; none in a picker.
+    fn new_row(&self) -> Option<u8> {
+        let m = model();
+        if !m.picker.as_str().is_empty() {
+            return None;
+        }
+        m.chats[..m.n_chats].iter().find(|c| c.unread == NEW_ROW).map(|c| c.id)
+    }
+
+    fn sync_bar(&self) -> bool {
+        let m = model();
+        m.picker.as_str().is_empty() && m.chats[..m.n_chats].iter().any(is_sync)
+    }
+
+    /// The + at the bottom, over the cards.
+    fn new_button(&self, s: &mut impl Surface) {
+        if self.new_row().is_none() {
+            return;
+        }
+        disc(s, C, NEW_Y, 34, BLACK, BLACK);
+        disc(s, C, NEW_Y, 30, ACCENT, BLACK);
+        Surface::rect(s, C - 12, NEW_Y - 2, 24, 4, 0);
+        Surface::rect(s, C - 2, NEW_Y - 12, 4, 24, 0);
+    }
+
+    /// The sync bar under the title, light green, filling (`sync_shown`).
+    fn draw_sync(&self, s: &mut impl Surface) {
+        let (x, y, w, h) = (C - 90, 76, 180, 8);
+        Surface::rect(s, x - 2, y - 2, w + 4, h + 4, 0);
+        rrect(s, x, y, w, h, h / 2, Rgb(0x1C, 0x3A, 0x28), BLACK);
+        let f = (w * self.sync_shown / 1000).max(h);
+        rrect(s, x, y, f, h, h / 2, SYNC, Rgb(0x1C, 0x3A, 0x28));
+    }
+
+    /// The bar a step on: quickly to what the phone said, then creeping on while it works. true: drawn.
+    fn sync_step(&mut self) -> bool {
+        let now = self.api.now();
+        if !self.sync_bar() || self.screen != Screen::List || now.wrapping_sub(self.sync_at) as i32 <= 0 {
+            return false;
+        }
+        self.sync_at = now.wrapping_add(SYNC_MS);
+        let goal = i32::from(model().sync) * 10;
+        let next = if self.sync_shown < goal { self.sync_shown + ((goal - self.sync_shown) / 6).max(4) } else { (self.sync_shown + 2).min(goal.max(900)) };
+        if next == self.sync_shown {
+            return false;
+        }
+        self.sync_shown = next;
+        let mut s = Dot(self.api);
+        self.draw_sync(&mut s);
+        self.api.show();
+        true
     }
 
     fn draw_list(&self) {
@@ -841,18 +936,25 @@ impl Ui {
         let mut s = Dot(self.api);
         // the heading over whatever scrolled under it, and the scroll dots on the right rim
         Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
-        logo::title(&mut s, 30, crate::NAME, ACCENT);
+        let picker = model().picker.as_str();
+        logo::title(&mut s, 30, if picker.is_empty() { crate::NAME } else { picker }, ACCENT);
         self.unread_line(&mut s);
         self.scroll_dots(self.list_scroll, self.list_max());
     }
 
     fn unread_line(&self, s: &mut Dot) {
         let m = model();
-        if self.syncing {
-            centre(s, C, 70, "Syncing...", RED.rgb565());
+        if !m.picker.as_str().is_empty() {
             return;
         }
-        let unread = m.chats[..m.n_chats].iter().filter(|c| c.unread > 0 && c.unread != STATUS_ROW).count();
+        if self.sync_bar() {
+            return self.draw_sync(s);
+        }
+        if self.syncing {
+            centre(s, C, 70, "Syncing...", ACCENT.rgb565());
+            return;
+        }
+        let unread = m.chats[..m.n_chats].iter().filter(|c| c.unread > 0 && c.unread < NEW_ROW).count();
         if unread > 0 {
             let mut n = [0u8; 11];
             let t = cmf_wp2_ui::text::int(unread as i32, &mut n);
@@ -867,8 +969,9 @@ impl Ui {
         let mut s = Band(self.api, HEAD_H, 466);
         let m = model();
         Surface::rect(&mut s, 0, HEAD_H, 466, LIST_TOP - self.list_scroll - HEAD_H, 0);
-        for i in 0..m.n_chats {
-            let y = LIST_TOP + i as i32 * PITCH - self.list_scroll;
+        let (v, n) = self.vis();
+        for (p, &i) in v[..n].iter().enumerate() {
+            let y = LIST_TOP + p as i32 * PITCH - self.list_scroll;
             if y + PITCH < HEAD_H || y > 466 {
                 continue;
             }
@@ -906,8 +1009,9 @@ impl Ui {
                 centre(&mut s, x1 - 32, y + 18, cmf_wp2_ui::text::int(unread.min(9) as i32, &mut n), 0);
             }
         }
-        let end = LIST_TOP + m.n_chats as i32 * PITCH - self.list_scroll;
+        let end = LIST_TOP + n as i32 * PITCH - self.list_scroll;
         Surface::rect(&mut s, 0, end.max(HEAD_H), 466, 466 - end.max(HEAD_H), 0);
+        self.new_button(&mut s);
         if m.n_chats == 0 {
             centre(&mut s, C, C - 8, "Waiting for phone", GREY);
         }
@@ -1058,7 +1162,8 @@ impl Ui {
         Surface::rect(&mut s, 0, FEED_TOP, 466, bottom - FEED_TOP, 0);
         self.chat_max = (total - (FEED_END - FEED_TOP)).max(0);
         if m.n_msgs == 0 {
-            centre(&mut s, C, C - 8, crate::EMPTY, GREY);
+            let t = if m.headed && crate::EMPTY == "Loading" { "No messages yet" } else { crate::EMPTY };
+            centre(&mut s, C, C - 8, t, GREY);
         }
     }
 
@@ -1068,7 +1173,10 @@ impl Ui {
             Screen::List => {
                 self.list_cards();
                 let mut s = Dot(self.api);
-                Surface::rect(&mut s, 0, 66, 466, 30, 0);
+                // the title too: a picker came, or went
+                Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
+                let picker = model().picker.as_str();
+                logo::title(&mut s, 30, if picker.is_empty() { crate::NAME } else { picker }, ACCENT);
                 self.unread_line(&mut s);
                 self.scroll_dots(self.list_scroll, self.list_max());
             }
@@ -1590,18 +1698,35 @@ impl Ui {
                 if y < HEAD_H {
                     return;
                 }
-                let i = (y - LIST_TOP + self.list_scroll).div_euclid(PITCH);
+                if let Some(id) = self.new_row().filter(|_| (x - C).pow(2) + (y - NEW_Y).pow(2) <= 38 * 38) {
+                    // + : a new chat (Gemini, Notes), whom to write to (WhatsApp, Mail: the phone's picker)
+                    let _ = self.api.send(&[b'o', id]);
+                    self.motor.play(haptic::TICK);
+                    if RELIST {
+                        // WhatsApp, Mail: the phone's picker comes as a list (K)
+                        self.list_ask = self.api.now();
+                        return;
+                    }
+                    let m = model();
+                    m.open = Some(id);
+                    m.headed = false;
+                    m.n_msgs = 0;
+                    return self.go(Screen::Chat);
+                }
+                let p = (y - LIST_TOP + self.list_scroll).div_euclid(PITCH);
+                let (v, n) = self.vis();
                 let m = model();
-                if i < 0 || i as usize >= m.n_chats || (y - LIST_TOP + self.list_scroll) % PITCH > CARD_H {
+                if p < 0 || p as usize >= n || (y - LIST_TOP + self.list_scroll) % PITCH > CARD_H {
                     return;
                 }
-                let i = i as usize;
+                let i = v[p as usize];
                 if m.chats[i].unread == STATUS_ROW {
                     return;
                 }
                 let id = m.chats[i].id;
                 m.chats[i].unread = 0;
                 m.open = Some(id);
+                m.headed = false;
                 m.n_msgs = 0;
                 let _ = self.api.send(&[b'o', id]);
                 if crate::PLAIN && self.syncing {

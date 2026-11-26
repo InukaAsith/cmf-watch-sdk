@@ -26,6 +26,9 @@ SEEN = {2: "last seen 16:42", 4: "last seen yesterday 21:05", 6: "last seen 2 No
 ONLINE = {1}
 DP = {1: ((40, 90, 200), (240, 200, 170)), 2: ((200, 80, 120), (220, 170, 140)), 4: ((30, 150, 140), (150, 110, 80)),
       6: ((150, 90, 200), (190, 140, 110))}
+# whom a new chat can go to (the + button's picker)
+CONTACTS = {20: "Dad", 21: "Nimal", 22: "Ayesha", 23: "Kasun", 24: "Tharushi"}
+NEW = 200
 QUICK = ["OK", "On my way", "Call you later", "Yes", "No", "Thanks!"]
 
 
@@ -110,15 +113,35 @@ async def send_picture(ch, idx, kind):
 
 
 def preview(cid):
+    if not CHATS[cid][1]:
+        return ""
     me, kind, text = CHATS[cid][1][-1]
     return ("You: " if me else "") + (text or ("Sticker" if kind == 1 else "Photo"))
 
 
-async def send_list(ch):
-    await ch.send(b"L" + bytes([len(CHATS)]))
-    for i, (cid, (name, _)) in enumerate(CHATS.items()):
-        n, p = name.encode()[:24], preview(cid).encode()[:40]
-        await ch.send(b"C" + bytes([i, cid, UNREAD.get(cid, 0), len(n)]) + n + bytes([len(p)]) + p)
+def row(i, cid, unread, name, prev):
+    n, p = name.encode()[:24], prev.encode()[:40]
+    return b"C" + bytes([i, cid, unread, len(n)]) + n + bytes([len(p)]) + p
+
+
+async def send_list(ch, syncing=False):
+    """The chats; first the + button's row (unread 254) and, while syncing, the line the watch draws as a bar."""
+    rows = [row(0, NEW, 254, "New chat", "Start one")]
+    if syncing:
+        rows.append(row(1, 250, 255, "Syncing...", "Saved chats below"))
+    for cid, (name, _) in CHATS.items():
+        rows.append(row(len(rows), cid, UNREAD.get(cid, 0), name, preview(cid)))
+    rows = rows[:12]
+    await ch.send(b"L" + bytes([len(rows)]))
+    for r in rows:
+        await ch.send(r)
+
+
+async def send_picker(ch):
+    await ch.send(b"KNew chat")
+    await ch.send(b"L" + bytes([len(CONTACTS)]))
+    for i, (cid, name) in enumerate(CONTACTS.items()):
+        await ch.send(row(i, cid, 0, name, "Hey there! I am using WhatsApp."))
 
 
 async def open_chat(ch, cid):
@@ -148,9 +171,16 @@ async def main():
     opened = None
     async with (SimChannel(a.sim) if a.sim else Channel(address=a.address, channel_key=True)) as ch:
         await send_when_open(ch, b"?")  # waits till the app is open
-        await send_list(ch)
+        # a catch-up first, as the phone does: the bar fills while it syncs
+        await send_list(ch, syncing=True)
         for i, q in enumerate(QUICK):
             await ch.send(b"Q" + bytes([i]) + q.encode())
+        for pct in (15, 30, 45, 60, 75, 90):
+            await ch.send(b"Y" + bytes([pct]))
+            await asyncio.sleep(1.2)
+        await ch.send(b"Y" + bytes([100]))
+        await asyncio.sleep(0.6)
+        await send_list(ch)
         while True:
             m = (await ch.recv()).data
             print("watch:", m[:1].decode(), m[1:], flush=True)
@@ -158,6 +188,13 @@ async def main():
                 await send_list(ch)
                 for i, q in enumerate(QUICK):
                     await ch.send(b"Q" + bytes([i]) + q.encode())
+            elif m == b"o" + bytes([NEW]):
+                await send_picker(ch)
+            elif m[:1] == b"o" and m[1] in CONTACTS:
+                # a new chat with them: empty till something is sent
+                CHATS[m[1]] = (CONTACTS[m[1]], [])
+                opened = m[1]
+                await open_chat(ch, opened)
             elif m[:1] == b"o" and m[1] in CHATS:
                 opened = m[1]
                 await open_chat(ch, opened)

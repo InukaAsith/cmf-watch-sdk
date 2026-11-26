@@ -22,4 +22,6 @@ mod brand {
     pub const NAME: &str = "Recorder";
     pub const SPOTIFY: bool = false;
     pub const RECORDER: bool = true;
+    pub const ACCENT: cmf_wp2_ui::color::Rgb = cmf_wp2_ui::color::Rgb(0xF0, 0x2B, 0x3A);
+    pub const INK: u16 = 0xFFFF;
 }

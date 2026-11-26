@@ -25,10 +25,22 @@ fn model() -> &'static mut Model {
 }
 
 const WHITE: Rgb = Rgb(0xFF, 0xFF, 0xFF);
-const RED: Rgb = Rgb(0xD7, 0x19, 0x21);
+/// Spotify's green, black on it, a dark green for rings and the track
+const RED: Rgb = Rgb(0x1E, 0xD7, 0x60);
+const INK: u16 = 0;
+const TINT: Rgb = Rgb(0x0A, 0x47, 0x20);
+/// the rows' covers: a colour each, from the title
+const COVERS: [Rgb; 6] = [
+    RED,
+    Rgb(0x7C, 0x4D, 0xFF),
+    Rgb(0xFF, 0x8A, 0x3D),
+    Rgb(0x2E, 0xA8, 0xFF),
+    Rgb(0xE9, 0x4C, 0xA0),
+    Rgb(0xF5, 0xC5, 0x18),
+];
 const CARD: Rgb = Rgb(0x17, 0x17, 0x17);
 const KEYC: Rgb = Rgb(0x26, 0x26, 0x26);
-const TRACK: Rgb = Rgb(0x2A, 0x2A, 0x2A);
+const TRACK: Rgb = Rgb(0x06, 0x2B, 0x13);
 const W: u16 = 0xFFFF;
 const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
 const GREY: u16 = rgb565(0x80, 0x80, 0x80);
@@ -228,16 +240,16 @@ impl Ui {
         let playing = model().playing();
         // previous: bar + triangle pointing left; next: mirrored
         for (cx, dir) in [(CTRL_X[0], -1), (CTRL_X[2], 1)] {
-            ring(s, cx, CTRL_Y, 27, 29, Rgb(0x50, 0x50, 0x50), BLACK);
+            ring(s, cx, CTRL_Y, 27, 29, TINT, BLACK);
             triangle(s, cx - dir * 2, CTRL_Y, 11, dir, W);
             Surface::rect(s, cx + dir * 10 - 2, CTRL_Y - 11, 4, 22, W);
         }
         disc(s, C, CTRL_Y, 36, RED, BLACK);
         if playing {
-            Surface::rect(s, C - 11, CTRL_Y - 13, 8, 26, W);
-            Surface::rect(s, C + 3, CTRL_Y - 13, 8, 26, W);
+            Surface::rect(s, C - 11, CTRL_Y - 13, 8, 26, INK);
+            Surface::rect(s, C + 3, CTRL_Y - 13, 8, 26, INK);
         } else {
-            triangle(s, C + 3, CTRL_Y, 14, 1, W);
+            triangle(s, C + 3, CTRL_Y, 14, 1, INK);
         }
     }
 
@@ -245,7 +257,7 @@ impl Ui {
         let s = &mut self.s;
         let liked = model().now.flags & LIKED != 0;
         for (i, &x) in TOOL_X.iter().enumerate() {
-            ring(s, x, TOOL_Y, 21, 23, Rgb(0x50, 0x50, 0x50), BLACK);
+            ring(s, x, TOOL_Y, 21, 23, TINT, BLACK);
             let y = TOOL_Y;
             match i {
                 // like: a heart from two discs and a triangle
@@ -415,13 +427,21 @@ impl Ui {
                 continue;
             }
             let r = &l.rows[i];
-            rrect(&mut self.s, x0, y, x1 - x0, ROW_H, ROW_H / 2, CARD, BLACK);
-            let tx = x0 + 30;
+            let card = if r.active { TRACK } else { CARD };
+            rrect(&mut self.s, x0, y, x1 - x0, ROW_H, ROW_H / 2, card, BLACK);
+            // a cover: the title's colour, its first letter
+            let (cx, cy) = (x0 + 38, y + ROW_H / 2);
+            let h = r.title.as_str().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+            disc(&mut self.s, cx, cy, 23, COVERS[h as usize % COVERS.len()], card);
+            let mut b = [0u8; 4];
+            let ch = r.title.as_str().chars().next().unwrap_or('?').to_ascii_uppercase();
+            centre(&mut self.s, cx, cy - 10, ch.encode_utf8(&mut b), W);
+            let tx = x0 + 72;
             let right = x1 - if r.active { 54 } else { 30 };
             fitted(&mut self.s, tx, y + 12, r.title.as_str(), right - tx, if r.active { W } else { SOFT });
             fitted(&mut self.s, tx, y + 38, r.sub.as_str(), right - tx, GREY);
             if r.active {
-                disc(&mut self.s, x1 - 34, y + ROW_H / 2, 6, RED, CARD);
+                disc(&mut self.s, x1 - 34, y + ROW_H / 2, 6, RED, card);
             }
         }
         if l.n < l.want {
@@ -609,7 +629,7 @@ impl Ui {
                 K::Go => "Go",
                 K::Dial => "dial",
             };
-            let ink = if pressed { 0 } else if k == K::Space { GREY } else { W };
+            let ink = if pressed { 0 } else if k == K::Space { GREY } else if k == K::Go { INK } else { W };
             centre(s, x + w / 2, y + KH / 2 - 9, label, ink);
         });
     }

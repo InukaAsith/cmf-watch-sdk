@@ -124,7 +124,8 @@ async def main():
             await ch.send(b"L" + bytes([len(rows)]))
             for k, (i, name, prev) in enumerate(rows):
                 n, pv = clean(name).encode()[:24], clean(prev).encode()[:40]
-                await ch.send(b"C" + bytes([k, i, 0, len(n)]) + n + bytes([len(pv)]) + pv)
+                # New chat: the + button (unread 254)
+                await ch.send(b"C" + bytes([k, i, 254 if i == 1 else 0, len(n)]) + n + bytes([len(pv)]) + pv)
             await quick()
 
         async def open_chat(i):

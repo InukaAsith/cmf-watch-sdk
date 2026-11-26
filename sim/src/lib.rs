@@ -494,7 +494,7 @@ impl State {
             fn text(&mut self, _: i32, _: i32, _: &str, _: u16) {}
         }
         let mut px = self.shown.clone();
-        let t = self.time().map_or("--:--".to_string(), |t| format!("{:02}:{:02}", t.hour, t.minute));
+        let t = self.time().map_or("--:--".to_string(), |t| format!("{}:{:02}", if t.hour % 12 == 0 { 12 } else { t.hour % 12 }, t.minute));
         let bars = self.gps_on.then(|| match (self.gps.3, self.gps.4) {
             (0, _) => 0,
             (_, 8..) => 3,

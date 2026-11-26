@@ -144,11 +144,21 @@ fn update(now: u32, force: bool) {
     if minute != s.minute {
         let mut t = *b"--:--\0";
         if minute != 0xFFFF {
-            let (h, m) = ((minute / 60) as u8, (minute % 60) as u8);
-            t = [b'0' + h / 10, b'0' + h % 10, b':', b'0' + m / 10, b'0' + m % 10, 0];
+            t = clock12(minute);
         }
         stock!(LV_LABEL_SET_TEXT, fn(Obj, *const u8))(s.label, t.as_ptr());
         s.minute = minute;
+    }
+}
+
+/// Minutes of the day as 12-hour time, NUL-ended: 0:05 → "12:05", 18:07 → "6:07".
+pub fn clock12(minute: u16) -> [u8; 6] {
+    let (h, m) = ((minute / 60 % 24) as u8, (minute % 60) as u8);
+    let h = if h % 12 == 0 { 12 } else { h % 12 };
+    if h >= 10 {
+        [b'1', b'0' + h % 10, b':', b'0' + m / 10, b'0' + m % 10, 0]
+    } else {
+        [b'0' + h, b':', b'0' + m / 10, b'0' + m % 10, 0, 0]
     }
 }
 
