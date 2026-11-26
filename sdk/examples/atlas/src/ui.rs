@@ -20,6 +20,7 @@
 //!
 //! The button goes back a screen; on Home it closes Maps. The phone sends the map as data the watch draws (proto.rs).
 
+use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use crate::proto::{CATEGORIES, Got, MODES, Model, PICKED, Place, Way};
 use crate::render::{self, View};
 use crate::scene::{Ev, Scene};
@@ -51,10 +52,8 @@ const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
 const GREY: u16 = rgb565(0x8A, 0x8A, 0x8A);
 const DIM: u16 = rgb565(0x3A, 0x3A, 0x3A);
 
-static mut SCENE: Scene = Scene::new();
-
 fn scene() -> &'static mut Scene {
-    unsafe { &mut *core::ptr::addr_of_mut!(SCENE) }
+    crate::ram::scene()
 }
 fn model() -> &'static mut Model {
     &mut crate::ram::ram().model
@@ -78,6 +77,8 @@ enum Screen {
     Nav,
     /// a place's details, pulled up from its card
     About,
+    /// voice typing into the search (cmf_wp2_ui::dictate)
+    Voice,
 }
 
 /// Text wrapped into About's lines.
@@ -127,6 +128,9 @@ const WAY_H: i32 = 76;
 const KH: i32 = 58;
 const KEY_Y: [i32; 4] = [184, 242, 300, 358];
 const QUERY: usize = 40;
+/// the voice typing button, right of the search text
+const MIC_X: i32 = 400;
+const MIC_Y: i32 = 116;
 /// `asked` for the route's map (it comes with `D`, round the route).
 const ROUTE_SCENE: (i32, i32) = (i32::MIN, i32::MIN);
 /// `asked` for a map round a place or an area (`F`, `Z`): it is at the scene's centre.
@@ -336,6 +340,7 @@ struct Ui {
     query: [u8; QUERY],
     n_query: usize,
     sym: bool,
+    dict: Dictate,
     /// a QWERTY key flashing till the next touch
     key_on: Option<K>,
     zoom: u8,
@@ -550,6 +555,10 @@ impl Ui {
         match self.screen {
             Screen::Home => self.draw_home(),
             Screen::Search => self.draw_keys(),
+            Screen::Voice => {
+                let mut s = self.s;
+                self.dict.draw(&mut s);
+            }
             Screen::Dial => self.draw_dial(),
             Screen::Results => self.draw_results(),
             Screen::List => self.draw_list(),
@@ -785,7 +794,7 @@ impl Ui {
         let (half, max) = if self.screen == Screen::Dial {
             (100, 180)
         } else {
-            (170, 300)
+            (140, 250)
         };
         Surface::rect(&mut s, C - half, 80, 2 * half, 80, 0);
         let q = core::str::from_utf8(&self.query[..self.n_query]).unwrap_or("");
@@ -819,6 +828,31 @@ impl Ui {
         });
         for &(k, ..) in &keys[..n] {
             self.draw_key(k, self.key_on == Some(k));
+        }
+        cmf_wp2_ui::dictate::mic_button(&mut self.s, MIC_X, MIC_Y);
+    }
+
+    /// What the dictation screen asks for: the words into the search.
+    fn voice_out(&mut self, o: DictOut) {
+        match o {
+            DictOut::None => {}
+            DictOut::Redraw => self.draw(),
+            DictOut::Done | DictOut::Cancel => {
+                if o == DictOut::Done {
+                    let t = self.dict.text().trim().trim_end_matches('.');
+                    if self.n_query > 0 && self.query[self.n_query - 1] != b' ' && self.n_query < QUERY && !t.is_empty() {
+                        self.query[self.n_query] = b' ';
+                        self.n_query += 1;
+                    }
+                    let mut k = t.len().min(QUERY - self.n_query);
+                    while !t.is_char_boundary(k) {
+                        k -= 1;
+                    }
+                    self.query[self.n_query..self.n_query + k].copy_from_slice(&t.as_bytes()[..k]);
+                    self.n_query += k;
+                }
+                self.go(Screen::Search);
+            }
         }
     }
 
@@ -1589,6 +1623,10 @@ impl Ui {
             Screen::Home => return false,
             Screen::Find | Screen::Results => self.go(Screen::Home),
             Screen::Search => self.go(Screen::Find),
+            Screen::Voice => {
+                let o = self.dict.cancel(self.api);
+                self.voice_out(o);
+            }
             Screen::Dial => self.go(Screen::Search),
             Screen::List => self.go(Screen::Results),
             Screen::Place => {
@@ -1769,6 +1807,15 @@ impl Ui {
 
     fn down(&mut self, x: i32, y: i32) {
         match self.screen {
+            Screen::Search if cmf_wp2_ui::dictate::mic_hit(MIC_X, MIC_Y, x, y) => {
+                self.motor.play(haptic::TICK);
+                self.dict.start(self.api, false);
+                self.go(Screen::Voice);
+            }
+            Screen::Voice => {
+                let o = self.dict.tap(self.api, x, y);
+                self.voice_out(o);
+            }
             Screen::Search => {
                 if let Some(old) = self.key_on.take() {
                     self.draw_key(old, false);
@@ -2270,6 +2317,10 @@ impl Ui {
         let show = false;
         while let Some(m) = self.api.recv(&mut buf) {
             ask.answered();
+            if let Some(o) = self.dict.message(m) {
+                self.voice_out(o);
+                continue;
+            }
             if m.first() == Some(&b'y') && m.len() <= 2 {
                 // the phone uses the watch's GPS, with (orange) or without (red) its own fix
                 let was = self.gps_colour();
@@ -2447,6 +2498,7 @@ fn main(api: &'static Api) -> i32 {
         query: [0; QUERY],
         n_query: 0,
         sym: false,
+        dict: Dictate::new(),
         key_on: None,
         zoom: 2,
         at: None,
@@ -2491,8 +2543,12 @@ fn main(api: &'static Api) -> i32 {
     ui.want_map(None);
     let mut ask = Ask::new(api.now(), 10);
     loop {
-        let e = api.event(ui.wait(&ask));
+        let e = api.event(ui.dict.wait_ms(ui.wait(&ask)));
         ui.motor.update();
+        if ui.dict.active() {
+            let o = ui.dict.tick(api);
+            ui.voice_out(o);
+        }
         if ask.due(api.now()) {
             ui.send(b"R");
         }
@@ -2517,6 +2573,10 @@ fn main(api: &'static Api) -> i32 {
             }
             PAUSE => {
                 ui.motor.off();
+                if ui.dict.active() {
+                    let o = ui.dict.cancel(api);
+                    ui.voice_out(o);
+                }
                 loop {
                     match api.event(u32::MAX) {
                         Some(e) if e.kind == RESUME => break,
