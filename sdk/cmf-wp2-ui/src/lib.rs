@@ -5,6 +5,7 @@
 pub mod ask;
 pub mod color;
 pub mod dial;
+pub mod dictate;
 pub mod draw;
 pub mod font;
 mod inter;

@@ -15,6 +15,7 @@ use crate::ram::{self, ram, ROUTE};
 use crate::render::{self, View, BG, ROUTE as BLUE};
 use crate::scene::Scene;
 use cmf_wp2_app::storage::{Clean, Cleaned};
+use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, FILE_CHUNK, GPS, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::draw::{disc, line, ring, rrect};
@@ -107,6 +108,8 @@ enum Screen {
     Routes,
     Preview,
     Drive,
+    /// voice typing into the search (cmf_wp2_ui::dictate)
+    Voice,
 }
 
 /// What the banner guides you to.
@@ -181,6 +184,7 @@ struct Ui {
     n_hits: usize,
     /// directions and turn by turn
     trip: Trip,
+    pub dict: Dictate,
     /// ◎ held: the watch's GPS only (the iPhone's isn't asked)
     watch_only: bool,
     clean: Option<Clean<'static>>,
@@ -355,6 +359,10 @@ impl Ui {
             (Screen::Routes, _) => self.draw_routes(),
             (Screen::Preview, _) => self.draw_preview(),
             (Screen::Drive, _) => self.draw_drive(),
+            (Screen::Voice, _) => {
+                let mut s = self.s;
+                self.dict.draw(&mut s);
+            }
         }
         self.api.show();
     }
@@ -1203,6 +1211,10 @@ impl Ui {
                     Screen::List => self.list_tap(y),
                     Screen::Results => self.results_tap(y),
                     Screen::Keys => self.keys_tap(x, y),
+                    Screen::Voice => {
+                        let o = self.dict.tap(self.api, x, y);
+                        self.voice_out(o);
+                    }
                     Screen::Ways => self.ways_tap(y),
                     Screen::Routes => self.routes_tap(y),
                     Screen::Preview => self.preview_tap(y),
@@ -1272,7 +1284,7 @@ impl Ui {
     fn wait(&self) -> u32 {
         let now = self.api.now();
         let left = |t: u32| (t.wrapping_sub(now) as i32).max(0) as u32;
-        let mut w = self.motor.wait().unwrap_or(u32::MAX);
+        let mut w = self.dict.wait_ms(self.motor.wait().unwrap_or(u32::MAX));
         if let Some((x, y, t)) = self.down {
             if !self.held {
                 w = w.min(left(t.wrapping_add(if hit(B_ME, x, y) && now.wrapping_sub(t) >= HOLD_MS { GPS_HOLD_MS } else { HOLD_MS })));
@@ -1295,6 +1307,10 @@ impl Ui {
         while let Some(m) = self.api.recv(&mut buf) {
             let u16_at = |i: usize| u16::from_le_bytes([m[i], m[i + 1]]);
             let u32_at = |i: usize| u32::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]]);
+            if let Some(o) = self.dict.message(m) {
+                self.voice_out(o);
+                continue;
+            }
             if self.trip_message(m) {
                 continue;
             }
@@ -1485,7 +1501,37 @@ impl Ui {
     }
 
     /// Back (the side button): a screen back, on the map closes.
+    /// What the dictation screen asks for: the words into the search.
+    pub fn voice_out(&mut self, o: DictOut) {
+        match o {
+            DictOut::None => {}
+            DictOut::Redraw => self.dirty = true,
+            DictOut::Done | DictOut::Cancel => {
+                if o == DictOut::Done {
+                    let t = self.dict.text().trim().trim_end_matches('.');
+                    if self.qn > 0 && self.query[self.qn - 1] != b' ' && self.qn < find::QUERY && !t.is_empty() {
+                        self.query[self.qn] = b' ';
+                        self.qn += 1;
+                    }
+                    let mut k = t.len().min(find::QUERY - self.qn);
+                    while !t.is_char_boundary(k) {
+                        k -= 1;
+                    }
+                    self.query[self.qn..self.qn + k].copy_from_slice(&t.as_bytes()[..k]);
+                    self.qn += k;
+                }
+                self.screen = Screen::Keys;
+                self.dirty = true;
+            }
+        }
+    }
+
     fn back(&mut self) -> bool {
+        if self.screen == Screen::Voice {
+            let o = self.dict.cancel(self.api);
+            self.voice_out(o);
+            return true;
+        }
         self.screen = match self.screen {
             Screen::Cleaning => return true,
             Screen::Map => return false,
@@ -1549,6 +1595,7 @@ fn main(api: &'static Api) -> i32 {
         hits: [Hit::NONE; HITS],
         n_hits: 0,
         trip: Trip::new(),
+        dict: Dictate::new(),
         watch_only: false,
         clean: None,
         clean_for_phone: false,
@@ -1577,6 +1624,10 @@ fn main(api: &'static Api) -> i32 {
         }
         ui.motor.update();
         ui.timers();
+        if ui.dict.active() {
+            let o = ui.dict.tick(api);
+            ui.voice_out(o);
+        }
         if let Some(e) = e {
             match e.kind {
                 BUTTON => {
@@ -1587,6 +1638,10 @@ fn main(api: &'static Api) -> i32 {
                     }
                 }
                 PAUSE => loop {
+                    if ui.dict.active() {
+                        let o = ui.dict.cancel(api);
+                        ui.voice_out(o);
+                    }
                     match api.event(u32::MAX) {
                         Some(e) if e.kind == RESUME => {
                             ui.dirty = true;

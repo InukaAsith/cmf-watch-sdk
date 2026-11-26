@@ -3,6 +3,7 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 pub mod adpcm;
+pub mod mic;
 pub mod lv;
 pub mod stock;
 pub mod storage;
@@ -339,11 +340,7 @@ impl Api {
     /// be opened, `-22` for a buffer outside the app block or an odd length. `pcm` must be a `static` (the stack
     /// is not in the app block).
     pub fn audio_write(&self, pcm: &[u8]) -> i32 {
-        static mut BUF: [u8; 13] = [0x18, 9, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
-        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
-        buf[5..9].copy_from_slice(&(pcm.as_ptr() as u32).to_le_bytes());
-        buf[9..13].copy_from_slice(&(pcm.len() as u32).to_le_bytes());
-        self.audio_record(buf)
+        self.pcm_record(2, pcm.as_ptr() as usize, pcm.len())
     }
 
     /// Speaker volume, 0..=100 % of the watch's maximum (0 mutes). Until the first call the system's level is used.
@@ -364,6 +361,38 @@ impl Api {
     pub fn audio_close(&self) -> i32 {
         static BUF: [u8; 5] = [0x18, 1, 0, 0, 3];
         self.audio_record(&BUF)
+    }
+
+    /// Starts the mic: 16 kHz mono 16-bit PCM (docs/abi-1.4.md, "Mic"), collected by the loader (256 ms of it)
+    /// while the app runs in the foreground; a pause stops it, `RESUME` starts it again; exit, crash and force stop
+    /// end it. While it records the panel stays lit. `0`; `-22` on a loader before 6.
+    pub fn mic_open(&self) -> i32 {
+        static BUF: [u8; 5] = [0x18, 1, 0, 0, 6];
+        self.audio_record(&BUF)
+    }
+
+    /// Takes recorded samples (little-endian i16) into `pcm`: bytes taken (0: none yet), or `-12` when the mic
+    /// could not be opened. `pcm` must be a `static` (the stack is not in the app block).
+    pub fn mic_read(&self, pcm: &mut [u8]) -> i32 {
+        self.pcm_record(7, pcm.as_mut_ptr() as usize, pcm.len())
+    }
+
+    /// Stops the mic.
+    pub fn mic_close(&self) -> i32 {
+        static BUF: [u8; 5] = [0x18, 1, 0, 0, 8];
+        self.audio_record(&BUF)
+    }
+
+    /// AUDIO write / MIC read: `[0x18, 9, 0, 0, op, ptr:u32, len:u32]`; the simulator (64-bit) takes the whole
+    /// pointer, `[0x18, 13, 0, 0, op, ptr:u64, len:u32]`.
+    fn pcm_record(&self, op: u8, ptr: usize, len: usize) -> i32 {
+        const P: usize = core::mem::size_of::<usize>();
+        static mut BUF: [u8; 9 + P] = [0; 9 + P];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        buf[..5].copy_from_slice(&[0x18, (5 + P) as u8, 0, 0, op]);
+        buf[5..5 + P].copy_from_slice(&ptr.to_le_bytes());
+        buf[5 + P..].copy_from_slice(&(len as u32).to_le_bytes());
+        self.audio_record(buf)
     }
 
     fn audio_record(&self, buf: &[u8]) -> i32 {

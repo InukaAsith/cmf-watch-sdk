@@ -141,6 +141,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "miclab"
+version = "0.1.0"
+dependencies = [
+ "cmf-wp2-app",
+]
+
+[[package]]
 name = "motor-hog"
 version = "0.1.0"
 dependencies = [

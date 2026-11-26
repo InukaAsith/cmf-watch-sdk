@@ -836,6 +836,65 @@ extern "C" fn own_back(on: bool) {
     call(|s| s.own_back(on))
 }
 
+/// The speaker and mic. The speaker takes everything at once and keeps it in the store's `played.raw` (16-bit
+/// mono at the opened rate); the mic plays `runs/sim/mic.raw` (16 kHz mono 16-bit, looped; a 440 Hz tone without
+/// it) at the clock's pace, at most 256 ms kept, as the loader's.
+static MIC: Mutex<Option<(u32, u64, Vec<i16>)>> = Mutex::new(None);
+
+fn audio(cmd: wp2_core::lvcmd::AudioCmd) -> i32 {
+    use wp2_core::lvcmd::AudioCmd as A;
+    match cmd {
+        A::Open { .. } => {
+            let _ = fs::remove_file(sim().lock().cfg.store.join("played.raw"));
+            0
+        }
+        A::Close | A::Volume { .. } | A::State => 0,
+        // a 32-bit pointer means nothing here
+        A::Write { .. } | A::MicRead { .. } => -22,
+        A::MicOpen => {
+            let root = std::env::var("WP2_SIM_ROOT").unwrap_or_default();
+            let src = fs::read(std::path::Path::new(&root).join("runs/sim/mic.raw"))
+                .map(|d| d.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>())
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| (0..16000).map(|i| ((i as f32 * 440.0 * std::f32::consts::TAU / 16000.0).sin() * 8000.0) as i16).collect());
+            let now = sim().lock().now();
+            *MIC.lock().unwrap() = Some((now, 0, src));
+            0
+        }
+        A::MicClose => {
+            *MIC.lock().unwrap() = None;
+            0
+        }
+    }
+}
+
+/// AUDIO write (op 2) and MIC read (op 7) with the app's host pointer.
+fn audio_host(op: u8, ptr: usize, len: usize) -> i32 {
+    if op == 2 {
+        let data = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) }.to_vec();
+        let p = sim().lock().cfg.store.join("played.raw");
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = f.write_all(&data);
+        }
+        return len as i32;
+    }
+    let now = sim().lock().now();
+    let mut m = MIC.lock().unwrap();
+    let Some((t0, taken, src)) = m.as_mut() else { return 0 };
+    let made = u64::from(now.wrapping_sub(*t0)) * 16;
+    // the loader keeps 4096 samples: older ones are gone
+    *taken = (*taken).max(made.saturating_sub(4096));
+    let n = ((made - *taken) as usize).min(len / 2);
+    let out = unsafe { std::slice::from_raw_parts_mut(ptr as *mut u8, n * 2) };
+    for i in 0..n {
+        let v = src[((*taken as usize) + i) % src.len()];
+        out[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    *taken += n as u64;
+    (n * 2) as i32
+}
+
 /// The storage service's scan of the sim: `files/` as `/NAND:/wp2apps/0_<name>`, collected whole at once.
 fn storage(rec: &mut [u8]) -> i32 {
     static SCAN: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
@@ -909,6 +968,17 @@ extern "C" fn lv_submit(buf: *const u8, len: usize) -> i32 {
         p[17] = sats;
         p[18..20].copy_from_slice(&(if fix > 0 { 30u16 } else { 0 }).to_le_bytes());
         return 0;
+    }
+    // AUDIO write / MIC read with a host pointer (cmf_wp2_app pcm_record)
+    if let [0x18, 13, 0, 0, op @ (2 | 7), ref rest @ ..] = *rec {
+        if rest.len() == 12 {
+            let ptr = u64::from_le_bytes(rest[..8].try_into().unwrap());
+            let len = u32::from_le_bytes(rest[8..].try_into().unwrap());
+            return audio_host(op, ptr as usize, len as usize);
+        }
+    }
+    if let Some(cmd) = wp2_core::lvcmd::audio(rec) {
+        return audio(cmd);
     }
     let Some(cmd) = file(unsafe { std::slice::from_raw_parts(buf, len) }) else { return -95 };
     let dir = sim().lock().cfg.store.join("files");

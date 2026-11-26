@@ -267,4 +267,20 @@ pub const STREAM_GET_SPACE: u32 = 0x101C_E411;
 // *AUDIO_CFG: the audio volume config, max level at +2 (0x1014DDD4)
 pub const AUDIO_CFG: u32 = 0x3803_97F8;
 pub const AUDIO_STREAM_TYPE: u32 = 5;
+// Actions audio_record, as the factory mic test `mic_data_start_capture` (0x1005696C) uses it: a buffer from the
+// media heap (PS_ALLOC(size), PS_FREE), a ring stream over it (RING_STREAM(buf, size), freed by STREAM_FREE), then
+// create(stream_type 5, rate_in_khz 16, rate_out_khz 16, format 1, mode 1, outer stream), start, and every few ms
+// STREAM_LENGTH(REC_STREAM(h)) bytes read with REC_READ(h, buf, len); stop, destroy. The test splits what it reads
+// into two channels (interleaved 16-bit frames, 0x101AC70C): channel 0 is the mic.
+pub const REC_CREATE: u32 = 0x1014_DF51;
+pub const REC_DESTROY: u32 = 0x1014_E25D;
+pub const REC_START: u32 = 0x101C_EC57;
+pub const REC_STOP: u32 = 0x101C_EC77;
+pub const REC_READ: u32 = 0x101C_ECD5;
+pub const REC_STREAM: u32 = 0x101C_ECDF;
+pub const STREAM_LENGTH: u32 = 0x101C_E3C5;
+pub const RING_STREAM: u32 = 0x1014_7409;
+pub const STREAM_FREE: u32 = 0x101C_E0EB;
+pub const PS_ALLOC: u32 = 0x1018_8519;
+pub const PS_FREE: u32 = 0x1018_8579;
 // Watch face manager and data_storage: wfguard.rs (Device)
