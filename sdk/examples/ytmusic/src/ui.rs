@@ -2,6 +2,7 @@
 //! volume; Search (QWERTY or the rotary keyboard) and Up next as lists. The phone finds and fetches the songs;
 //! the watch plays them on its speaker and counts the progress itself (player.rs), so only sound crosses the link.
 
+use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use crate::model::{Change, Model, MAX_ROWS};
 use crate::player::{Player, Sink};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
@@ -82,6 +83,9 @@ const PITCH: i32 = 78;
 const KH: i32 = 58;
 const ROW_Y: [i32; 4] = [184, 242, 300, 358];
 const QUERY_MAX: usize = 60;
+/// the voice typing button, right of the search words
+const MIC_X: i32 = 400;
+const MIC_Y: i32 = 116;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
@@ -90,6 +94,8 @@ enum Screen {
     Search,
     /// search on the rotary keyboard (cmf_wp2_ui::dial)
     Dial,
+    /// voice typing into the search (cmf_wp2_ui::dictate)
+    Voice,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -133,6 +139,7 @@ struct Ui {
     toast_until: Option<u32>,
     /// when the phone's last message came (a song that waits on a silent phone is given up)
     phone_at: u32,
+    dict: Dictate,
     query: [u8; QUERY_MAX],
     n_query: usize,
     sym: bool,
@@ -154,6 +161,7 @@ impl Ui {
             Screen::List => self.draw_list(),
             Screen::Search => self.draw_search(),
             Screen::Dial => self.draw_dial(),
+            Screen::Voice => self.dict.draw(&mut self.s),
         }
         self.api.show();
     }
@@ -485,6 +493,46 @@ impl Ui {
         }
         let sym = self.sym;
         each_key(sym, |k, _, _, _| self.draw_key(k, false));
+        cmf_wp2_ui::dictate::mic_button(&mut self.s, MIC_X, MIC_Y);
+    }
+
+    /// What the dictation screen asks for: the words into the search. True: draw again.
+    fn voice_out(&mut self, o: DictOut) -> bool {
+        match o {
+            DictOut::None => false,
+            DictOut::Redraw => true,
+            DictOut::Done | DictOut::Cancel => {
+                if o == DictOut::Done {
+                    let t = self.dict.text().trim().trim_end_matches('.');
+                    if self.n_query > 0 && self.query[self.n_query - 1] != b' ' && self.n_query < QUERY_MAX && !t.is_empty() {
+                        self.query[self.n_query] = b' ';
+                        self.n_query += 1;
+                    }
+                    let mut k = t.len().min(QUERY_MAX - self.n_query);
+                    while !t.is_char_boundary(k) {
+                        k -= 1;
+                    }
+                    self.query[self.n_query..self.n_query + k].copy_from_slice(&t.as_bytes()[..k]);
+                    self.n_query += k;
+                }
+                self.screen = Screen::Search;
+                true
+            }
+        }
+    }
+
+    /// The button: voice typing stops, else back to now playing; false: close.
+    fn button(&mut self) -> bool {
+        if self.screen == Screen::Voice {
+            let o = self.dict.cancel(self.api);
+            self.voice_out(o);
+            return true;
+        }
+        if self.screen == Screen::Now {
+            return false;
+        }
+        self.screen = Screen::Now;
+        true
     }
 
     fn draw_dial(&mut self) {
@@ -528,7 +576,7 @@ impl Ui {
 
     fn draw_query(&mut self) {
         // inside the dial's letters when it is up
-        let (half, max) = if self.screen == Screen::Dial { (100, 180) } else { (173, 300) };
+        let (half, max) = if self.screen == Screen::Dial { (100, 180) } else { (140, 250) };
         Surface::rect(&mut self.s, C - half, 80, 2 * half, 80, 0);
         let q = core::str::from_utf8(&self.query[..self.n_query]).unwrap_or("");
         if q.is_empty() {
@@ -654,7 +702,7 @@ impl Ui {
                     self.scroll = next;
                     moved
                 }
-                Screen::Search => false,
+                Screen::Search | Screen::Voice => false,
                 Screen::Dial => {
                     let a = self.dial.crown(&mut self.s, i32::from(e.delta), self.api.now());
                     self.dial_act(a);
@@ -674,6 +722,17 @@ impl Ui {
                     let a = self.dial.down(&mut self.s, x, y, self.api.now());
                     self.dial_act(a);
                     return false;
+                }
+                if self.screen == Screen::Voice {
+                    let o = self.dict.tap(self.api, x, y);
+                    return self.voice_out(o);
+                }
+                if self.screen == Screen::Search && cmf_wp2_ui::dictate::mic_hit(MIC_X, MIC_Y, x, y) {
+                    self.motor.play(haptic::TICK);
+                    self.pressed = None;
+                    self.dict.start(self.api, false);
+                    self.screen = Screen::Voice;
+                    return true;
                 }
                 if self.screen == Screen::Search {
                     // typed at once: the key flashes until the next touch
@@ -703,7 +762,7 @@ impl Ui {
                 match self.screen {
                     Screen::Now => self.now_tap(x, y),
                     Screen::List => self.list_tap(y),
-                    Screen::Dial => {}
+                    Screen::Dial | Screen::Voice => {}
                     Screen::Search => {
                         if let Some(k) = self.pressed.take() {
                             self.draw_key(k, false);
@@ -726,6 +785,10 @@ impl Ui {
         while p.has_room() {
             let Some(m) = self.api.recv(&mut buf) else { break };
             self.phone_at = self.api.now();
+            if let Some(o) = self.dict.message(m) {
+                dirty |= self.voice_out(o);
+                continue;
+            }
             if m == b"?" {
                 self.send(b"R");
                 continue;
@@ -936,6 +999,7 @@ fn main(api: &'static Api) -> i32 {
         down: None,
         motor: Motor::new(api),
         dial: Dial::new(),
+        dict: Dictate::new(),
     };
     ui.draw();
     ui.send(b"R");
@@ -956,19 +1020,27 @@ fn main(api: &'static Api) -> i32 {
             }
 
         }
-        if let Some(e) = api.event(ui.wait()) {
+        if ui.dict.active() {
+            let o = ui.dict.tick(api);
+            dirty |= ui.voice_out(o);
+        }
+        // something to draw already (a message, voice typing): no waiting before it
+        if let Some(e) = api.event(if dirty { 0 } else { ui.dict.wait_ms(ui.wait()) }) {
             match e.kind {
                 BUTTON => {
-                    if ui.screen == Screen::Now {
+                    if !ui.button() {
                         quit(&mut ui);
                         return 0;
                     }
-                    ui.screen = Screen::Now;
                     dirty = true;
                 }
                 // the loader dropped its queue for the popup: hold the ring until it closes
                 PAUSE => {
                     ui.motor.off();
+                    if ui.dict.active() {
+                        let o = ui.dict.cancel(api);
+                        ui.voice_out(o);
+                    }
                     player().held = true;
                 }
                 RESUME => {
