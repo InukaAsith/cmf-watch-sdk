@@ -668,6 +668,12 @@ macro_rules! app_icon {
         pub(crate) fn app_icon_bytes() -> &'static [u8] {
             unsafe { &*core::ptr::addr_of!(WP2_ICON) }
         }
+
+        /// The icon's memory, to write (cmf_wp2_ui::logo::load_in_place keeps the small icon there).
+        #[allow(dead_code)]
+        pub(crate) fn app_icon_ram() -> &'static mut [u8] {
+            unsafe { &mut *core::ptr::addr_of_mut!(WP2_ICON) }
+        }
     };
 }
 
@@ -680,6 +686,12 @@ macro_rules! app_icon {
         pub(crate) fn app_icon_bytes() -> &'static [u8] {
             let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/icons/", env!("CARGO_PKG_NAME"), ".wp2icon");
             std::fs::read(p).map(|v| &*std::boxed::Box::leak(v.into_boxed_slice())).unwrap_or(&[])
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn app_icon_ram() -> &'static mut [u8] {
+            let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/icons/", env!("CARGO_PKG_NAME"), ".wp2icon");
+            std::boxed::Box::leak(std::fs::read(p).unwrap_or_default().into_boxed_slice())
         }
     };
 }

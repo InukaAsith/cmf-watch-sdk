@@ -85,7 +85,15 @@ const TOOL_Y: i32 = 392;
 /// Taps this far from the centre (outside the tools) seek on the progress ring.
 const SEEK_R: i32 = 196;
 /// Search, up next, history, and YouTube Music's mixes / Spotify's library (playlists)
-const TOOL_X: [i32; 4] = [C - 114, C - 38, C + 38, C + 114];
+/// browsing: the tiles, the recent rows, the mini player
+const TILE_Y: i32 = 130;
+const TILE_W: i32 = 98;
+const TILE_STEP: i32 = 108;
+const TILE_X: i32 = C - TILE_STEP - TILE_W / 2;
+const TILES: [&str; 3] = ["Up next", "History", if crate::brand::SPOTIFY { "Library" } else { "Mixes" }];
+const RECENT_Y: i32 = 252;
+const MINI_Y: i32 = 380;
+const MINI_W: i32 = 252;
 /// Recorder's home: the record button's centre
 const REC_Y: i32 = 208;
 /// Recorder: record, and the recordings
@@ -106,6 +114,8 @@ const MIC_Y: i32 = 116;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
+    /// browsing (YouTube Music, Spotify): search, the lists as tiles, the recent songs, the mini player
+    Home,
     Now,
     List,
     Search,
@@ -164,6 +174,8 @@ struct Ui {
     down: Option<(i32, i32)>,
     motor: Motor,
     dial: Dial,
+    /// the mini player as drawn: its state and song
+    mini: u32,
 }
 
 impl Ui {
@@ -174,8 +186,12 @@ impl Ui {
     fn draw(&mut self) {
         Surface::rect(&mut self.s, 0, 0, 466, 466, 0);
         match self.screen {
+            Screen::Home => self.draw_home(),
             Screen::Now => self.draw_now(),
-            Screen::List => self.draw_list(),
+            Screen::List => {
+                self.draw_list();
+                self.draw_mini();
+            }
             Screen::Search => self.draw_search(),
             Screen::Dial => self.draw_dial(),
             Screen::Voice => self.dict.draw(&mut self.s),
@@ -337,38 +353,148 @@ impl Ui {
             }
             return;
         }
-        for (i, &x) in TOOL_X.iter().enumerate() {
+        // the music apps: back down to browsing (a chevron), and up next
+        for (i, &x) in REC_X.iter().enumerate() {
             ring(s, x, TOOL_Y, 21, 23, TINT, BLACK);
-            let y = TOOL_Y;
             if i == 0 {
-                // search: lens + handle
-                ring(s, x - 3, y - 3, 6, 9, WHITE, BLACK);
-                for k in 0..6 {
-                    Surface::rect(s, x + 3 + k, y + 3 + k, 3, 3, W);
+                for k in 0..9 {
+                    Surface::rect(s, x - 10 + k, TOOL_Y - 5 + k, 3, 3, W);
+                    Surface::rect(s, x + 8 - k, TOOL_Y - 5 + k, 3, 3, W);
                 }
-            } else if i == 3 && crate::brand::SPOTIFY {
-                // library: two books and a leaning one
-                Surface::rect(s, x - 10, y - 10, 4, 20, W);
-                Surface::rect(s, x - 3, y - 10, 4, 20, W);
-                for k in 0..20 {
-                    Surface::rect(s, x + 4 + k / 4, y - 10 + k, 4, 1, RED.rgb565());
-                }
-            } else if i == 3 {
-                // mixes: a play triangle in a ring of two
-                ring(s, x, y, 9, 11, WHITE, BLACK);
-                triangle(s, x + 1, y, 5, 1, RED.rgb565());
-            } else if i == 2 {
-                // history: a clock
-                ring(s, x, y, 9, 11, WHITE, BLACK);
-                Surface::rect(s, x - 1, y - 7, 3, 8, W);
-                Surface::rect(s, x - 1, y - 1, 7, 3, RED.rgb565());
             } else {
-                // up next: three lines, the first red (playing)
-                for k in 0..3 {
-                    Surface::rect(s, x - 9, y - 8 + k * 7, 18, 3, if k == 0 { RED.rgb565() } else { W });
-                }
+                glyph(s, 0, x, TOOL_Y, WHITE, BLACK);
             }
         }
+    }
+
+    // --- browsing
+
+    fn go_home(&mut self) {
+        // the recent songs under the tiles
+        self.ask_list(b'H');
+        self.screen = Screen::Home;
+        self.draw();
+    }
+
+    fn draw_home(&mut self) {
+        let s = &mut self.s;
+        cmf_wp2_ui::logo::title(s, 34, crate::brand::NAME, RED);
+        // search, as a phone's: a pill with the lens
+        rrect(s, C - 150, 72, 300, 44, 22, CARD, BLACK);
+        ring(s, C - 117, 91, 6, 9, WHITE, CARD);
+        for k in 0..6 {
+            Surface::rect(s, C - 111 + k, 97 + k, 3, 3, W);
+        }
+        font::draw(s, C - 92, 83, "Search", GREY);
+        // the lists as tiles, each its colour
+        for i in 0..3 {
+            let x = TILE_X + i as i32 * TILE_STEP;
+            let (bg, ink) = if i == 0 { (RED, if INK == 0 { BLACK } else { WHITE }) } else { (COVERS[i], WHITE) };
+            rrect(s, x, TILE_Y, TILE_W, 84, 22, bg, BLACK);
+            glyph(s, i, x + TILE_W / 2, TILE_Y + 28, ink, bg);
+            centre(s, x + TILE_W / 2, TILE_Y + 50, TILES[i], ink.rgb565());
+        }
+        centre(s, C, 222, "Recently played", GREY);
+        let l = &model().list;
+        if l.kind == b'H' {
+            for i in 0..l.n.min(2) {
+                let y = RECENT_Y + i as i32 * 62;
+                let (x0, x1) = chord(y, y + 56, 26);
+                self.row(i, x0, x1, y, 56);
+            }
+            if l.n < l.want && l.n < 2 {
+                centre(&mut self.s, C, RECENT_Y + 18, "Loading", GREY);
+            } else if l.n == 0 {
+                centre(&mut self.s, C, RECENT_Y + 18, "Nothing yet", GREY);
+            }
+        }
+        self.draw_mini();
+    }
+
+    fn home_tap(&mut self, x: i32, y: i32) {
+        if (72..116).contains(&y) {
+            self.motor.play(haptic::TICK);
+            self.screen = Screen::Search;
+            self.n_query = 0;
+            self.sym = false;
+            return self.draw();
+        }
+        if (TILE_Y..TILE_Y + 84).contains(&y) && x >= TILE_X {
+            let i = ((x - TILE_X) / TILE_STEP) as usize;
+            if i < 3 {
+                self.motor.play(haptic::TICK);
+                return self.open_list([b'Q', b'H', b'P'][i]);
+            }
+        }
+        let i = (y - RECENT_Y).div_euclid(62);
+        if (0..2).contains(&i) && (y - RECENT_Y) % 62 < 56 && model().list.kind == b'H' && (i as usize) < model().list.n {
+            return self.play(b'H', i as u8);
+        }
+        self.mini_tap(x, y);
+    }
+
+    /// The mini player at the bottom (browsing, lists): the song, play/pause; a tap opens now playing.
+    fn draw_mini(&mut self) {
+        let p = player();
+        self.mini = self.mini_key();
+        let s = &mut self.s;
+        let (x, y) = (C - MINI_W / 2, MINI_Y);
+        rrect(s, x, y, MINI_W, 56, 28, TRACK, BLACK);
+        disc(s, x + 28, y + 28, 19, BLACK, TRACK);
+        mark_small(s, x + 28, y + 28);
+        let (title, sub) = match &p.now {
+            Some(n) => (n.title.as_str(), n.artist.as_str()),
+            None if p.loading() => ("Loading", ""),
+            None => ("Not playing", "Pick a song"),
+        };
+        fitted(s, x + 56, y + 6, title, MINI_W - 112, W);
+        fitted(s, x + 56, y + 30, sub, MINI_W - 112, GREY);
+        let (cx, cy) = (x + MINI_W - 30, y + 28);
+        disc(s, cx, cy, 20, RED, TRACK);
+        if p.now.is_some() && !p.paused || p.loading() {
+            Surface::rect(s, cx - 7, cy - 9, 5, 18, INK);
+            Surface::rect(s, cx + 2, cy - 9, 5, 18, INK);
+        } else {
+            triangle(s, cx + 2, cy, 9, 1, INK);
+        }
+    }
+
+    fn mini_key(&self) -> u32 {
+        let p = player();
+        let n = p.now.map_or(0, |s| u32::from(s.dur) << 8 | s.title.as_str().len() as u32 & 0xFF);
+        u32::from(self.state()) | n << 8
+    }
+
+    fn mini_tap(&mut self, x: i32, y: i32) {
+        if !(MINI_Y..MINI_Y + 56).contains(&y) || (x - C).abs() > MINI_W / 2 {
+            return;
+        }
+        self.motor.play(haptic::TICK);
+        if x > C + MINI_W / 2 - 60 {
+            self.toggle();
+            self.draw_mini();
+            self.api.show();
+        } else {
+            self.screen = Screen::Now;
+            self.draw();
+        }
+    }
+
+    /// Play/pause; nothing playing: the hint.
+    fn toggle(&mut self) {
+        let p = player();
+        if p.now.is_none() && !p.loading() {
+            return self.toast(HINT.as_bytes());
+        }
+        p.paused = !p.paused;
+    }
+
+    /// A row of the list: plays it, the player opens.
+    fn play(&mut self, kind: u8, i: u8) {
+        self.motor.play(haptic::TICK);
+        self.jump(&[b'p', kind, i]);
+        self.screen = Screen::Now;
+        self.draw();
     }
 
     /// Asks the phone for another stream: what is queued here stops at once.
@@ -394,13 +520,9 @@ impl Ui {
             }
             return;
         }
-        let p = player();
         if near(CTRL_X[1], CTRL_Y, 44) {
             self.motor.play(haptic::TICK);
-            if p.now.is_none() && !p.loading() {
-                return self.toast(HINT.as_bytes());
-            }
-            p.paused = !p.paused;
+            self.toggle();
             self.draw_controls();
             self.draw_top();
             self.api.show();
@@ -425,19 +547,16 @@ impl Ui {
                 }
             }
         }
-        for (i, &tx) in TOOL_X.iter().enumerate() {
+        for (i, &tx) in REC_X.iter().enumerate() {
             if crate::brand::RECORDER {
                 break;
             }
             if near(tx, TOOL_Y, 30) {
                 self.motor.play(haptic::TICK);
                 if i == 0 {
-                    self.screen = Screen::Search;
-                    self.n_query = 0;
-                    self.sym = false;
-                    self.draw();
+                    self.go_home();
                 } else {
-                    self.open_list([b'Q', b'Q', b'H', b'P'][i]);
+                    self.open_list(b'Q');
                 }
                 return;
             }
@@ -501,14 +620,18 @@ impl Ui {
     // --- lists
 
     fn open_list(&mut self, kind: u8) {
+        self.ask_list(kind);
+        self.screen = Screen::List;
+        self.draw();
+    }
+
+    fn ask_list(&mut self, kind: u8) {
         let l = &mut model().list;
         l.kind = kind;
         l.n = 0;
         l.want = 1;
         self.scroll = 0;
-        self.screen = Screen::List;
         self.send(&[b'o', kind]);
-        self.draw();
     }
 
     fn draw_list(&mut self) {
@@ -522,23 +645,7 @@ impl Ui {
             if x1 - x0 < 150 {
                 continue;
             }
-            let r = &l.rows[i];
-            let card = if r.active { TRACK } else { CARD };
-            rrect(&mut self.s, x0, y, x1 - x0, ROW_H, ROW_H / 2, card, BLACK);
-            // a cover: the title's colour, its first letter
-            let (cx, cy) = (x0 + 38, y + ROW_H / 2);
-            let h = r.title.as_str().bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-            disc(&mut self.s, cx, cy, 23, COVERS[h as usize % COVERS.len()], card);
-            let mut b = [0u8; 4];
-            let ch = r.title.as_str().chars().next().unwrap_or('?').to_ascii_uppercase();
-            centre(&mut self.s, cx, cy - 10, ch.encode_utf8(&mut b), W);
-            let tx = x0 + 72;
-            let right = x1 - if r.active { 54 } else { 30 };
-            fitted(&mut self.s, tx, y + 12, r.title.as_str(), right - tx, if r.active { W } else { SOFT });
-            fitted(&mut self.s, tx, y + 38, r.sub.as_str(), right - tx, GREY);
-            if r.active {
-                disc(&mut self.s, x1 - 34, y + ROW_H / 2, 6, RED, card);
-            }
+            self.row(i, x0, x1, y, ROW_H);
         }
         if l.n < l.want {
             centre(&mut self.s, C, if l.n == 0 { C - 8 } else { LIST_TOP + l.n as i32 * PITCH - self.scroll + 20 }, "Loading", GREY);
@@ -557,24 +664,46 @@ impl Ui {
         cmf_wp2_ui::logo::title(&mut self.s, 34, title, RED);
     }
 
-    fn list_max(&self) -> i32 {
-        (model().list.n as i32 * PITCH - (466 - LIST_TOP - 60)).max(0)
+    /// A row: a card, a cover (the title's colour, its first letter), the title and the line under it.
+    fn row(&mut self, i: usize, x0: i32, x1: i32, y: i32, h: i32) {
+        let r = &model().list.rows[i];
+        let s = &mut self.s;
+        let card = if r.active { TRACK } else { CARD };
+        rrect(s, x0, y, x1 - x0, h, h / 2, card, BLACK);
+        let (cx, cy) = (x0 + h / 2 + 3, y + h / 2);
+        let k = r.title.as_str().bytes().fold(0u32, |k, b| k.wrapping_mul(31).wrapping_add(b as u32));
+        disc(s, cx, cy, h / 3, COVERS[k as usize % COVERS.len()], card);
+        let mut b = [0u8; 4];
+        let ch = r.title.as_str().chars().next().unwrap_or('?').to_ascii_uppercase();
+        centre(s, cx, cy - 10, ch.encode_utf8(&mut b), W);
+        let tx = x0 + h + 2;
+        let right = x1 - if r.active { 54 } else { 30 };
+        let pad = (h - 46) / 2;
+        fitted(s, tx, y + pad, r.title.as_str(), right - tx, if r.active { W } else { SOFT });
+        fitted(s, tx, y + pad + 26, r.sub.as_str(), right - tx, GREY);
+        if r.active {
+            disc(s, x1 - 34, cy, 6, RED, card);
+        }
     }
 
-    fn list_tap(&mut self, y: i32) {
+    fn list_max(&self) -> i32 {
+        // room under the last row for the mini player
+        (model().list.n as i32 * PITCH + 60 - (466 - LIST_TOP - 60)).max(0)
+    }
+
+    fn list_tap(&mut self, x: i32, y: i32) {
         let l = &model().list;
         if y < 92 {
             return;
+        }
+        if !crate::brand::RECORDER && y >= MINI_Y {
+            return self.mini_tap(x, y);
         }
         let i = (y + self.scroll - LIST_TOP).div_euclid(PITCH);
         if !(0..l.n as i32).contains(&i) || (y + self.scroll - LIST_TOP) % PITCH > ROW_H {
             return;
         }
-        self.motor.play(haptic::TICK);
-        let kind = l.kind;
-        self.jump(&[b'p', kind, i as u8]);
-        self.screen = Screen::Now;
-        self.draw();
+        self.play(l.kind, i as u8);
     }
 
     // --- search
@@ -644,10 +773,18 @@ impl Ui {
             self.voice_out(o);
             return true;
         }
-        if self.screen == Screen::Now {
+        if crate::brand::RECORDER {
+            if self.screen == Screen::Now {
+                return false;
+            }
+            self.screen = Screen::Now;
+            return true;
+        }
+        // the music apps: everything comes back to browsing, which closes
+        if self.screen == Screen::Home {
             return false;
         }
-        self.screen = Screen::Now;
+        self.go_home();
         true
     }
 
@@ -818,7 +955,7 @@ impl Ui {
                     self.scroll = next;
                     moved
                 }
-                Screen::Search | Screen::Voice => false,
+                Screen::Search | Screen::Voice | Screen::Home => false,
                 Screen::Dial => {
                     let a = self.dial.crown(&mut self.s, i32::from(e.delta), self.api.now());
                     self.dial_act(a);
@@ -876,8 +1013,9 @@ impl Ui {
             TOUCH_UP => {
                 let Some((x, y)) = self.down.take() else { return false };
                 match self.screen {
+                    Screen::Home => self.home_tap(x, y),
                     Screen::Now => self.now_tap(x, y),
-                    Screen::List => self.list_tap(y),
+                    Screen::List => self.list_tap(x, y),
                     Screen::Dial | Screen::Voice => {}
                     Screen::Search => {
                         if let Some(k) = self.pressed.take() {
@@ -915,7 +1053,7 @@ impl Ui {
                 continue;
             }
             match model().message(m) {
-                Change::List => dirty |= self.screen == Screen::List,
+                Change::List => dirty |= matches!(self.screen, Screen::List | Screen::Home),
                 Change::Note => {
                     let mut t = [0u8; 40];
                     let n = model().note.as_str().len();
@@ -953,6 +1091,11 @@ impl Ui {
                     self.api.show();
                 }
             }
+        }
+        if matches!(self.screen, Screen::Home | Screen::List) && !crate::brand::RECORDER && self.mini_key() != self.mini {
+            // the mini player: another song, playing or paused
+            self.draw_mini();
+            self.api.show();
         }
         if self.screen != Screen::Now {
             return;
@@ -1044,6 +1187,45 @@ fn mark(s: &mut impl Surface, cx: i32, cy: i32) {
     }
 }
 
+/// The lists' glyphs: 0 up next (three lines), 1 history (a clock), 2 library (books) or mixes (play in a ring).
+fn glyph(s: &mut impl Surface, i: usize, x: i32, y: i32, ink: Rgb, bg: Rgb) {
+    let c = ink.rgb565();
+    match i {
+        0 => {
+            for k in 0..3 {
+                Surface::rect(s, x - 9, y - 8 + k * 7, 18, 3, c);
+            }
+        }
+        1 => {
+            ring(s, x, y, 9, 11, ink, bg);
+            Surface::rect(s, x - 1, y - 7, 3, 8, c);
+            Surface::rect(s, x - 1, y - 1, 7, 3, c);
+        }
+        _ if crate::brand::SPOTIFY => {
+            Surface::rect(s, x - 10, y - 10, 4, 20, c);
+            Surface::rect(s, x - 3, y - 10, 4, 20, c);
+            for k in 0..20 {
+                Surface::rect(s, x + 4 + k / 4, y - 10 + k, 4, 1, c);
+            }
+        }
+        _ => {
+            ring(s, x, y, 9, 11, ink, bg);
+            triangle(s, x + 1, y, 5, 1, c);
+        }
+    }
+}
+
+/// The mark, small (the mini player's cover): the play triangle, or Spotify's waves.
+fn mark_small(s: &mut impl Surface, cx: i32, cy: i32) {
+    if crate::brand::SPOTIFY {
+        for (r, w, half) in [(30, 4, 5600u32), (22, 3, 5300), (15, 3, 4900)] {
+            arc(s, cx, cy + 20, r - w, r, (49152 - half) as u16, 2 * half, RED, None, BLACK);
+        }
+    } else {
+        triangle(s, cx + 3, cy, 9, 1, RED.rgb565());
+    }
+}
+
 /// A filled triangle pointing left (`dir` -1) or right (1), its tip `r` px from `cx`.
 fn triangle(s: &mut impl Surface, cx: i32, cy: i32, r: i32, dir: i32, c: u16) {
     for k in -r..=r {
@@ -1103,12 +1285,14 @@ const _: () = assert!(MAX_ROWS <= 255);
 
 fn main(api: &'static Api) -> i32 {
     api.own_back(true);
-    cmf_wp2_ui::logo::load(app_icon_bytes());
+    // nothing else uses the icon's memory: the small icon lives there
+    cmf_wp2_ui::logo::load_in_place(app_icon_ram());
     let mut ui = Ui {
         api,
         s: Ink(api),
         track: Track(api),
         screen: Screen::Now,
+        mini: 0,
         scroll: 0,
         drawn: 0,
         shown_pos: 0,
@@ -1125,8 +1309,12 @@ fn main(api: &'static Api) -> i32 {
         dial: Dial::new(),
         dict: Dictate::new(),
     };
-    ui.draw();
     ui.send(b"R");
+    if crate::brand::RECORDER {
+        ui.draw();
+    } else {
+        ui.go_home();
+    }
     let quit = |ui: &mut Ui| {
         player().close(&mut ui.track);
         ui.send(b"q");

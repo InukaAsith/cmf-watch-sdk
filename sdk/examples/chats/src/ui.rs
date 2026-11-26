@@ -860,7 +860,7 @@ impl Ui {
 
     fn list_max(&self) -> i32 {
         // room under the last card for the + button
-        let room = if self.new_row().is_some() { 70 } else { 0 };
+        let room = if self.news().1 > 0 { 70 } else { 0 };
         (self.vis().1 as i32 * PITCH + room - (466 - LIST_TOP - 30)).max(0)
     }
 
@@ -878,13 +878,24 @@ impl Ui {
         (v, n)
     }
 
-    /// The new-chat row's id (New chat, New note, New mail), behind the + button; none in a picker.
-    fn new_row(&self) -> Option<u8> {
+    /// The new-chat rows' ids (New chat, New mail; Notes: note, to-do list, reminder), the buttons at the bottom;
+    /// none in a picker.
+    fn news(&self) -> ([u8; 3], usize) {
         let m = model();
-        if !m.picker.as_str().is_empty() {
-            return None;
+        let mut v = [0; 3];
+        let mut n = 0;
+        if m.picker.as_str().is_empty() {
+            for c in m.chats[..m.n_chats].iter().filter(|c| c.unread == NEW_ROW).take(3) {
+                v[n] = c.id;
+                n += 1;
+            }
         }
-        m.chats[..m.n_chats].iter().find(|c| c.unread == NEW_ROW).map(|c| c.id)
+        (v, n)
+    }
+
+    /// The k-th button's centre.
+    fn new_x(k: usize, n: usize) -> i32 {
+        C + (2 * k as i32 - n as i32 + 1) * 33
     }
 
     fn sync_bar(&self) -> bool {
@@ -892,15 +903,38 @@ impl Ui {
         m.picker.as_str().is_empty() && m.chats[..m.n_chats].iter().any(is_sync)
     }
 
-    /// The + at the bottom, over the cards.
+    /// The buttons at the bottom, over the cards: +, then a ticked box (a to-do list), a clock (a reminder).
     fn new_button(&self, s: &mut impl Surface) {
-        if self.new_row().is_none() {
-            return;
+        let (_, n) = self.news();
+        for k in 0..n {
+            let x = Self::new_x(k, n);
+            let y = NEW_Y;
+            disc(s, x, y, 32, BLACK, BLACK);
+            disc(s, x, y, 28, ACCENT, BLACK);
+            match k {
+                0 => {
+                    Surface::rect(s, x - 11, y - 2, 22, 4, 0);
+                    Surface::rect(s, x - 2, y - 11, 4, 22, 0);
+                }
+                1 => {
+                    for (rx, ry, rw, rh) in [(-11, -11, 22, 3), (-11, 8, 22, 3), (-11, -11, 3, 22), (8, -11, 3, 22)] {
+                        Surface::rect(s, x + rx, y + ry, rw, rh, 0);
+                    }
+                    // the tick
+                    for j in 0..4 {
+                        Surface::rect(s, x - 6 + j, y - 1 + j, 3, 3, 0);
+                    }
+                    for j in 0..8 {
+                        Surface::rect(s, x - 3 + j, y + 2 - j, 3, 3, 0);
+                    }
+                }
+                _ => {
+                    ring(s, x, y, 9, 12, BLACK, ACCENT);
+                    Surface::rect(s, x - 1, y - 7, 3, 8, 0);
+                    Surface::rect(s, x - 1, y - 1, 7, 3, 0);
+                }
+            }
         }
-        disc(s, C, NEW_Y, 34, BLACK, BLACK);
-        disc(s, C, NEW_Y, 30, ACCENT, BLACK);
-        Surface::rect(s, C - 12, NEW_Y - 2, 24, 4, 0);
-        Surface::rect(s, C - 2, NEW_Y - 12, 4, 24, 0);
     }
 
     /// The sync bar under the title, light green, filling (`sync_shown`).
@@ -1698,7 +1732,9 @@ impl Ui {
                 if y < HEAD_H {
                     return;
                 }
-                if let Some(id) = self.new_row().filter(|_| (x - C).pow(2) + (y - NEW_Y).pow(2) <= 38 * 38) {
+                let (news, n) = self.news();
+                let hit = (0..n).find(|&k| (x - Self::new_x(k, n)).pow(2) + (y - NEW_Y).pow(2) <= 32 * 32);
+                if let Some(id) = hit.map(|k| news[k]) {
                     // + : a new chat (Gemini, Notes), whom to write to (WhatsApp, Mail: the phone's picker)
                     let _ = self.api.send(&[b'o', id]);
                     self.motor.play(haptic::TICK);
