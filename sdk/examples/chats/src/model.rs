@@ -97,6 +97,8 @@ pub struct Msg {
     pub img: Option<Img>,
     /// a picture asked for: 0 not, 1 loading, 2 none came
     pub pic: u8,
+    /// the reaction on it (an emoji's code point; 0 none)
+    pub react: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -131,13 +133,20 @@ pub struct Model {
     /// the open chat's picture, 12 × 12 RGB565, and which of its 3 parts came (bits)
     pub dp: [u16; DP * DP],
     pub dp_parts: u8,
+    /// WhatsApp: the list's pictures, as `dp`, by chat id (`g id part px…`); parts 0: a free slot
+    pub face_id: [u8; FACES],
+    pub face_parts: [u8; FACES],
+    pub faces: [[u16; DP * DP]; FACES],
 }
+
+/// Pictures kept for the list: WhatsApp's (every row), none in the other apps.
+pub const FACES: usize = if crate::VOICE { MAX_CHATS } else { 0 };
 
 /// The chat picture's side, px (shown 4× as a disc).
 pub const DP: usize = 12;
 
 const CHAT: Chat = Chat { id: 0, unread: 0, name: Str::EMPTY, preview: Str::EMPTY };
-const MSG: Msg = Msg { me: false, state: 0, kind: 0, text: Str::EMPTY, img: None, pic: 0 };
+const MSG: Msg = Msg { me: false, state: 0, kind: 0, text: Str::EMPTY, img: None, pic: 0, react: 0 };
 
 impl Model {
     pub const fn new() -> Self {
@@ -159,7 +168,15 @@ impl Model {
             sync: 0,
             dp: [0; DP * DP],
             dp_parts: 0,
+            face_id: [0; FACES],
+            face_parts: [0; FACES],
+            faces: [[0; DP * DP]; FACES],
         }
+    }
+
+    /// The list's picture of chat `id`, once all of it came.
+    pub fn face(&self, id: u8) -> Option<&[u16; DP * DP]> {
+        (0..FACES).find(|&k| self.face_parts[k] == 7 && self.face_id[k] == id).map(|k| &self.faces[k])
     }
 
     pub fn chat(&self, id: u8) -> Option<&Chat> {
@@ -187,6 +204,7 @@ impl Model {
         m.kind = kind;
         m.text.set(text);
         m.img = None;
+        m.react = 0;
         self.n_msgs += 1;
     }
 
@@ -234,7 +252,14 @@ impl Model {
                 msg.kind = a[2];
                 msg.text.set(&a[3..]);
                 msg.img = None;
+                msg.react = 0;
                 self.n_msgs = self.n_msgs.max(idx + 1);
+                on_open(self)
+            }
+            b'X' if !a.is_empty() && (a[0] as usize) < self.n_msgs => {
+                // a reaction on a message (empty: none)
+                let cp = core::str::from_utf8(&a[1..]).ok().and_then(|t| t.chars().next()).map_or(0, |c| c as u32);
+                self.msgs[a[0] as usize].react = cp;
                 on_open(self)
             }
             b'A' if a.len() >= 2 => {
@@ -272,6 +297,26 @@ impl Model {
                 }
                 self.dp_parts |= 1 << a[0];
                 on_open(self)
+            }
+            b'g' if FACES > 0 && a.len() == 2 + DP * 2 * 4 && a[1] < 3 => {
+                // its slot, else a free one, else one whose chat left the list
+                let id = a[0];
+                let listed = |i: u8| self.chats[..self.n_chats].iter().any(|c| c.id == i);
+                let k = (0..FACES)
+                    .find(|&k| self.face_parts[k] != 0 && self.face_id[k] == id)
+                    .or_else(|| (0..FACES).find(|&k| self.face_parts[k] == 0))
+                    .or_else(|| (0..FACES).find(|&k| !listed(self.face_id[k])))
+                    .unwrap_or(0);
+                if self.face_id[k] != id {
+                    self.face_parts[k] = 0;
+                }
+                self.face_id[k] = id;
+                let at = a[1] as usize * DP * 4;
+                for (i, p) in a[2..].chunks_exact(2).enumerate() {
+                    self.faces[k][at + i] = u16::from_le_bytes([p[0], p[1]]);
+                }
+                self.face_parts[k] |= 1 << a[1];
+                if self.face_parts[k] == 7 && self.open.is_none() { Effect::List } else { Effect::None }
             }
             b'i' if a.len() == 1 + HEADER && a[1] == b'I' => {
                 let idx = a[0] as usize;
@@ -487,5 +532,31 @@ mod tests {
         assert_eq!(m.sync, 100);
         m.apply(b"K");
         assert_eq!(m.picker.as_str(), "");
+    }
+
+    #[test]
+    fn reactions() {
+        let mut m = model();
+        m.apply(&[b'H', 3, b'S']);
+        m.apply(&[b'M', 0, 0, 0, b'h', b'i']);
+        m.apply(&[&[b'X', 0][..], "👍".as_bytes()].concat());
+        assert_eq!(m.msgs[0].react, 0x1F44D);
+        m.apply(&[b'X', 0]);
+        assert_eq!(m.msgs[0].react, 0);
+        m.apply(&[b'X', 5, b'x']);
+    }
+
+    #[test]
+    fn faces() {
+        let mut m = model();
+        m.apply(&[b'C', 0, 9, 0, 1, b'A', 0]);
+        assert!(m.face(9).is_none());
+        for part in 0..3u8 {
+            let mut g = vec![b'g', 9, part];
+            g.extend((0..DP * 4).flat_map(|_| [0x1F, 0xF8]));
+            m.apply(&g);
+        }
+        assert_eq!(m.face(9).map(|f| f[143]), Some(0xF81F));
+        assert!(m.face(8).is_none());
     }
 }
