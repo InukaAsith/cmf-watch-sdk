@@ -30,9 +30,10 @@ pub struct Voice {
 const TARGET: i32 = 22000;
 const GAIN_MAX: i32 = 12 * 256;
 
-/// One read's worth (8 ms of stereo), on the stack (a static is bytes in every app's image); `pump` reads until the
-/// loader has no more.
-const READ: usize = 512;
+/// One read's worth (4 ms of stereo); `pump` reads until the loader has no more. A static, not the stack: the loader
+/// copies only into the app's own block (`mic_read` refuses anything else, -22), and the app's stack is the loader's.
+const READ: usize = 256;
+static mut RAW: [u8; READ] = [0; READ];
 
 impl Voice {
     pub fn start(api: &Api) -> (Voice, i32) {
@@ -53,15 +54,15 @@ impl Voice {
                 return if total > 0 { total } else { n };
             }
             total += n;
-            if n < 1024 {
+            if n < READ as i32 {
                 return total;
             }
         }
     }
 
     fn pump_once(&mut self, api: &Api, out: &mut impl FnMut(i16)) -> i32 {
-        let mut buf = [0u8; READ];
-        let raw = &mut buf;
+        // one app thread
+        let raw = unsafe { &mut *core::ptr::addr_of_mut!(RAW) };
         let n = api.mic_read(raw);
         if n <= 0 {
             return n;
