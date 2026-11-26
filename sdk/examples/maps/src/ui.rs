@@ -5,7 +5,7 @@
 //! Map: crown zooms, a drag pans, a tap moves there, a tap on a marker or a named place opens its card (Directions:
 //! car, bike or walk, up to three routes to pick; Go straight; a pin), a hold on the map opens that place.
 //! Buttons: ◎ (left) back to you (held: the watch's GPS only, or back to the iPhone's and the watch's); search
-//! (top right, find.rs); along the bottom Mark (a marker where you are), Track (record your path / stop), Back
+//! (find.rs); along the bottom Search, Track (record your path / stop), Back
 //! (guide back along the track to its start), List (markers, stop guiding, clear the track, delete the map).
 
 use crate::geo::{self, dist, follow, p32, Frame, OnPath, ARRIVED, OFF};
@@ -47,17 +47,15 @@ const DIM: Rgb = Rgb(0x50, 0x50, 0x50);
 const ZOOMS: [i32; 9] = [6, 10, 16, 26, 42, 68, 110, 180, 290];
 const START_ZOOM: usize = 6;
 /// Buttons: (x, y, r).
-const B_MARK: (i32, i32, i32) = (99, 367, 27);
 const B_TRACK: (i32, i32, i32) = (184, 417, 27);
 const B_BACK: (i32, i32, i32) = (282, 417, 27);
 const B_LIST: (i32, i32, i32) = (367, 367, 27);
 const B_ME: (i32, i32, i32) = (40, C, 26);
-const B_FIND: (i32, i32, i32) = (367, 99, 27);
+const B_FIND: (i32, i32, i32) = (99, 367, 27);
 /// ◎ held this long: the watch's GPS only, or back to both.
 const GPS_HOLD_MS: u32 = 800;
 /// Panel boxes the buttons and the banner take: no names drawn under them.
-const KEEP: [(i32, i32, i32, i32); 7] = [
-    (340, 72, 54, 54),
+const KEEP: [(i32, i32, i32, i32); 6] = [
     (72, 340, 54, 54),
     (157, 390, 54, 54),
     (255, 390, 54, 54),
@@ -608,13 +606,6 @@ impl Ui {
 
     fn draw_buttons(&self) {
         let mut s = self.s;
-        // Mark: a pin
-        self.button(B_MARK, false);
-        let (x, y, _) = B_MARK;
-        disc(&mut s, x, y - 5, 8, WHITE, BTN);
-        disc(&mut s, x, y - 5, 3, BTN, WHITE);
-        line(&mut s, x - 5, y, x, y + 10, 3, WHITE, BTN);
-        line(&mut s, x + 5, y, x, y + 10, 3, WHITE, BTN);
         // Track: record / stop
         self.button(B_TRACK, false);
         let (x, y, _) = B_TRACK;
@@ -993,34 +984,7 @@ impl Ui {
     // --- input
 
     fn press(&mut self, x: i32, y: i32) -> bool {
-        if hit(B_MARK, x, y) {
-            let p = self.me.unwrap_or(self.centre);
-            match self.frame {
-                Some(f) => {
-                    let (lat, lon) = f.lat_lon(p);
-                    if marks().add(lat, lon) {
-                        self.save_marks();
-                        self.motor.play(haptic::DOUBLE);
-                        let i = marks().n - 1;
-                        let mut t = [0u8; 40];
-                        let name = marks().v[i].name();
-                        let mut n = 0;
-                        for part in [name, if self.me.is_some() { " here" } else { " at centre" }] {
-                            for &c in part.as_bytes() {
-                                if n < 40 {
-                                    t[n] = c;
-                                    n += 1;
-                                }
-                            }
-                        }
-                        self.set_note(core::str::from_utf8(&t[..n]).unwrap_or(""));
-                    } else {
-                        self.set_note("Pins full (24)");
-                    }
-                }
-                None => self.set_note("Waiting for GPS"),
-            }
-        } else if hit(B_TRACK, x, y) {
+        if hit(B_TRACK, x, y) {
             self.motor.play(haptic::TICK);
             if self.tracking {
                 self.tracking = false;
@@ -1257,7 +1221,7 @@ impl Ui {
                         // (◎ toggles at GPS_HOLD_MS, not a place)
                         self.held = false;
                     }
-                } else if ![B_MARK, B_TRACK, B_BACK, B_LIST, B_FIND].iter().any(|&b| hit(b, x, y)) {
+                } else if ![B_TRACK, B_BACK, B_LIST, B_FIND].iter().any(|&b| hit(b, x, y)) {
                     self.motor.play(haptic::TICK);
                     self.sheet = (p, None);
                     self.place = Hit::NONE;
