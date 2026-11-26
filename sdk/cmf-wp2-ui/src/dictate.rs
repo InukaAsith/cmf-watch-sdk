@@ -68,6 +68,8 @@ pub struct Dictate {
     level: i32,
     drawn_level: i32,
     shown_at: u32,
+    /// a recording (the phone keeps the sound): the screen says so
+    record: bool,
 }
 
 impl Default for Dictate {
@@ -88,6 +90,7 @@ impl Dictate {
             level: 0,
             drawn_level: -1,
             shown_at: 0,
+            record: false,
         }
     }
 
@@ -111,6 +114,7 @@ impl Dictate {
     /// Starts listening (`record`: a recording the phone keeps, else dictation). Draw the screen after it.
     pub fn start(&mut self, api: &Api, record: bool) {
         *self = Self::new();
+        self.record = record;
         self.since = api.now();
         if api.send(if record { b"~3" } else { b"~1" }) == -107 {
             return self.fail("No iPhone: open CMFX");
@@ -268,6 +272,7 @@ impl Dictate {
     pub fn draw(&self, s: &mut impl Surface) {
         s.rect(0, 0, 466, 466, 0);
         let title = match self.phase {
+            Phase::Listening if self.record => "Recording",
             Phase::Listening => "Listening",
             Phase::Waiting => "Writing it down",
             _ => "Voice typing",

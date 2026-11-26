@@ -75,6 +75,10 @@ const TOOL_Y: i32 = 392;
 const SEEK_R: i32 = 196;
 /// Search, up next, history, and YouTube Music's mixes / Spotify's library (playlists)
 const TOOL_X: [i32; 4] = [C - 114, C - 38, C + 38, C + 114];
+/// Recorder: record, and the recordings
+const REC_X: [i32; 2] = [C - 38, C + 38];
+/// what to do when nothing plays
+const HINT: &str = if crate::brand::RECORDER { "Tap the red dot to record" } else { "Search for a song" };
 // --- lists
 const LIST_TOP: i32 = 100;
 const ROW_H: i32 = 70;
@@ -178,7 +182,7 @@ impl Ui {
         let (title, artist) = match &p.now {
             Some(s) => (s.title.as_str(), s.artist.as_str()),
             None if p.loading() => ("", ""),
-            None => ("Nothing playing", "Search for a song"),
+            None => ("Nothing playing", HINT),
         };
         let (t, cut) = clip(title, 290);
         if cut {
@@ -276,6 +280,20 @@ impl Ui {
 
     fn draw_tools(&mut self) {
         let s = &mut self.s;
+        if crate::brand::RECORDER {
+            // record: a red dot; the recordings: three lines, the first red
+            for (i, &x) in REC_X.iter().enumerate() {
+                ring(s, x, TOOL_Y, 21, 23, Rgb(0x50, 0x50, 0x50), BLACK);
+                if i == 0 {
+                    disc(s, x, TOOL_Y, 11, RED, BLACK);
+                } else {
+                    for k in 0..3 {
+                        Surface::rect(s, x - 9, TOOL_Y - 8 + k * 7, 18, 3, if k == 0 { RED.rgb565() } else { W });
+                    }
+                }
+            }
+            return;
+        }
         for (i, &x) in TOOL_X.iter().enumerate() {
             ring(s, x, TOOL_Y, 21, 23, Rgb(0x50, 0x50, 0x50), BLACK);
             let y = TOOL_Y;
@@ -327,7 +345,7 @@ impl Ui {
         if near(CTRL_X[1], CTRL_Y, 44) {
             self.motor.play(haptic::TICK);
             if p.now.is_none() && !p.loading() {
-                return self.toast(b"Search for a song");
+                return self.toast(HINT.as_bytes());
             }
             p.paused = !p.paused;
             self.draw_controls();
@@ -341,7 +359,23 @@ impl Ui {
             self.draw();
             return;
         }
+        if crate::brand::RECORDER {
+            for (i, &tx) in REC_X.iter().enumerate() {
+                if near(tx, TOOL_Y, 30) {
+                    self.motor.play(haptic::TICK);
+                    if i == 0 {
+                        self.record();
+                    } else {
+                        self.open_list(b'H');
+                    }
+                    return;
+                }
+            }
+        }
         for (i, &tx) in TOOL_X.iter().enumerate() {
+            if crate::brand::RECORDER {
+                break;
+            }
             if near(tx, TOOL_Y, 30) {
                 self.motor.play(haptic::TICK);
                 if i == 0 {
@@ -453,6 +487,7 @@ impl Ui {
         Surface::rect(&mut self.s, 0, 0, 466, 92, 0);
         let title = match l.kind {
             b'Q' => "UP NEXT",
+            b'H' if crate::brand::RECORDER => "RECORDINGS",
             b'H' => "HISTORY",
             b'P' if crate::brand::SPOTIFY => "LIBRARY",
             b'P' => "MIXES",
@@ -501,6 +536,15 @@ impl Ui {
         match o {
             DictOut::None => false,
             DictOut::Redraw => true,
+            // Recorder: saved on the phone; the recordings, the new one first
+            DictOut::Done if crate::brand::RECORDER => {
+                self.open_list(b'H');
+                true
+            }
+            DictOut::Cancel if crate::brand::RECORDER => {
+                self.screen = Screen::Now;
+                true
+            }
             DictOut::Done | DictOut::Cancel => {
                 if o == DictOut::Done {
                     let t = self.dict.text().trim().trim_end_matches('.');
@@ -519,6 +563,17 @@ impl Ui {
                 true
             }
         }
+    }
+
+    /// Recorder: a recording starts (what plays stops: the mic and the speaker don't share).
+    fn record(&mut self) {
+        let p = player();
+        if p.now.is_some() || p.loading() {
+            p.paused = true;
+        }
+        self.dict.start(self.api, true);
+        self.screen = Screen::Voice;
+        self.draw();
     }
 
     /// The button: voice typing stops, else back to now playing; false: close.
@@ -904,7 +959,14 @@ impl Ui {
 /// (Spotify), inside it.
 fn mark(s: &mut impl Surface, cx: i32, cy: i32) {
     ring(s, cx, cy, 58, 67, WHITE, BLACK);
-    if crate::brand::SPOTIFY {
+    if crate::brand::RECORDER {
+        // a microphone: the capsule, its cradle and stand
+        rrect(s, cx - 13, cy - 32, 26, 42, 13, WHITE, BLACK);
+        rrect(s, cx - 8, cy - 27, 16, 32, 8, BLACK, WHITE);
+        arc(s, cx, cy - 2, 21, 26, 0, 32768, WHITE, None, BLACK);
+        Surface::rect(s, cx - 2, cy + 24, 5, 10, W);
+        disc(s, cx, cy - 11, 5, RED, BLACK);
+    } else if crate::brand::SPOTIFY {
         // arcs of circles centred under the mark, each 60° about the top (49152 in arc's 65536 a turn)
         for (r, w, half) in [(84, 9, 5600u32), (63, 8, 5300), (43, 7, 4900)] {
             arc(s, cx, cy + 62, r - w, r, (49152 - half) as u16, 2 * half, RED, None, BLACK);

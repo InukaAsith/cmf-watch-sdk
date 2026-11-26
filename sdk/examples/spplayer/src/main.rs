@@ -21,4 +21,5 @@ mod ui;
 mod brand {
     pub const NAME: &str = "Spotify";
     pub const SPOTIFY: bool = true;
+    pub const RECORDER: bool = false;
 }

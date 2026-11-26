@@ -17,4 +17,5 @@ mod ui;
 mod brand {
     pub const NAME: &str = "YouTube Music";
     pub const SPOTIFY: bool = false;
+    pub const RECORDER: bool = false;
 }
