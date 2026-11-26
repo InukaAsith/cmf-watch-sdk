@@ -14,6 +14,10 @@ pub const TITLE: &str = "NOTES";
 pub const EMPTY: &str = "Type to write";
 /// Notes: a page (title, plain text, checklists), not chat bubbles; the phone echoes what is typed.
 pub const PLAIN: bool = true;
+/// WhatsApp's voice notes: recorded and sent, played on the speaker (voice.rs).
+pub const VOICE: bool = false;
+/// Tabs under the title that filter the list (`f tab` to the phone).
+pub const TABS: &[&str] = &["Notes", "To-do", "Reminders"];
 pub const QUICK_TITLE: &str = "Actions";
 /// The name at the top, beside the app's icon.
 pub const NAME: &str = "Notes";

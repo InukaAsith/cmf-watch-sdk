@@ -9,12 +9,17 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from wp2apps.channel import Channel, SimChannel, send_when_open  # noqa: E402
+from wp2apps.adpcm import Encoder  # noqa: E402
+
+import math  # noqa: E402
+
+VOICE = 5
 
 MAX_MSGS = 12
 
 CHATS = {
     1: ("Alex", [(0, 0, "hey are we still on for tonight?"), (1, 0, "yes! 7pm at the usual place"), (0, 1, "")]),
-    2: ("Mum", [(0, 0, "Did you eat?"), (1, 0, "Yes mum"), (0, 0, "Call me when you are free")]),
+    2: ("Mum", [(0, 0, "Did you eat?"), (1, 0, "Yes mum"), (0, VOICE, "0:04"), (0, 0, "Call me when you are free")]),
     3: ("Project team", [(0, 0, "Build is green"), (0, 0, "Demo moved to Friday 10am"), (1, 0, "Works for me")]),
     4: ("Sam", [(0, 2, "beach today")]),
     5: ("Gym buddies", [(0, 0, "Leg day tomorrow 6am, no excuses")]),
@@ -116,6 +121,8 @@ def preview(cid):
     if not CHATS[cid][1]:
         return ""
     me, kind, text = CHATS[cid][1][-1]
+    if kind == VOICE:
+        return ("You: " if me else "") + "Voice message"
     return ("You: " if me else "") + (text or ("Sticker" if kind == 1 else "Photo"))
 
 
@@ -159,8 +166,25 @@ async def open_chat(ch, cid):
     for i, (me, kind, text) in enumerate(shown):
         await ch.send(text_msg("M", i, me, kind, text=text))
     for i, (me, kind, text) in enumerate(shown):
-        if kind:
+        if kind in (1, 2):
             await send_picture(ch, i, kind)
+
+
+def voice_blocks(secs):
+    """A made-up voice note at 8 kHz: a gliding hum in syllables, as `B seq block` messages."""
+    n = int(secs * 8000)
+    out, enc, ph = [], Encoder(), 0.0
+    pcm = []
+    for i in range(n):
+        t = i / 8000
+        f = 180 + 60 * math.sin(2 * math.pi * 0.7 * t)
+        ph += 2 * math.pi * f / 8000
+        env = max(0.0, math.sin(2 * math.pi * 2.5 * t)) ** 0.5
+        pcm.append(int(9000 * env * (math.sin(ph) + 0.4 * math.sin(2 * ph) + 0.2 * math.sin(3 * ph))))
+    pcm += [0] * (-len(pcm) % 244)
+    for seq, k in enumerate(range(0, len(pcm), 244)):
+        out.append(b"B" + struct.pack("<H", seq) + enc.block(pcm[k:k + 244]))
+    return out
 
 
 async def main():
@@ -181,9 +205,47 @@ async def main():
         await ch.send(b"Y" + bytes([100]))
         await asyncio.sleep(0.6)
         await send_list(ch)
+        # the voice note playing on the watch (blocks, how many went), and a recording's blocks
+        voice, rec = None, 0
         while True:
             m = (await ch.recv()).data
-            print("watch:", m[:1].decode(), m[1:], flush=True)
+            if m[:1] not in (b"F", b"~"):
+                print("watch:", m[:1].decode(errors="replace"), m[1:], flush=True)
+            if m[:1] == b"t" and opened in CHATS and m[1] < len(CHATS[opened][1][-MAX_MSGS:]) and \
+                    CHATS[opened][1][-MAX_MSGS:][m[1]][1] == VOICE:
+                text = CHATS[opened][1][-MAX_MSGS:][m[1]][2]
+                mins, secs = text.split(":")
+                voice = [voice_blocks(int(mins) * 60 + int(secs)), 0]
+                await ch.send(b"O")
+                continue
+            if m[:1] == b"F" and len(m) == 4 and voice:
+                nxt, room = struct.unpack("<H", m[1:3])[0], m[3]
+                blocks, sent = voice
+                sent = max(sent, nxt)
+                while sent < len(blocks) and sent < nxt + room:
+                    await ch.send(blocks[sent])
+                    sent += 1
+                voice[1] = sent
+                if sent == len(blocks):
+                    await ch.send(b"E")
+                    voice = None
+                continue
+            if m == b"x":
+                voice = None
+                continue
+            # a voice note recorded on the watch: sent when it ends
+            if m == b"~3":
+                rec = 0
+                continue
+            if m[:2] == b"~a":
+                rec += 1
+                continue
+            if m == b"~0" and opened in CHATS:
+                secs = max(1, round(rec * 240 / 8000))
+                CHATS[opened][1].append((1, VOICE, f"{secs // 60}:{secs % 60:02d}"))
+                await ch.send(b"~\x01Sent")
+                await open_chat(ch, opened)
+                continue
             if m == b"R":
                 await send_list(ch)
                 for i, q in enumerate(QUICK):
