@@ -135,7 +135,7 @@ const FOCUS_SCENE: (i32, i32) = (i32::MIN, i32::MAX);
 const HOLD_MS: u32 = 600;
 /// The ◎ button held this long: the watch's own GPS on or off; each fix goes to the phone as `Y`, which uses it
 /// instead of its own. ◎'s colour (as Offline Maps'): blue the iPhone's GPS, orange the iPhone's and the watch's
-/// (blinking: the iPhone's while the watch looks for satellites), red the watch's only (blinking: it looks, no
+/// (orange and blue in turn: the iPhone's while the watch looks for satellites), red the watch's only (blinking: it looks, no
 /// iPhone fix).
 const GPS_HOLD_MS: u32 = 800;
 const ORANGE: Rgb = Rgb(0xFF, 0x8C, 0x00);
@@ -1991,10 +1991,11 @@ impl Ui {
     }
 
     /// ◎'s colour while the watch's GPS is on: orange with the iPhone's own fix too (its last `y`), red without;
-    /// blinking while the watch looks for satellites.
+    /// blinking while the watch looks for satellites (orange and blue in turn with the iPhone's fix).
     fn gps_colour(&self) -> Option<Rgb> {
         let phone = self.used() && self.phone_fix;
         match self.gps {
+            1 if self.blink && phone => Some(BLUE),
             1 if self.blink => Some(Rgb(0x50, 0x50, 0x50)),
             1 | 2 if phone => Some(ORANGE),
             1 | 2 => Some(RED),
