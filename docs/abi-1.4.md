@@ -191,14 +191,13 @@ SDK: `Api::gps(&self, on: bool) -> i32`, `Api::gps_fix(&self) -> Option<GpsFix>`
   kept. An app derives speed and course from successive fixes (`gps-probe` does speed). `None` while the app has not
   asked for the GPS, and on an older loader.
 - `gps(false)` turns it off and queues one GPS event with `x` 0. Returns 0, or `-22` on an older loader.
-- The loader turns the GPS off (mode 0) on exit, crash, force stop, view delete and `PAUSE`, and on again on
-  `RESUME`. A new launch starts with it off. One start per hold, one stop at its end (`wp2_core::gps::Hold`, the
+- The loader turns the GPS off (mode 0) on exit, crash, force stop and view delete. Since loader 7 a `PAUSE` (a
+  popup over the app) keeps it on, as the stock workouts do: a restart would lose the fix. A new launch starts with it off. One start per hold, one stop at its end (`wp2_core::gps::Hold`, the
   heart rate's rule).
 - **A GPS the stock already runs is only read.** The stock keeps no request count for the GPS: one mode, and any
   `0` powers the receiver down (`docs/recon.md`, "GPS", Ownership). If the mode in force (`0x380443F5`) is non-zero
   when the app asks, the loader never writes `0x63` for that hold, so an app cannot cut a stock workout's GPS. In
-  the other direction a stock workout cannot start while the app is in the foreground; on `PAUSE` the loader has
-  already turned its own GPS off.
+  the other direction a stock workout cannot start while the app is in the foreground.
 
 ### Wire format
 
