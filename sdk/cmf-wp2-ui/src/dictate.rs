@@ -458,3 +458,10 @@ pub fn mic_icon(s: &mut impl Surface, cx: i32, cy: i32, c: u16, k: i32) {
     s.rect(cx - t / 2, cy + 2 * k + t, t, 4 * k, c);
     s.rect(cx - 4 * k, cy + 6 * k + t, 8 * k, t, c);
 }
+
+/// The app's one dictation in its own memory, not on its 8 KB stack (an overflow there takes the watch down): for
+/// apps whose stack is already tight (Maps, Navigation, Browser). Call once.
+pub fn kept() -> &'static mut Dictate {
+    static mut D: Dictate = Dictate::new();
+    unsafe { &mut *core::ptr::addr_of_mut!(D) }
+}

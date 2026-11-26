@@ -97,7 +97,7 @@ pub struct Start {
     sym: bool,
     /// the key lit since it was typed (till the next touch)
     lit: Option<K>,
-    pub dict: Dictate,
+    pub dict: &'static mut Dictate,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -123,7 +123,7 @@ pub enum Tap {
 }
 
 impl Start {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Start {
             screen: Screen::Start,
             places: [Place::new(); PLACES],
@@ -131,7 +131,7 @@ impl Start {
             searched: false,
             walking: true,
             query: [0; QUERY],
-            dict: Dictate::new(),
+            dict: cmf_wp2_ui::dictate::kept(),
             n_query: 0,
             dial: Dial::new(),
             note: [0; 60],

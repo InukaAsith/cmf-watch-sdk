@@ -56,12 +56,12 @@ pub struct Keys {
     /// shown while nothing is typed
     pub hint: &'static str,
     /// voice typing (cmf_wp2_ui::dictate): its screen is up while it runs
-    pub dict: Dictate,
+    pub dict: &'static mut Dictate,
 }
 
 impl Keys {
-    pub const fn new() -> Self {
-        Keys { text: [0; MAX], n: 0, sym: false, lit: None, rotary: false, dial: Dial::new(), hint: "", dict: Dictate::new() }
+    pub fn new() -> Self {
+        Keys { text: [0; MAX], n: 0, sym: false, lit: None, rotary: false, dial: Dial::new(), hint: "", dict: cmf_wp2_ui::dictate::kept() }
     }
 
     pub fn open(&mut self, hint: &'static str) {

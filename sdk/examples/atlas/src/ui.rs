@@ -7,7 +7,7 @@
 //!   back, so the map can't be dragged); the crown zooms, and stops at the nearest and the farthest zoom.
 //! - Find: Search and Area (a town or a district: the map goes there), then kinds of places near where the map is
 //!   (food, cafés, fuel, hotels …).
-//! - Search: a QWERTY keyboard; its "dial" key turns it into the rotary one (a tap on the text comes back), as Spotify.
+//! - Search: a QWERTY keyboard with voice typing.
 //! - Results: the places as red pins on the map, the one the crown is on in a sheet at the bottom (a tap opens it);
 //!   pulled up, the sheet is the list of them all (List).
 //! - Place: the map round it with its pin, and a card: name, kind and distance, address, Directions.
@@ -29,7 +29,6 @@ use crate::view::{self, ZOOMS};
 use cmf_wp2_app::{Api, BUTTON, CROWN, GPS, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::ask::Ask;
 use cmf_wp2_ui::color::{BLACK, Rgb, rgb565};
-use cmf_wp2_ui::dial::{Act, Dial, Key};
 use cmf_wp2_ui::draw::{arc, disc, line, ring, rrect};
 use cmf_wp2_ui::font;
 use cmf_wp2_ui::geom::chord;
@@ -52,8 +51,10 @@ const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
 const GREY: u16 = rgb565(0x8A, 0x8A, 0x8A);
 const DIM: u16 = rgb565(0x3A, 0x3A, 0x3A);
 
+static mut SCENE: Scene = Scene::new();
+
 fn scene() -> &'static mut Scene {
-    crate::ram::scene()
+    unsafe { &mut *core::ptr::addr_of_mut!(SCENE) }
 }
 fn model() -> &'static mut Model {
     &mut crate::ram::ram().model
@@ -66,7 +67,6 @@ fn nav() -> &'static mut Nav {
 enum Screen {
     Home,
     Search,
-    Dial,
     Results,
     List,
     Find,
@@ -191,7 +191,6 @@ enum K {
     Sym,
     Space,
     Go,
-    Dial,
 }
 
 /// One keyboard row: up to 10 keys `(key, width)`, centred.
@@ -215,10 +214,9 @@ fn row(r: usize, sym: bool) -> ([(K, i32); 10], usize) {
         }
         _ => {
             keys[0] = (K::Sym, 62);
-            keys[1] = (K::Dial, 62);
-            keys[2] = (K::Space, 108);
-            keys[3] = (K::Go, 66);
-            4
+            keys[1] = (K::Space, 170);
+            keys[2] = (K::Go, 66);
+            3
         }
     };
     (keys, n)
@@ -336,11 +334,10 @@ struct Ui {
     s: &'static Api,
     screen: Screen,
     motor: Motor,
-    dial: Dial,
     query: [u8; QUERY],
     n_query: usize,
     sym: bool,
-    dict: Dictate,
+    dict: &'static mut Dictate,
     /// a QWERTY key flashing till the next touch
     key_on: Option<K>,
     zoom: u8,
@@ -511,9 +508,6 @@ impl Ui {
         for v in [
             self.motor.wait(),
             ask.wait(now),
-            (self.screen == Screen::Dial)
-                .then(|| self.dial.hold_wait(now))
-                .flatten(),
             (sc.want != 0 && !(sc.done && sc.id == sc.want) && self.pic_tries > 0)
                 .then(|| left(self.pic_at.wrapping_add(STALL_MS))),
             self.hold.map(|h| left(h.2.wrapping_add(HOLD_MS))),
@@ -536,7 +530,6 @@ impl Ui {
         (self.nav_drawn, self.map_up) = (None, false);
         self.pressed = None;
         self.key_on = None;
-        self.dial.cancel();
         self.hold = None;
         if s == Screen::Home && self.asked == Some(ROUTE_SCENE) {
             // a fresh map round us (a route's scene is in its own frame)
@@ -561,7 +554,6 @@ impl Ui {
                 let mut s = self.s;
                 self.dict.draw(&mut s);
             }
-            Screen::Dial => self.draw_dial(),
             Screen::Results => self.draw_results(),
             Screen::List => self.draw_list(),
             Screen::Find => self.draw_find(),
@@ -793,11 +785,7 @@ impl Ui {
 
     fn draw_query(&mut self) {
         let mut s = self.s;
-        let (half, max) = if self.screen == Screen::Dial {
-            (100, 180)
-        } else {
-            (140, 250)
-        };
+        let (half, max) = (140, 250);
         Surface::rect(&mut s, C - half, 80, 2 * half, 80, 0);
         let q = core::str::from_utf8(&self.query[..self.n_query]).unwrap_or("");
         if q.is_empty() {
@@ -881,7 +869,6 @@ impl Ui {
                 K::Sym => "123",
                 K::Space => "space",
                 K::Go => "Go",
-                K::Dial => "dial",
             };
             let ink = if pressed {
                 0
@@ -904,17 +891,6 @@ impl Ui {
         hit
     }
 
-    fn draw_dial(&mut self) {
-        self.draw_query();
-        let mut s = self.s;
-        let mut x = 60;
-        while x < 406 {
-            Surface::rect(&mut s, x, 168, 2, 2, DIM);
-            x += 8;
-        }
-        self.dial.draw(&mut s);
-    }
-
     fn type_key(&mut self, k: K) {
         match k {
             K::Ch(c) if self.n_query < QUERY => {
@@ -930,11 +906,6 @@ impl Ui {
                 self.n_query += 1;
             }
             K::Del => self.n_query = self.n_query.saturating_sub(1),
-            K::Dial => {
-                self.dial.shift = self.n_query == 0;
-                self.go(Screen::Dial);
-                return;
-            }
             K::Sym => {
                 self.sym = !self.sym;
                 self.draw();
@@ -1629,7 +1600,6 @@ impl Ui {
                 let o = self.dict.cancel(self.api);
                 self.voice_out(o);
             }
-            Screen::Dial => self.go(Screen::Search),
             Screen::List => self.go(Screen::Results),
             Screen::Place => {
                 // the map as it was before the place: its zoom, and its map asked again if the place's replaced it
@@ -1685,10 +1655,6 @@ impl Ui {
                     self.motor.play(haptic::TICK);
                     self.draw();
                 }
-            }
-            Screen::Dial => {
-                let a = self.dial.crown(&mut self.s, d, self.api.now());
-                self.dial_act(a);
             }
             Screen::List => {
                 let n = self.items().1;
@@ -1828,15 +1794,6 @@ impl Ui {
                 } else {
                     self.api.show();
                 }
-            }
-            Screen::Dial => {
-                if (70..160).contains(&y) && (x - C).abs() < 150 {
-                    // the typed text: back to the keys
-                    self.go(Screen::Search);
-                    return;
-                }
-                let a = self.dial.down(&mut self.s, x, y, self.api.now());
-                self.dial_act(a);
             }
             Screen::Nav if !self.confirm && nav().active && !nav().arrived => {
                 self.nav_map = !self.nav_map;
@@ -2266,46 +2223,6 @@ impl Ui {
         self.go(Screen::Results);
     }
 
-    fn dial_act(&mut self, a: Act) {
-        match a {
-            Act::None => {}
-            Act::Show => {
-                self.motor.play(haptic::TICK);
-                self.api.show();
-            }
-            Act::Redraw => {
-                self.motor.play(haptic::TICK);
-                self.draw();
-            }
-            Act::Key(k) => {
-                self.motor.play(haptic::TICK);
-                match k {
-                    Key::Ch(c) if self.n_query < QUERY => {
-                        self.query[self.n_query] = c;
-                        self.n_query += 1;
-                    }
-                    Key::Space if self.n_query > 0 && self.n_query < QUERY => {
-                        self.query[self.n_query] = b' ';
-                        self.n_query += 1;
-                    }
-                    Key::Del if self.n_query > 0 => {
-                        self.n_query -= 1;
-                        if self.n_query == 0 {
-                            self.dial.shift = true;
-                        }
-                    }
-                    Key::Send if self.n_query > 0 => {
-                        self.search();
-                        return;
-                    }
-                    _ => {}
-                }
-                self.draw_query();
-                self.dial.draw_centre(&mut self.s);
-                self.api.show();
-            }
-        }
-    }
 
     /// Go on the keyboard: places (`Q`) or an area (`Z`), each with the map round it.
     fn search(&mut self) {
@@ -2509,11 +2426,10 @@ fn main(api: &'static Api) -> i32 {
         s: api,
         screen: Screen::Home,
         motor: Motor::new(api),
-        dial: Dial::new(),
         query: [0; QUERY],
         n_query: 0,
         sym: false,
-        dict: Dictate::new(),
+        dict: &mut crate::ram::ram().dict,
         key_on: None,
         zoom: 2,
         at: None,
@@ -2575,9 +2491,6 @@ fn main(api: &'static Api) -> i32 {
             ui.draw();
         }
         ui.timers();
-        if ui.screen == Screen::Dial && ui.dial.tick(&mut ui.s, api.now()) == Act::Show {
-            api.show();
-        }
         let Some(e) = e else { continue };
         match e.kind {
             BUTTON => {
@@ -2609,10 +2522,6 @@ fn main(api: &'static Api) -> i32 {
                 ui.draw();
             }
             TOUCH_DOWN => ui.down(i32::from(e.x), i32::from(e.y)),
-            TOUCH_UP if ui.screen == Screen::Dial => {
-                let a = ui.dial.up(&mut ui.s, i32::from(e.x), i32::from(e.y));
-                ui.dial_act(a);
-            }
             TOUCH_UP => ui.up(i32::from(e.x), i32::from(e.y)),
             CROWN => ui.crown(i32::from(e.delta).signum()),
             MESSAGE => ui.messages(&mut ask),

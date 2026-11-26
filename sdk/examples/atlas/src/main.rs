@@ -5,8 +5,8 @@
 )]
 //! Maps: search, place, route (drive, bike, walk), check the road step by step, navigate (proto.rs).
 
-/// The scene buffer (scene.rs), in the icon's memory (ram.rs).
-pub const SCENE_CAP: usize = 26 * 1024;
+/// The scene buffer (scene.rs).
+pub const SCENE_CAP: usize = 30 * 1024;
 
 #[allow(dead_code)]
 mod proto;

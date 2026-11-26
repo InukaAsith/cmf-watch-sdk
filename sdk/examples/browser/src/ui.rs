@@ -167,7 +167,9 @@ fn main(api: &'static Api) -> i32 {
     cmf_wp2_ui::logo::load(app_icon_bytes());
     api.own_back(true);
     api.keep_screen_on(true);
-    let mut ui = Ui {
+    // the app's state in its own memory, not on the 8 KB stack (an overflow there takes the watch down)
+    static mut UI: core::mem::MaybeUninit<Ui> = core::mem::MaybeUninit::uninit();
+    let ui = unsafe { &mut *core::ptr::addr_of_mut!(UI) }.write(Ui {
         api,
         motor: Motor::new(api),
         screen: Screen::Start,
@@ -202,7 +204,7 @@ fn main(api: &'static Api) -> i32 {
         n_boxes: 0,
         shown_at: 0,
         due: false,
-    };
+    });
     ui.draw();
     let _ = api.send(b"R");
     let mut msg = [0u8; MSG_MAX];
