@@ -16,6 +16,10 @@ pub const EMPTY: &str = "Ask me anything";
 /// Notes: a page (title, plain text, checklists), not chat bubbles; the phone echoes what is typed.
 pub const PLAIN: bool = false;
 pub const QUICK_TITLE: &str = "ASK";
+/// The app's colours: its accent (buttons, badges, the heading's dot), our bubbles, theirs.
+pub const ACCENT: u32 = 0x4C8DF6;
+pub const MINE: u32 = 0x23407A;
+pub const THEIRS: u32 = 0x1E1F24;
 
 #[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}

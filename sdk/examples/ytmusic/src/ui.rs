@@ -75,6 +75,8 @@ const TOOL_Y: i32 = 392;
 const SEEK_R: i32 = 196;
 /// Search, up next, history, and YouTube Music's mixes / Spotify's library (playlists)
 const TOOL_X: [i32; 4] = [C - 114, C - 38, C + 38, C + 114];
+/// Recorder's home: the record button's centre
+const REC_Y: i32 = 208;
 /// Recorder: record, and the recordings
 const REC_X: [i32; 2] = [C - 38, C + 38];
 /// what to do when nothing plays
@@ -172,7 +174,33 @@ impl Ui {
 
     // --- now playing
 
+    /// Recorder with nothing playing: the record button is the screen.
+    fn record_home(&self) -> bool {
+        let p = player();
+        crate::brand::RECORDER && p.now.is_none() && !p.loading() && p.preparing().is_none()
+    }
+
+    fn draw_record_home(&mut self) {
+        let s = &mut self.s;
+        heading(s, 44, "RECORDER");
+        // the button: a red disc in a white ring, a soft halo around
+        ring(s, C, REC_Y, 92, 100, Rgb(0x2A, 0x0A, 0x0C), BLACK);
+        ring(s, C, REC_Y, 76, 84, WHITE, BLACK);
+        disc(s, C, REC_Y, 66, RED, BLACK);
+        centre(s, C, REC_Y + 112, "Tap to record", GREY);
+        // the recordings
+        let (w, y) = (210, 384);
+        rrect(s, C - w / 2, y, w, 52, 26, CARD, BLACK);
+        for k in 0..3 {
+            Surface::rect(s, C - w / 2 + 30, y + 17 + k * 7, 18, 3, if k == 0 { RED.rgb565() } else { W });
+        }
+        font::draw(s, C - w / 2 + 62, y + 14, "Recordings", W);
+    }
+
     fn draw_now(&mut self) {
+        if self.record_home() {
+            return self.draw_record_home();
+        }
         let p = player();
         self.draw_ring(true);
         self.draw_top();
@@ -218,6 +246,10 @@ impl Ui {
 
     /// The app's name, the state, or the toast at the top.
     fn draw_top(&mut self) {
+        if self.record_home() {
+            self.shown_state = self.state();
+            return;
+        }
         // inside the ring: at y 30 the ring's inner edge is outside x 140..326
         Surface::rect(&mut self.s, 140, 28, 186, 28, 0);
         self.shown_state = self.state();
@@ -341,6 +373,16 @@ impl Ui {
 
     fn now_tap(&mut self, x: i32, y: i32) {
         let near = |cx: i32, cy: i32, r: i32| (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r;
+        if self.record_home() {
+            if near(C, REC_Y, 100) {
+                self.motor.play(haptic::TICK);
+                self.record();
+            } else if (370..450).contains(&y) && (x - C).abs() < 120 {
+                self.motor.play(haptic::TICK);
+                self.open_list(b'H');
+            }
+            return;
+        }
         let p = player();
         if near(CTRL_X[1], CTRL_Y, 44) {
             self.motor.play(haptic::TICK);
@@ -895,6 +937,13 @@ impl Ui {
         }
         if self.screen != Screen::Now {
             return;
+        }
+        if self.record_home() {
+            return;
+        }
+        if self.shown_state == 0 && crate::brand::RECORDER && self.state() != 0 {
+            // a recording starts playing: the player instead of the record button
+            return self.draw();
         }
         if self.state() != self.shown_state {
             self.draw_top();

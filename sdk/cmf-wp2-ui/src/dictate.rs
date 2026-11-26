@@ -25,6 +25,8 @@ const MSG: usize = 4 + adpcm::BLOCK_HEADER + BLOCK / 2;
 /// blocks waiting for the outbox: 0.36 s (the phone collects them about every 40 ms)
 const QUEUE: usize = 12;
 const LISTEN_MAX_MS: u32 = 30_000;
+/// A recording: 30 minutes at most.
+const RECORD_MAX_MS: u32 = 30 * 60_000;
 const ANSWER_MAX_MS: u32 = 10_000;
 const TEXT_MAX: usize = 124;
 
@@ -70,6 +72,8 @@ pub struct Dictate {
     shown_at: u32,
     /// a recording (the phone keeps the sound): the screen says so
     record: bool,
+    /// a recording's seconds as shown
+    secs: u32,
 }
 
 impl Default for Dictate {
@@ -91,6 +95,7 @@ impl Dictate {
             drawn_level: -1,
             shown_at: 0,
             record: false,
+            secs: 0,
         }
     }
 
@@ -174,8 +179,14 @@ impl Dictate {
                     }
                 }
                 self.enc.flush(api);
-                if api.now().wrapping_sub(self.since) > LISTEN_MAX_MS {
+                let el = api.now().wrapping_sub(self.since);
+                if el > if self.record { RECORD_MAX_MS } else { LISTEN_MAX_MS } {
                     self.end(api);
+                    return Out::Redraw;
+                }
+                if self.record && el / 1000 != self.secs {
+                    // the time recorded, each second
+                    self.secs = el / 1000;
                     return Out::Redraw;
                 }
                 // the level ring, 8 times a second
@@ -277,7 +288,26 @@ impl Dictate {
             Phase::Waiting => "Writing it down",
             _ => "Voice typing",
         };
-        font::centre(s, C, 52, title, GREY.rgb565());
+        if self.record && self.phase == Phase::Listening {
+            // Recording 1:07, the time in red
+            let mut b = [0u8; 8];
+            let (m, sec) = (self.secs / 60, self.secs % 60);
+            let mut k = 0;
+            if m >= 10 {
+                b[k] = b'0' + (m / 10 % 10) as u8;
+                k += 1;
+            }
+            b[k] = b'0' + (m % 10) as u8;
+            b[k + 1] = b':';
+            b[k + 2] = b'0' + (sec / 10) as u8;
+            b[k + 3] = b'0' + (sec % 10) as u8;
+            let t = core::str::from_utf8(&b[..k + 4]).unwrap_or("");
+            let w = font::width(title) + 10 + font::width(t);
+            let x = font::draw(s, C - w / 2, 52, title, GREY.rgb565());
+            font::draw(s, x + 10, 52, t, RED.rgb565());
+        } else {
+            font::centre(s, C, 52, title, GREY.rgb565());
+        }
         // the mic: a ring that grows with the voice
         let lv = if self.phase == Phase::Listening { (self.drawn_level.max(0) * 40 / 32768).min(40) } else { 0 };
         if lv > 2 {
