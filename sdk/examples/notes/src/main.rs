@@ -15,6 +15,8 @@ pub const EMPTY: &str = "Type to write";
 /// Notes: a page (title, plain text, checklists), not chat bubbles; the phone echoes what is typed.
 pub const PLAIN: bool = true;
 pub const QUICK_TITLE: &str = "ACTIONS";
+/// The name at the top, beside the app's icon.
+pub const NAME: &str = "Notes";
 /// The app's colours: its accent (buttons, badges, the heading's dot), our bubbles, theirs.
 pub const ACCENT: u32 = 0xF5C518;
 pub const MINE: u32 = 0x4A3B05;

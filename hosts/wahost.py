@@ -21,11 +21,34 @@ CHATS = {
     6: ("Priya", [(0, 0, "Thanks for the notes!")]),
 }
 UNREAD = {1: 2, 2: 1, 4: 1}
+# under the name: last seen, online (P), or nothing (groups); and a made-up profile picture's colours
+SEEN = {2: "last seen 16:42", 4: "last seen yesterday 21:05", 6: "last seen 2 Nov"}
+ONLINE = {1}
+DP = {1: ((40, 90, 200), (240, 200, 170)), 2: ((200, 80, 120), (220, 170, 140)), 4: ((30, 150, 140), (150, 110, 80)),
+      6: ((150, 90, 200), (190, 140, 110))}
 QUICK = ["OK", "On my way", "Call you later", "Yes", "No", "Thanks!"]
 
 
 def rgb565(r, g, b):
     return (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
+
+
+def dp_parts(bg, skin):
+    """A head and shoulders on a colour, drawn at 48 px and shrunk to the watch's 12 x 12 (`G` parts of 4 rows)."""
+    im = Image.new("RGB", (48, 48), bg)
+    d = ImageDraw.Draw(im)
+    d.ellipse((6, 30, 42, 66), fill=(30, 30, 40))
+    d.ellipse((14, 8, 34, 30), fill=skin)
+    d.chord((13, 6, 35, 24), 180, 360, fill=(40, 30, 25))
+    px = im.resize((12, 12), Image.LANCZOS).load()
+    out = []
+    for part in range(3):
+        b = bytearray(b"G" + bytes([part]))
+        for y in range(part * 4, part * 4 + 4):
+            for x in range(12):
+                b += struct.pack("<H", rgb565(*px[x, y]))
+        out.append(bytes(b))
+    return out
 
 
 def encode(img, w, h, scale):
@@ -102,6 +125,13 @@ async def open_chat(ch, cid):
     name, msgs = CHATS[cid]
     UNREAD.pop(cid, None)
     await ch.send(b"H" + bytes([cid]) + name.encode())
+    if cid in ONLINE:
+        await ch.send(b"P\x01")
+    elif cid in SEEN:
+        await ch.send(b"W" + SEEN[cid].encode())
+    if cid in DP:
+        for part in dp_parts(*DP[cid]):
+            await ch.send(part)
     shown = msgs[-MAX_MSGS:]
     for i, (me, kind, text) in enumerate(shown):
         await ch.send(text_msg("M", i, me, kind, text=text))

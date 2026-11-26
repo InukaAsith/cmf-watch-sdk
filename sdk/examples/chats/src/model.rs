@@ -10,6 +10,8 @@
 //! - `N id` a new message in chat id (buzz). `Q idx text…` quick reply idx.
 //! - `M`/`A`'s `me` byte: bit 0 ours; bits 1–2 for ours its state: 0 sent, 1 delivered, 2 read. `S idx state` a
 //!   new state for message idx. `P online` the open chat's contact is online (1) or not (0); `H` resets it.
+//! - `W text…` the open chat's line under its name ("last seen today at 17:20", "online"); `G part px…` its
+//!   picture: 12 × 12 RGB565 LE in 3 parts of 4 rows (96 B each); `H` resets both.
 //! - A `C` row with `unread` 255 is a status line ("Syncing..."), not a chat: drawn in red, not opened.
 //!
 //! Watch → phone: `R` ready, `o id` open chat, `s id text…` send, `t idx` a message tapped (Notes ticks a
@@ -112,7 +114,15 @@ pub struct Model {
     pub n_quick: usize,
     /// the open chat's contact is online
     pub online: bool,
+    /// the open chat's line under its name
+    pub seen: Str<40>,
+    /// the open chat's picture, 12 × 12 RGB565, and which of its 3 parts came (bits)
+    pub dp: [u16; DP * DP],
+    pub dp_parts: u8,
 }
+
+/// The chat picture's side, px (shown 4× as a disc).
+pub const DP: usize = 12;
 
 const CHAT: Chat = Chat { id: 0, unread: 0, name: Str::EMPTY, preview: Str::EMPTY };
 const MSG: Msg = Msg { me: false, state: 0, kind: 0, text: Str::EMPTY, img: None, pic: 0 };
@@ -131,6 +141,9 @@ impl Model {
             quick: [Str::EMPTY; MAX_QUICK],
             n_quick: 0,
             online: false,
+            seen: Str::EMPTY,
+            dp: [0; DP * DP],
+            dp_parts: 0,
         }
     }
 
@@ -187,6 +200,8 @@ impl Model {
             b'H' if !a.is_empty() => {
                 self.open = Some(a[0]);
                 self.online = false;
+                self.seen = Str::EMPTY;
+                self.dp_parts = 0;
                 self.title.set(&a[1..]);
                 self.n_msgs = 0;
                 self.used = 0;
@@ -220,6 +235,18 @@ impl Model {
             }
             b'P' if a.len() == 1 => {
                 self.online = a[0] != 0;
+                on_open(self)
+            }
+            b'W' => {
+                self.seen.set(a);
+                on_open(self)
+            }
+            b'G' if a.len() == 1 + DP * 2 * 4 && a[0] < 3 => {
+                let at = a[0] as usize * DP * 4;
+                for (i, p) in a[1..].chunks_exact(2).enumerate() {
+                    self.dp[at + i] = u16::from_le_bytes([p[0], p[1]]);
+                }
+                self.dp_parts |= 1 << a[0];
                 on_open(self)
             }
             b'i' if a.len() == 1 + HEADER && a[1] == b'I' => {
@@ -407,5 +434,23 @@ mod tests {
         assert_eq!(m.n_quick, 2);
         assert_eq!(m.quick[0].as_str(), "On my way");
         assert_eq!(m.apply(b"N\x07"), Effect::Buzz(7));
+    }
+
+    #[test]
+    fn last_seen_and_picture() {
+        let mut m = model();
+        m.apply(&[b'H', 3, b'S']);
+        m.apply(b"Wlast seen today at 17:20");
+        assert_eq!(m.seen.as_str(), "last seen today at 17:20");
+        let mut g = std::vec![b'G', 1];
+        g.extend(std::iter::repeat_n([0x1F, 0xF8], 48).flatten());
+        assert_eq!(m.apply(&g), Effect::Chat);
+        assert_eq!(m.dp_parts, 2);
+        assert_eq!(m.dp[48], 0xF81F);
+        assert_eq!(m.dp[47], 0);
+        // a short part is not taken
+        assert_eq!(m.apply(&[b'G', 0, 1, 2]), Effect::None);
+        m.apply(&[b'H', 4, b'T']);
+        assert_eq!((m.dp_parts, m.seen.as_str()), (0, ""));
     }
 }

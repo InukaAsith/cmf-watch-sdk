@@ -298,6 +298,103 @@ fn avatar(name: &str) -> Rgb {
     AVATARS[(h % 8) as usize]
 }
 
+/// The app's icon, small, for the top (its own icon's pixels, read before the emoji take that memory).
+const LOGO: i32 = 36;
+static mut LOGO_PX: [u16; (LOGO * LOGO) as usize] = [0; (LOGO * LOGO) as usize];
+static mut LOGO_OK: bool = false;
+
+/// The icon file (16 B descriptor, 96 × 96 RGB565 LE + A8) → LOGO × LOGO on black, each pixel the mean of its area.
+fn grab_logo(icon: &[u8]) {
+    let px = icon.get(16..).unwrap_or(&[]);
+    if px.len() < 96 * 96 * 3 {
+        return;
+    }
+    let out = unsafe { &mut *core::ptr::addr_of_mut!(LOGO_PX) };
+    let span = |k: i32| (k * 96 / LOGO, ((k + 1) * 96 / LOGO).max(k * 96 / LOGO + 1));
+    for y in 0..LOGO {
+        let (y0, y1) = span(y);
+        for x in 0..LOGO {
+            let (x0, x1) = span(x);
+            let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = ((sy * 96 + sx) * 3) as usize;
+                    let c = u32::from(u16::from_le_bytes([px[i], px[i + 1]]));
+                    let a = u32::from(px[i + 2]);
+                    r += (c >> 11 & 31) * a;
+                    g += (c >> 5 & 63) * a;
+                    b += (c & 31) * a;
+                    n += 255;
+                }
+            }
+            out[(y * LOGO + x) as usize] = ((r / n) << 11 | (g / n) << 5 | b / n) as u16;
+        }
+    }
+    unsafe { *core::ptr::addr_of_mut!(LOGO_OK) = true };
+}
+
+#[cfg(target_os = "none")]
+fn load_logo() {
+    let icon = unsafe { &*core::ptr::addr_of!(WP2_ICON) };
+    grab_logo(icon);
+}
+
+/// The simulator: the icon as built for the watch (scripts/build-app), if it is there.
+#[cfg(not(target_os = "none"))]
+fn load_logo() {
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/icons/", env!("CARGO_PKG_NAME"), ".wp2icon");
+    if let Ok(b) = std::fs::read(p) {
+        grab_logo(&b);
+    }
+}
+
+/// The icon at (x, y), or a disc of the accent without one.
+fn draw_logo(s: &mut impl Surface, x: i32, y: i32) {
+    if !unsafe { *core::ptr::addr_of!(LOGO_OK) } {
+        return disc(s, x + LOGO / 2, y + LOGO / 2, LOGO / 2, ACCENT, BLACK);
+    }
+    let px = unsafe { &*core::ptr::addr_of!(LOGO_PX) };
+    for row in 0..LOGO {
+        // runs of one colour as one rect
+        let line = &px[(row * LOGO) as usize..((row + 1) * LOGO) as usize];
+        let mut k = 0;
+        while k < LOGO as usize {
+            let mut e = k + 1;
+            while e < LOGO as usize && line[e] == line[k] {
+                e += 1;
+            }
+            Surface::rect(s, x + k as i32, y + row, (e - k) as i32, 1, line[k]);
+            k = e;
+        }
+    }
+}
+
+/// The icon and the app's name, centred, at the top of the list.
+fn app_title(s: &mut impl Surface, y: i32) {
+    let w = LOGO + 10 + font::width(crate::NAME);
+    let x = C - w / 2;
+    draw_logo(s, x, y);
+    font::draw(s, x + LOGO + 10, y + (LOGO - font::HEIGHT) / 2, crate::NAME, W);
+}
+
+/// The open chat's picture as a disc of radius 24 at (cx, cy): the phone's 12 × 12, 4 px a pixel; until it
+/// comes, the contact's colour with its initial.
+fn dp(s: &mut impl Surface, m: &Model, name: &str, cx: i32, cy: i32) {
+    if m.dp_parts == 7 {
+        for (i, &c) in m.dp.iter().enumerate() {
+            let (x, y) = ((i % crate::model::DP) as i32, (i / crate::model::DP) as i32);
+            Surface::rect(s, cx - 24 + x * 4, cy - 24 + y * 4, 4, 4, c);
+        }
+        // the square's corners: black, the edge smooth
+        ring(s, cx, cy, 24, 35, BLACK, BLACK);
+        return;
+    }
+    disc(s, cx, cy, 24, avatar(name), BLACK);
+    let mut b = [0u8; 4];
+    let ch = name.chars().next().unwrap_or('?').to_ascii_uppercase();
+    dots_centre(s, cx, cy - 10, ch.encode_utf8(&mut b), 3, 2, W);
+}
+
 /// A microphone, `c` on `bg`, about 24 px tall.
 fn mic_glyph(s: &mut impl Surface, cx: i32, cy: i32, c: Rgb, bg: Rgb) {
     rrect(s, cx - 6, cy - 14, 12, 19, 6, c, bg);
@@ -504,6 +601,8 @@ const FRAME_MS: u32 = 80;
 
 fn main(api: &'static Api) -> i32 {
     api.own_back(true);
+    // before the emoji take the icon's memory
+    load_logo();
     emoji::init(api);
     let mut ui = Ui {
         api,
@@ -718,7 +817,7 @@ fn main(api: &'static Api) -> i32 {
                     if crate::PLAIN {
                         kept().keep(m);
                     }
-                    if m.first() == Some(&b'P') {
+                    if matches!(m.first(), Some(b'P' | b'W' | b'G')) {
                         // the online dot is in the header
                         head = true;
                     }
@@ -765,15 +864,6 @@ fn heading(s: &mut impl Surface, y: i32, text: &str, pitch: i32) {
     let w = text.chars().count() as i32 * 8 * pitch;
     dots(s, C - w / 2, y, text, pitch, pitch - 1, W);
     disc(s, C + w / 2 + 8, y + 7 * pitch - 3, 4, ACCENT, BLACK);
-}
-
-fn upper(s: &str, out: &mut [u8; 24]) -> usize {
-    let mut n = 0;
-    for b in s.bytes().take(24) {
-        out[n] = b.to_ascii_uppercase();
-        n += 1;
-    }
-    n
 }
 
 impl Ui {
@@ -837,7 +927,7 @@ impl Ui {
         let mut s = Dot(self.api);
         // the heading over whatever scrolled under it, and the scroll dots on the right rim
         Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
-        heading(&mut s, 34, crate::TITLE, 3);
+        app_title(&mut s, 30);
         self.unread_line(&mut s);
         self.scroll_dots(self.list_scroll, self.list_max());
     }
@@ -947,22 +1037,35 @@ impl Ui {
             Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
             return self.chat_buttons(&mut s);
         }
-        let mut up = [0u8; 24];
-        let mut n = upper(name, &mut up);
-        // a long name: its first word, if that fits the round top (Priya Perera → PRIYA)
-        if n > 9 {
-            if let Some(sp) = up[..n].iter().position(|&c| c == b' ').filter(|&sp| sp >= 2) {
-                n = sp;
+        // as on the phone: the picture, the name, and under it last seen (online, thinking)
+        let (sub, sub_c) = if crate::ASSISTANT {
+            if self.pending.is_some() || self.thinking { ("Thinking...", ACCENT.rgb565()) } else { ("AI assistant", GREY) }
+        } else if m.online {
+            ("online", GREEN.rgb565())
+        } else {
+            (m.seen.as_str(), GREY)
+        };
+        let (nm, _) = clip(if crate::ASSISTANT { crate::NAME } else { name }, 200);
+        let (sb, _) = clip(sub, 220);
+        let tw = font::width(nm).max(font::width(sb));
+        let x0 = C - (48 + 12 + tw) / 2;
+        let (cx, cy) = (x0 + 24, 54);
+        if crate::ASSISTANT {
+            draw_logo(&mut s, cx - LOGO / 2, cy - LOGO / 2);
+        } else {
+            dp(&mut s, m, name, cx, cy);
+            if m.online {
+                disc(&mut s, cx + 17, cy + 17, 7, GREEN, BLACK);
             }
         }
-        let (shown, _) = cmf_wp2_ui::text::clip(fit(&up[..n], 24), 9);
-        heading(&mut s, 34, shown, 3);
-        if m.online {
-            // online: a green dot before the name
-            let w = shown.chars().count() as i32 * 24;
-            disc(&mut s, C - w / 2 - 16, 45, 7, GREEN, BLACK);
+        let tx = x0 + 60;
+        if sb.is_empty() {
+            font::draw(&mut s, tx, cy - font::HEIGHT / 2, nm, W);
+        } else {
+            font::draw(&mut s, tx, cy - font::HEIGHT - 1, nm, W);
+            font::draw(&mut s, tx, cy + 2, sb, sub_c);
         }
-        rule(&mut s, 70);
+        rule(&mut s, 84);
         Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
         self.chat_buttons(&mut s);
     }

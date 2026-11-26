@@ -16,6 +16,8 @@ pub const EMPTY: &str = "Ask me anything";
 /// Notes: a page (title, plain text, checklists), not chat bubbles; the phone echoes what is typed.
 pub const PLAIN: bool = false;
 pub const QUICK_TITLE: &str = "ASK";
+/// The name at the top, beside the app's icon.
+pub const NAME: &str = "Gemini";
 /// The app's colours: its accent (buttons, badges, the heading's dot), our bubbles, theirs.
 pub const ACCENT: u32 = 0x4C8DF6;
 pub const MINE: u32 = 0x23407A;
