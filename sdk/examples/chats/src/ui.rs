@@ -506,8 +506,12 @@ struct Ui {
     /// the rotary keyboard (cmf_wp2_ui::dial)
     dial: Dial,
     motor: Motor,
-    /// where a touch on a scrolling screen went down
+    /// where a touch on a scrolling screen went down, and when
     down: Option<(i32, i32)>,
+    down_at: u32,
+    /// WhatsApp: the message held (its menu: reactions, Reply), and the one the typing replies to
+    menu: Option<u8>,
+    reply: Option<u8>,
     /// Gemini: a question sent, no answer yet: when, and whether it was sent again
     pending: Option<(u32, u8)>,
     /// Gemini: the phone has the question, the answer has not started
@@ -569,6 +573,9 @@ fn main(api: &'static Api) -> i32 {
         dial: Dial::new(),
         motor: Motor::new(api),
         down: None,
+        down_at: 0,
+        menu: None,
+        reply: None,
         pending: None,
         thinking: false,
         asked: [0; MSG_MAX],
@@ -720,6 +727,7 @@ fn main(api: &'static Api) -> i32 {
                         }
                         return 0;
                     }
+                    Screen::Chat if ui.menu.take().is_some() => ui.draw(),
                     Screen::Chat => ui.go(Screen::List),
                     Screen::Quick | Screen::Qwerty | Screen::Dial => ui.go(Screen::Chat),
                     Screen::Emoji => ui.go(Screen::Qwerty),
@@ -752,11 +760,30 @@ fn main(api: &'static Api) -> i32 {
                 }
             }
             CROWN => ui.crown(e.delta),
-            TOUCH_DOWN if ui.scrolls() => ui.down = Some((e.x as i32, e.y as i32)),
+            TOUCH_DOWN if ui.scrolls() => {
+                ui.down = Some((e.x as i32, e.y as i32));
+                ui.down_at = api.now();
+            }
             TOUCH_UP if ui.scrolls() => {
                 if let Some((x, y)) = ui.down.take() {
-                    let dy = e.y as i32 - y;
-                    if dy.abs() > DRAG {
+                    let (dx, dy) = (e.x as i32 - x, e.y as i32 - y);
+                    let held = api.now().wrapping_sub(ui.down_at) > 450 && dy.abs() <= DRAG && dx.abs() <= DRAG;
+                    let swipe = dx > 70 && dy.abs() < 50;
+                    let at = if crate::VOICE && ui.screen == Screen::Chat && ui.menu.is_none() && (held || swipe) {
+                        ui.msg_at(y)
+                    } else {
+                        None
+                    };
+                    if let Some(i) = at {
+                        // WhatsApp: a swipe to the right replies to it, a hold opens its menu
+                        if swipe {
+                            ui.reply_to(i);
+                        } else {
+                            ui.motor.play(haptic::TICK);
+                            ui.menu = Some(i);
+                            ui.draw();
+                        }
+                    } else if dy.abs() > DRAG {
                         ui.drag(dy);
                     } else {
                         ui.tap(x, y);
@@ -844,6 +871,11 @@ impl Ui {
         if crate::VOICE && to == Screen::List {
             self.voice.stop(self.api);
         }
+        if crate::VOICE && matches!(to, Screen::List | Screen::Chat) && self.reply.take().is_some() {
+            // the typing that was a reply went: the next message is not one
+            let _ = self.api.send(&[b'y', 255]);
+        }
+        self.menu = None;
         if RELIST && to == Screen::List && self.screen != Screen::List {
             self.ask_list();
         }
@@ -1101,6 +1133,9 @@ impl Ui {
     // --- chat
 
     fn draw_chat(&mut self) {
+        if let Some(i) = self.menu.filter(|_| crate::VOICE) {
+            return self.draw_menu(i);
+        }
         self.feed();
         let mut s = Dot(self.api);
         let m = model();
@@ -1221,6 +1256,13 @@ impl Ui {
             if top < FEED_END && bottom > FEED_TOP {
                 let i = (msg as *const Msg as usize - m.msgs.as_ptr() as usize) / core::mem::size_of::<Msg>();
                 draw_bubble(&mut s, m, msg, top, self.voice.idx == Some(i as u8));
+                if crate::VOICE && msg.react != 0 {
+                    // the reaction on the bubble's lower corner
+                    let (x, y) = (if msg.me { BUBBLE_X1 - 26 } else { BUBBLE_X0 + 26 }, top + h - 13);
+                    disc(&mut s, x, y, 15, BLACK, BLACK);
+                    disc(&mut s, x, y, 13, KEYC, BLACK);
+                    emoji::draw_scaled(msg.react, x - 11, y - 11, 1, &mut |x, y, w, h, c| Surface::rect(&mut s, x, y, w, h, c));
+                }
             }
             Surface::rect(&mut s, 0, top - GAP, 466, GAP, 0);
             bottom = top - GAP;
@@ -1333,9 +1375,14 @@ impl Ui {
         let mut s = Dot(self.api);
         let m = model();
         let to = if crate::ASSISTANT { "Gemini" } else { m.open.and_then(|id| m.chat(id)).map(|c| c.name.as_str()).unwrap_or("") };
+        // a reply: what it answers
+        let (lead, to) = match self.reply.and_then(|i| m.msgs.get(usize::from(i))) {
+            Some(r) if crate::VOICE => ("Reply ", if r.text.as_str().is_empty() { "Photo" } else { r.text.as_str() }),
+            _ => ("To ", to),
+        };
         let (to, _) = clip(to, 200);
-        let w = font::width("To ") + font::width(to);
-        let x = font::draw(&mut s, C - w / 2, 32, "To ", GREY);
+        let w = font::width(lead) + font::width(to);
+        let x = font::draw(&mut s, C - w / 2, 32, lead, GREY);
         font::draw(&mut s, x, 32, to, SOFT);
         self.draw_typed(76, 3, 290);
         rule(&mut s, 172);
@@ -1667,6 +1714,7 @@ impl Ui {
         out[1] = id;
         out[2..2 + n].copy_from_slice(&text[..n]);
         let _ = self.api.send(&out[..2 + n]);
+        self.reply = None;
         if crate::ASSISTANT {
             self.asked = out;
             self.asked_n = 2 + n;
@@ -1677,6 +1725,65 @@ impl Ui {
         }
         self.motor.play(haptic::DONE);
         self.go(Screen::Chat);
+    }
+
+    /// The message under y in the open chat's feed.
+    fn msg_at(&self, y: i32) -> Option<u8> {
+        let m = model();
+        let mut bottom = self.feed_bottom();
+        for i in (0..m.n_msgs).rev() {
+            let top = bottom - bubble_h(&m.msgs[i]);
+            if (top..bottom).contains(&y) {
+                return Some(i as u8);
+            }
+            bottom = top - GAP;
+        }
+        None
+    }
+
+    /// WhatsApp: the keyboard, to answer message i (the phone quotes it with the next message).
+    fn reply_to(&mut self, i: u8) {
+        self.motor.play(haptic::TICK);
+        let _ = self.api.send(&[b'y', i]);
+        self.go(Screen::Qwerty);
+        self.reply = Some(i);
+        self.draw();
+    }
+
+    /// WhatsApp: a held message's menu: six reactions (the one on it lit), then Reply.
+    fn draw_menu(&mut self, i: u8) {
+        let mut s = Dot(self.api);
+        Surface::rect(&mut s, 0, 0, 466, 466, 0);
+        centre(&mut s, C, 100, "React", SOFT);
+        let on = model().msgs[usize::from(i)].react;
+        for (k, &cp) in REACTS.iter().enumerate() {
+            let (x, y) = (C - 80 + (k as i32 % 3) * 80, 190 + (k as i32 / 3) * 70);
+            disc(&mut s, x, y, 30, if cp == on { ACCENT } else { KEYC }, BLACK);
+            emoji::draw_scaled(cp, x - emoji::SIZE / 2, y - emoji::SIZE / 2, 1, &mut |x, y, w, h, c| {
+                Surface::rect(&mut s, x, y, w, h, c)
+            });
+        }
+        rrect(&mut s, C - 80, 330, 160, 52, 26, KEYC, BLACK);
+        centre(&mut s, C, 344, "Reply", W);
+    }
+
+    fn menu_tap(&mut self, x: i32, y: i32) {
+        let Some(i) = self.menu.take() else { return };
+        let (k, r) = ((x - C + 120).div_euclid(80), (y - 155).div_euclid(70));
+        if (316..396).contains(&y) && (x - C).abs() < 90 {
+            return self.reply_to(i);
+        }
+        if (0..3).contains(&k) && (0..2).contains(&r) {
+            // its reaction; the same one again takes it back
+            let msg = &mut model().msgs[usize::from(i)];
+            let cp = REACTS[(r * 3 + k) as usize];
+            msg.react = if msg.react == cp { 0 } else { cp };
+            let mut out = [b'k', i, 0, 0, 0, 0];
+            let n = char::from_u32(msg.react).map_or(0, |c| c.encode_utf8(&mut out[2..]).len());
+            let _ = self.api.send(&out[..2 + n]);
+            self.motor.play(haptic::DONE);
+        }
+        self.draw();
     }
 
     fn send_typed(&mut self) {
@@ -1824,6 +1931,7 @@ impl Ui {
                 self.motor.play(haptic::TICK);
                 self.go(Screen::Chat);
             }
+            Screen::Chat if crate::VOICE && self.menu.is_some() => self.menu_tap(x, y),
             Screen::Chat => {
                 if y < FEED_TOP {
                     self.go(Screen::List);
@@ -1832,10 +1940,9 @@ impl Ui {
                 if y < FEED_END {
                     // a tap on a message: the phone decides (Notes: ticks a reminder; Mail, chats: nothing)
                     let m = model();
-                    let mut bottom = self.feed_bottom();
-                    for i in (0..m.n_msgs).rev() {
-                        let top = bottom - bubble_h(&m.msgs[i]);
-                        if (top..bottom).contains(&y) {
+                    if let Some(i) = self.msg_at(y) {
+                        let i = usize::from(i);
+                        {
                             self.motor.play(haptic::TICK);
                             if crate::VOICE && m.msgs[i].kind == VOICE_KIND {
                                 // play it, or stop it
@@ -1845,16 +1952,14 @@ impl Ui {
                                     self.voice.start(self.api, i as u8);
                                 }
                                 self.refresh();
-                                break;
+                                return;
                             }
                             let _ = self.api.send(&[b't', i as u8]);
                             if matches!(m.msgs[i].kind, 1 | 2) && m.msgs[i].img.is_none() {
                                 m.msgs[i].pic = 1;
                                 self.refresh();
                             }
-                            break;
                         }
-                        bottom = top - GAP;
                     }
                     return;
                 }
@@ -1956,8 +2061,14 @@ fn lines(msg: &Msg) -> Lines<'_> {
     Lines { l, n }
 }
 
+/// WhatsApp's reactions, as the watch's emoji font has them: 👍 💗 (❤) 😂 😱 (😮) 😭 (😢) 🙏; the phone swaps
+/// the stand-ins for WhatsApp's own both ways
+const REACTS: [u32; 6] = [0x1F44D, 0x1F497, 0x1F602, 0x1F631, 0x1F62D, 0x1F64F];
+/// room under a bubble for its reaction
+const REACT_H: i32 = 14;
+
 fn bubble_h(msg: &Msg) -> i32 {
-    match msg.img.filter(|i| i.ok) {
+    (if crate::VOICE && msg.react != 0 { REACT_H } else { 0 }) + match msg.img.filter(|i| i.ok) {
         Some(img) => img.size().1 + if msg.text.as_str().is_empty() { 0 } else { LINE + 8 },
         None if crate::PLAIN => lines(msg).n.max(1) as i32 * LINE + if matches!(msg.kind, 3 | 4) { 12 } else { 2 },
         None => lines(msg).n.max(1) as i32 * LINE + 20,

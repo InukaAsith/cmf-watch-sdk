@@ -34,6 +34,10 @@ DP = {1: ((40, 90, 200), (240, 200, 170)), 2: ((200, 80, 120), (220, 170, 140)),
 # whom a new chat can go to (the + button's picker)
 CONTACTS = {20: "Dad", 21: "Nimal", 22: "Ayesha", 23: "Kasun", 24: "Tharushi"}
 NEW = 200
+# reactions on messages: (chat, index in the chat) -> emoji
+REACTS = {(2, 1): "💗"}
+# the message the next send replies to (the watch's `y idx`)
+REPLY = [None]
 # the chats whose list picture the watch has
 FACES_SENT = set()
 QUICK = ["OK", "On my way", "Call you later", "Yes", "No", "Thanks!"]
@@ -176,6 +180,10 @@ async def open_chat(ch, cid):
     for i, (me, kind, text) in enumerate(shown):
         if kind in (1, 2):
             await send_picture(ch, i, kind)
+    first = len(msgs) - len(shown)
+    for (c, k), e in REACTS.items():
+        if c == cid and k >= first:
+            await ch.send(b"X" + bytes([k - first]) + e.encode())
 
 
 def voice_blocks(secs):
@@ -240,6 +248,19 @@ async def main():
                 continue
             if m == b"x":
                 voice = None
+                continue
+            if m[:1] == b"k" and len(m) >= 2 and opened in CHATS:
+                # a reaction from the watch (empty: taken back); the phone answers with what shows
+                k = len(CHATS[opened][1]) - min(len(CHATS[opened][1]), MAX_MSGS) + m[1]
+                emoji = m[2:].decode(errors="replace")
+                if emoji:
+                    REACTS[(opened, k)] = emoji
+                else:
+                    REACTS.pop((opened, k), None)
+                await ch.send(b"X" + bytes([m[1]]) + m[2:])
+                continue
+            if m[:1] == b"y" and len(m) == 2:
+                REPLY[0] = None if m[1] == 255 else m[1]
                 continue
             # a voice note recorded on the watch: sent when it ends
             if m == b"~3":
