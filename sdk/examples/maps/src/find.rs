@@ -117,7 +117,7 @@ fn contains(t: &[u8], q: &[u8]) -> bool {
 impl Ui {
     /// Every name of the map in turn: kind, frame point, text. Read a file part at a time.
     pub fn scan_names(&self, mut f: impl FnMut(u8, (i32, i32), &[u8])) {
-        let buf = unsafe { &mut *core::ptr::addr_of_mut!(CHUNK) };
+        let buf = &mut ram().chunk;
         let mut off = 0usize;
         loop {
             let got = self.api.file_read("n", off, buf);

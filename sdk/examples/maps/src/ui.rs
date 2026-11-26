@@ -79,7 +79,6 @@ const PER_MSG: usize = 30;
 
 static mut SCENE: Scene = Scene::new();
 static mut IDX: [u8; 64] = [0; 64];
-static mut CHUNK: [u8; FILE_CHUNK] = [0; FILE_CHUNK];
 static mut SAVE: [u8; marks::BYTES] = [0; marks::BYTES];
 static mut MARKS: Marks = Marks::new();
 
@@ -682,7 +681,13 @@ impl Ui {
         self.dirty = true;
     }
 
+    /// The watch's GPS found us while it is on: its position holds from then on, fix or not.
     fn watch_ok(&self) -> bool {
+        self.gps_on && self.watch_at.is_some()
+    }
+
+    /// A fix from the watch in the last 5 s.
+    fn watch_live(&self) -> bool {
         self.watch_at.is_some_and(|t| self.api.now().wrapping_sub(t) < 5000)
     }
 
@@ -702,7 +707,7 @@ impl Ui {
             (false, _) if self.gps_on => RED,
             (false, _) => DIM,
         };
-        match (blink && self.gps_on && !w && self.blink, p) {
+        match (blink && self.gps_on && !self.watch_live() && self.blink, p) {
             (true, true) => BLUE,
             (true, false) => DIM,
             _ => c,
@@ -873,13 +878,10 @@ impl Ui {
         let Some(f) = self.api.gps_fix() else { return };
         self.sats = f.sats;
         if f.fix == 0 {
+            // under cover: the watch's last position is held (as the stock workouts do), never dropped for the
+            // iPhone's; ◎ blinks till the fix is back
             self.blink = !self.blink;
             let map = self.screen == Screen::Map && self.loading.is_none();
-            if self.watch_at.is_some_and(|t| self.api.now().wrapping_sub(t) >= 5000) {
-                // the watch's fix lost: the dot and the banner again
-                self.watch_at = None;
-                self.dirty |= map;
-            }
             if map && !self.dirty {
                 // only ◎ blinks
                 self.draw_me_button();
@@ -979,7 +981,7 @@ impl Ui {
             r.path[i] = r.track.pts[r.track.n - 1 - i];
         }
         r.path_n = n;
-        self.start_guide(Guide::Path { back: true });
+        self.start_backtrack();
     }
 
     /// Routes to `to` from the phone (mode 0 car, 1 bike, 2 walk): their times (`O`, `o`), then the one picked as
@@ -1023,6 +1025,7 @@ impl Ui {
             self.motor.play(haptic::TICK);
             if matches!(self.guide, Guide::Path { back: true }) {
                 self.guide = Guide::None;
+                self.end_drive();
             } else {
                 self.backtrack();
             }
@@ -1348,7 +1351,7 @@ impl Ui {
                     let _ = self.api.file_write(self.name(), &[], false);
                 }
                 Some(b'f') if self.inc.on => {
-                    let chunk = unsafe { &mut *core::ptr::addr_of_mut!(CHUNK) };
+                    let chunk = &mut ram().chunk;
                     for &b in &m[1..] {
                         if self.inc.len == FILE_CHUNK {
                             self.flush();
@@ -1414,7 +1417,7 @@ impl Ui {
 
     fn flush(&mut self) {
         if self.inc.on && self.inc.len > 0 {
-            let chunk = unsafe { &*core::ptr::addr_of!(CHUNK) };
+            let chunk = &ram().chunk;
             let _ = self.api.file_write(self.name(), &chunk[..self.inc.len], true);
         }
         self.inc.len = 0;

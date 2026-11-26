@@ -189,6 +189,61 @@ fn project(a: (i32, i32), b: (i32, i32), p: (i32, i32)) -> ((i32, i32), i64) {
     ((a.0 + (dx * dot / l2) as i32, a.1 + (dy * dot / l2) as i32), dot * 1024 / l2)
 }
 
+/// Corners to keep so the path stays within `tol` metres of what it was (Douglas–Peucker): `keep[i]` set for
+/// them, the ends always. A walked track's GPS wobble goes; its real turns stay.
+pub fn corners(path: &[(i16, i16)], tol: i32, keep: &mut [bool]) {
+    let n = path.len().min(keep.len());
+    keep[..n].fill(false);
+    if n == 0 {
+        return;
+    }
+    keep[0] = true;
+    keep[n - 1] = true;
+    // spans still to look at, without recursion
+    let mut todo = [(0u16, 0u16); 64];
+    let mut k = 0;
+    if n > 2 {
+        todo[0] = (0, (n - 1) as u16);
+        k = 1;
+    }
+    let t2 = i64::from(tol) * i64::from(tol);
+    while k > 0 {
+        k -= 1;
+        let (a, b) = (usize::from(todo[k].0), usize::from(todo[k].1));
+        let (pa, pb) = (p32(path[a]), p32(path[b]));
+        let mut far = (0i64, 0usize);
+        for i in a + 1..b {
+            let q = p32(path[i]);
+            let d = sq(project(pa, pb, q).0, q);
+            if d > far.0 {
+                far = (d, i);
+            }
+        }
+        if far.0 > t2 {
+            keep[far.1] = true;
+            for span in [(a, far.1), (far.1, b)] {
+                if span.1 - span.0 > 1 && k < todo.len() {
+                    todo[k] = (span.0 as u16, span.1 as u16);
+                    k += 1;
+                }
+            }
+        }
+    }
+}
+
+/// The turn from heading `a` to heading `b` (degrees) as nav's `dir` (1 slight left, 2 left, 3 sharp left, 4 slight
+/// right, 5 right, 6 sharp right); None under 30°: straight on.
+pub fn turn_dir(a: u16, b: u16) -> Option<u8> {
+    let t = (i32::from(b) - i32::from(a) + 540) % 360 - 180;
+    let size = match t.abs() {
+        0..30 => return None,
+        30..60 => 1,
+        60..135 => 2,
+        _ => 3,
+    };
+    Some(if t < 0 { size } else { size + 3 })
+}
+
 /// Compass direction of b from a, degrees (0 north, 90 east).
 pub fn bearing(a: (i32, i32), b: (i32, i32)) -> u16 {
     let a16 = cmf_wp2_ui::motion::angle(b.0 - a.0, a.1 - b.1);
@@ -199,6 +254,34 @@ pub fn bearing(a: (i32, i32), b: (i32, i32)) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corners_keep_turns_and_drop_wobble() {
+        // east 60 m with ±2 m wobble, then north 60 m: one corner at (60, 0)
+        let mut p = [(0i16, 0i16); 21];
+        for i in 0..=10 {
+            p[i] = ((i * 6) as i16, if i % 2 == 1 { 2 } else { -1 });
+        }
+        for i in 1..=10 {
+            p[10 + i] = (60, (i * 6) as i16);
+        }
+        let mut keep = [false; 21];
+        corners(&p, 8, &mut keep);
+        let kept: Vec<usize> = (0..21).filter(|&i| keep[i]).collect();
+        assert_eq!(kept, [0, 10, 20]);
+        assert_eq!(turn_dir(bearing(p32(p[0]), p32(p[10])), bearing(p32(p[10]), p32(p[20]))), Some(2), "east then north: left");
+    }
+
+    #[test]
+    fn turn_sizes() {
+        assert_eq!(turn_dir(0, 20), None);
+        assert_eq!(turn_dir(350, 10), None);
+        assert_eq!(turn_dir(0, 45), Some(4));
+        assert_eq!(turn_dir(0, 90), Some(5));
+        assert_eq!(turn_dir(0, 150), Some(6));
+        assert_eq!(turn_dir(90, 0), Some(2));
+        assert_eq!(turn_dir(10, 330), Some(1));
+    }
 
     const F: Frame = Frame { lat0_e7: 69_271_000, lon0_e7: 798_612_000, mm_per_deg_lon: 110_511_000 };
 

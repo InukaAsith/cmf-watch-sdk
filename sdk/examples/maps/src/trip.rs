@@ -25,6 +25,8 @@ const WAY_Y: [i32; 3] = [112, 204, 296];
 const WAY_H: i32 = 84;
 const START_Y: i32 = 364;
 const ROW_C: Rgb = Rgb(0x3A, 0x3A, 0x3A);
+/// A walked track cut to its corners: within this many metres of it.
+const CORNER_TOL: i32 = 8;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Way {
@@ -50,6 +52,8 @@ pub struct Trip {
     pub steps_want: usize,
     pub n_steps: usize,
     pub driving: bool,
+    /// navigating back along the track (no phone, no new routes)
+    pub back: bool,
     pub turn_view: bool,
     pub zoom: usize,
     off_since: Option<u32>,
@@ -73,6 +77,7 @@ impl Trip {
             steps_want: 0,
             n_steps: 0,
             driving: false,
+            back: false,
             turn_view: true,
             zoom: 2,
             off_since: None,
@@ -383,6 +388,45 @@ impl Ui {
         self.dirty = true;
     }
 
+    /// Back to the start along the track, turn by turn, with no phone: `ram().path` (the track backwards) cut to its
+    /// corners; each corner of 30° or more is a turn, then the start.
+    pub fn start_backtrack(&mut self) {
+        let r = ram();
+        let path = &r.path[..r.path_n];
+        let mut keep = [false; ram::ROUTE];
+        geo::corners(path, CORNER_TOL, &mut keep);
+        // each kept corner with the kept ones either side
+        let (mut prev, mut at, mut n) = (None::<usize>, None::<usize>, 0);
+        for i in (0..path.len()).filter(|&i| keep[i]) {
+            if let (Some(a), Some(b)) = (prev, at) {
+                let (pa, pb, pc) = (p32(path[a]), p32(path[b]), p32(path[i]));
+                if let Some(dir) = geo::turn_dir(geo::bearing(pa, pb), geo::bearing(pb, pc)) {
+                    if n < ram::STEPS - 1 {
+                        let st = &mut r.steps[n];
+                        (st.kind, st.dir, st.p, st.idx, st.n) = (0, dir, path[b], b as u16, 0);
+                        n += 1;
+                    }
+                }
+            }
+            (prev, at) = (at, Some(i));
+        }
+        let mut metres = 0;
+        for pair in path.windows(2) {
+            metres += dist(p32(pair[0]), p32(pair[1]));
+        }
+        self.trip.n_steps = n;
+        self.trip.to = p32(path[path.len() - 1]);
+        self.trip.mode = 2;
+        self.trip.metres = metres as u32;
+        // on foot, 1.3 m/s
+        self.trip.secs = metres as u32 * 10 / 13;
+        self.trip.back = true;
+        self.trip.turn_view = true;
+        self.trip.reroute_at = None;
+        self.trip.off_since = None;
+        self.start_drive();
+    }
+
     // --- Route preview
 
     fn preview_view(&self) -> View {
@@ -437,6 +481,7 @@ impl Ui {
     pub fn preview_tap(&mut self, y: i32) {
         if (START_Y - 10..START_Y + 70).contains(&y) {
             self.trip.turn_view = true;
+            self.trip.back = false;
             self.start_drive();
         }
     }
@@ -447,7 +492,7 @@ impl Ui {
         self.trip.driving = true;
         self.trip.shown = false;
         ram().nav = crate::state::Nav::new();
-        self.start_guide(Guide::Path { back: false });
+        self.start_guide(Guide::Path { back: self.trip.back });
         self.screen = Screen::Drive;
         self.nav_update();
         self.dirty = true;
@@ -456,6 +501,7 @@ impl Ui {
     /// Navigation ended (List › stop guiding, the route's end left behind).
     pub fn end_drive(&mut self) {
         self.trip.driving = false;
+        self.trip.back = false;
         self.trip.reroute_at = None;
         ram().nav.end();
         if self.screen == Screen::Drive {
@@ -521,7 +567,7 @@ impl Ui {
         // off the route: a new one from the phone (else the way back to it, as the map shows)
         if o.off > OFF && !self.arrived {
             let since = *self.trip.off_since.get_or_insert(now);
-            if now.wrapping_sub(since) >= REROUTE_MS && self.trip.reroute_at.is_none() && !self.watch_only {
+            if now.wrapping_sub(since) >= REROUTE_MS && self.trip.reroute_at.is_none() && !self.watch_only && !self.trip.back {
                 if self.ask_route(self.trip.mode, self.trip.to) {
                     self.trip.reroute_at = Some(now);
                     r.nav.apply(b"r");
@@ -553,7 +599,7 @@ impl Ui {
             ram().nav.rerouting = false;
             self.dirty = true;
         }
-        if self.trip.driving && self.guide != (Guide::Path { back: false }) {
+        if self.trip.driving && self.guide != (Guide::Path { back: self.trip.back }) {
             self.end_drive();
             self.dirty = true;
         }
@@ -594,7 +640,8 @@ impl Ui {
         self.route_line(&v);
         let (x, y) = v.px(self.trip.to);
         render::pin(&mut s, x, y);
-        view::overlay(self.api, n);
+        // you: in the colour of where the position comes from, as on the map
+        view::overlay_as(self.api, n, self.source(false));
     }
 
     pub fn drive_tap(&mut self) {

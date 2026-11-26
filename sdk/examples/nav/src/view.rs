@@ -370,12 +370,17 @@ pub fn map(api: &'static Api, n: &Nav, k: i32) {
 /// The map view's marks over a map drawn by the caller (Maps draws the streets under them): where we are, the time
 /// line on top, the next turn below.
 pub fn overlay(api: &'static Api, n: &Nav) {
+    overlay_as(api, n, RED);
+}
+
+/// The overlay with "you" in colour `me` (Offline Maps: where the position comes from).
+pub fn overlay_as(api: &'static Api, n: &Nav, me: Rgb) {
     let mut s = api;
     // north on the rim, under the marks and pills
     north(&mut s, n.heading);
     // we are here: a white arrow on a red disc, pointing up
     ring(&mut s, C, ME_Y, 22, 26, WHITE, BLACK);
-    disc(&mut s, C, ME_Y, 22, RED, BLACK);
+    disc(&mut s, C, ME_Y, 22, me, BLACK);
     triangle(
         &mut s,
         (C, ME_Y - 14),
