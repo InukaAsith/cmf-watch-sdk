@@ -24,7 +24,7 @@ const RED: Rgb = Rgb(0xD7, 0x19, 0x21);
 const GREY: u16 = rgb565(0x8A, 0x8A, 0x8A);
 const CARD: Rgb = Rgb(0x16, 0x16, 0x16);
 
-const HEAD: i32 = 96;
+const HEAD: i32 = 106;
 const COLS: i32 = 3;
 const CELL: i32 = 104;
 const PITCH: i32 = 114;
@@ -282,14 +282,14 @@ impl Ui {
     fn draw_head(&self) {
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, HEAD, 0);
-        dots_centre(&mut s, C - 8, 22, "PHOTOS", 3, 2, W);
-        disc(&mut s, C + 66, 22 + 18, 4, RED, BLACK);
+        dots_centre(&mut s, C - 8, 34, "PHOTOS", 3, 2, W);
+        disc(&mut s, C + 66, 34 + 18, 4, RED, BLACK);
         // the view switch: the open one in white
         let (gw, lw) = (font::width("Grid"), font::width("List"));
         let x = C - (gw + 24 + lw) / 2;
-        font::draw(&mut s, x, 56, "Grid", if self.grid { W } else { GREY });
-        disc(&mut s, x + gw + 12, 56 + 11, 2, Rgb(0x55, 0x55, 0x55), BLACK);
-        font::draw(&mut s, x + gw + 24, 56, "List", if self.grid { GREY } else { W });
+        font::draw(&mut s, x, 68, "Grid", if self.grid { W } else { GREY });
+        disc(&mut s, x + gw + 12, 68 + 11, 2, Rgb(0x55, 0x55, 0x55), BLACK);
+        font::draw(&mut s, x + gw + 24, 68, "List", if self.grid { GREY } else { W });
     }
 
     fn draw_item(&mut self, i: usize) {
