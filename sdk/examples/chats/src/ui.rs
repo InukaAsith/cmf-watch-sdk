@@ -333,11 +333,11 @@ fn mic_glyph(s: &mut impl Surface, cx: i32, cy: i32, c: Rgb, bg: Rgb) {
 
 // --- list
 /// (Notes: taller, the tabs under the title)
-const HEAD_H: i32 = if crate::TABS.is_empty() { 96 } else { 112 };
+const HEAD_H: i32 = if crate::TABS.is_empty() { 96 } else { 110 };
 const LIST_TOP: i32 = HEAD_H + 8;
 /// Notes' tabs: one bar of segments, the chosen one in the accent
-const TAB_Y: i32 = 74;
-const TAB_W: i32 = 112;
+const TAB_Y: i32 = 72;
+const TAB_W: i32 = 84;
 const TAB_X: i32 = C - TAB_W * 3 / 2;
 const CARD_H: i32 = 84;
 const PITCH: i32 = 94;
@@ -946,23 +946,7 @@ impl Ui {
                     Surface::rect(s, x - 11, y - 2, 22, 4, 0);
                     Surface::rect(s, x - 2, y - 11, 4, 22, 0);
                 }
-                1 => {
-                    for (rx, ry, rw, rh) in [(-11, -11, 22, 3), (-11, 8, 22, 3), (-11, -11, 3, 22), (8, -11, 3, 22)] {
-                        Surface::rect(s, x + rx, y + ry, rw, rh, 0);
-                    }
-                    // the tick
-                    for j in 0..4 {
-                        Surface::rect(s, x - 6 + j, y - 1 + j, 3, 3, 0);
-                    }
-                    for j in 0..8 {
-                        Surface::rect(s, x - 3 + j, y + 2 - j, 3, 3, 0);
-                    }
-                }
-                _ => {
-                    ring(s, x, y, 9, 12, BLACK, ACCENT);
-                    Surface::rect(s, x - 1, y - 7, 3, 8, 0);
-                    Surface::rect(s, x - 1, y - 1, 7, 3, 0);
-                }
+                k => icon(s, k as u8, x, y, BLACK, ACCENT),
             }
         }
     }
@@ -1012,9 +996,9 @@ impl Ui {
         rrect(s, TAB_X, TAB_Y, TAB_W * n, 32, 16, CARD, BLACK);
         let k = i32::from(self.tab);
         rrect(s, TAB_X + k * TAB_W, TAB_Y, TAB_W, 32, 16, ACCENT, CARD);
-        for (i, t) in crate::TABS.iter().enumerate() {
-            let ink = if i as i32 == k { 0 } else { SOFT };
-            centre(s, TAB_X + i as i32 * TAB_W + TAB_W / 2, TAB_Y + 4, t, ink);
+        for i in 0..n {
+            let (ink, bg) = if i == k { (BLACK, ACCENT) } else { (Rgb(0xC8, 0xC8, 0xC8), CARD) };
+            icon(s, i as u8, TAB_X + i * TAB_W + TAB_W / 2, TAB_Y + 16, ink, bg);
         }
     }
 
@@ -1936,6 +1920,35 @@ fn text_w(msg: &Msg) -> i32 {
         PLAIN_X + PLAIN_W - CHECK_X
     } else {
         PLAIN_W
+    }
+}
+
+/// Notes' icons, ~24 px: 0 a note (a page's lines), 1 a to-do (a ticked box), 2 a reminder (a clock).
+fn icon(s: &mut impl Surface, k: u8, x: i32, y: i32, ink: Rgb, bg: Rgb) {
+    let c = ink.rgb565();
+    match k {
+        0 => {
+            for (ry, rw) in [(-9, 20), (-3, 20), (3, 20), (9, 12)] {
+                Surface::rect(s, x - 10, y + ry - 1, rw, 3, c);
+            }
+        }
+        1 => {
+            for (rx, ry, rw, rh) in [(-11, -11, 22, 3), (-11, 8, 22, 3), (-11, -11, 3, 22), (8, -11, 3, 22)] {
+                Surface::rect(s, x + rx, y + ry, rw, rh, c);
+            }
+            // the tick
+            for j in 0..4 {
+                Surface::rect(s, x - 6 + j, y - 1 + j, 3, 3, c);
+            }
+            for j in 0..8 {
+                Surface::rect(s, x - 3 + j, y + 2 - j, 3, 3, c);
+            }
+        }
+        _ => {
+            ring(s, x, y, 9, 12, ink, bg);
+            Surface::rect(s, x - 1, y - 7, 3, 8, c);
+            Surface::rect(s, x - 1, y - 1, 7, 3, c);
+        }
     }
 }
 
