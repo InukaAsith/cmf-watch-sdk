@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# The Browser's built-in site logos (Google, YouTube, Wikipedia, Fandom), rendered once into
+# sdk/examples/browser/logos.local.bin (not committed: brand art stays local, as icon.local.svg). The build compiles
+# it into the app; nothing is stored on the watch or phone at run time. Without it the app builds with no logos.
+#   scripts/browser-logos DIR   (DIR holds google.png youtube.png wikipedia.png fandom.png)
+set -euo pipefail
+dir=${1:?folder with google.png youtube.png wikipedia.png fandom.png}
+out=$(cd "$(dirname "$0")/.." && pwd)/sdk/examples/browser/logos.local.bin
+uv run -q --with pillow python - "$dir" "$out" <<'PY'
+import struct, sys
+from PIL import Image
+d, out = sys.argv[1], sys.argv[2]
+# id order is the protocol (CMFX BrowserProto.Logo): 0 Google, 1 YouTube, 2 Wikipedia, 3 Fandom; target panel px tall
+LOGOS = [("google", 40), ("youtube", 30), ("wikipedia", 56), ("fandom", 30)]
+
+def rgb565(r, g, b): return (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
+
+def one(name, h):
+    im = Image.open(f"{d}/{name}.png").convert("RGBA")
+    w = max(1, round(im.width * h / im.height))
+    im = im.resize((w, h), Image.LANCZOS)
+    # over white (the sites' light pages); clear where nothing is drawn
+    bg = Image.new("RGBA", im.size, (255, 255, 255, 255))
+    flat = Image.alpha_composite(bg, im).convert("RGB")
+    q = flat.quantize(colors=15, method=Image.Quantize.MEDIANCUT)
+    pal = q.getpalette()[:45]
+    px = list(q.getdata()); alpha = list(im.getchannel("A").getdata())
+    idx = [0 if a < 40 else p + 1 for p, a in zip(px, alpha)]
+    n = max(idx)
+    body = bytearray(struct.pack("<BBB", w, h, n))
+    for i in range(n):
+        body += struct.pack("<H", rgb565(*pal[3 * i:3 * i + 3]))
+    # runs: colour (0 clear) high nibble, length-1 low nibble, row after row
+    i = 0
+    while i < len(idx):
+        c, k = idx[i], 1
+        while k < 16 and i + k < len(idx) and idx[i + k] == c: k += 1
+        body.append(c << 4 | (k - 1)); i += k
+    print(f"{name}: {w}x{h}, {n} colours, {len(body)} B", file=sys.stderr)
+    return bytes(body)
+
+parts = [one(n, h) for n, h in LOGOS]
+blob = bytearray([len(parts)]); off = 1 + 2 * len(parts)
+for p in parts:
+    blob += struct.pack("<H", off); off += len(p)
+for p in parts: blob += p
+open(out, "wb").write(blob)
+print(f"{out}: {len(blob)} B", file=sys.stderr)
+PY

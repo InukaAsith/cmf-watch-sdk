@@ -2,6 +2,7 @@
 
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+pub mod adpcm;
 pub mod lv;
 pub mod stock;
 pub mod storage;
@@ -322,6 +323,56 @@ impl Api {
         (self.lv_submit)(buf.as_ptr(), buf.len())
     }
 
+    /// Opens the speaker for 16-bit mono PCM at `rate_khz` (8, 16, 24, 32 or 48; docs/abi-1.4.md, "Audio"). The
+    /// loader plays it while the app runs in the foreground: a pause (call, alarm, notification) stops the sound and
+    /// drops what was queued, `RESUME` opens it again by itself; exit, crash and force stop close it. While it plays
+    /// the panel stays lit. `0`; `-22` for another rate and on a loader older than 2026-11-21.
+    pub fn audio_open(&self, rate_khz: u8) -> i32 {
+        static mut BUF: [u8; 6] = [0x18, 2, 0, 0, 1, 0];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        buf[5] = rate_khz;
+        self.audio_record(buf)
+    }
+
+    /// Queues samples (little-endian i16) for the speaker; returns how many **bytes** it took (0 when the loader's
+    /// 6 KiB queue is full: try again after a short wait), `-107` when not open, `-12` when the speaker could not
+    /// be opened, `-22` for a buffer outside the app block or an odd length. `pcm` must be a `static` (the stack
+    /// is not in the app block).
+    pub fn audio_write(&self, pcm: &[u8]) -> i32 {
+        static mut BUF: [u8; 13] = [0x18, 9, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        buf[5..9].copy_from_slice(&(pcm.as_ptr() as u32).to_le_bytes());
+        buf[9..13].copy_from_slice(&(pcm.len() as u32).to_le_bytes());
+        self.audio_record(buf)
+    }
+
+    /// Speaker volume, 0..=100 % of the watch's maximum (0 mutes). Until the first call the system's level is used.
+    pub fn audio_volume(&self, percent: u8) -> i32 {
+        static mut BUF: [u8; 6] = [0x18, 2, 0, 0, 4, 0];
+        let buf = unsafe { &mut *core::ptr::addr_of_mut!(BUF) };
+        buf[5] = percent.min(100);
+        self.audio_record(buf)
+    }
+
+    /// Bytes still queued in the loader (not yet given to the speaker), or the negative error of the last open.
+    pub fn audio_queued(&self) -> i32 {
+        static BUF: [u8; 5] = [0x18, 1, 0, 0, 5];
+        self.audio_record(&BUF)
+    }
+
+    /// Stops the sound and drops what is queued.
+    pub fn audio_close(&self) -> i32 {
+        static BUF: [u8; 5] = [0x18, 1, 0, 0, 3];
+        self.audio_record(&BUF)
+    }
+
+    fn audio_record(&self, buf: &[u8]) -> i32 {
+        if self.abi_minor < 2 {
+            return -22;
+        }
+        (self.lv_submit)(buf.as_ptr(), buf.len())
+    }
+
     /// The app's widget on the cards left of the watch face (`wp2apps cards set widgets:0x40/<slot + 1>`): a
     /// `title` (one line, up to 23 bytes) and a `value` (up to 39 bytes, `\n` starts a second line), cut at a char
     /// boundary. Kept on NAND until the next call or the app's removal; the card shows it from its next layout
@@ -423,6 +474,60 @@ fn put(out: &mut [u8], s: &str) {
     out[..n].copy_from_slice(&s.as_bytes()[..n]);
 }
 
+/// FILE batches (lv_submit op 0x16): one static buffer in the app block; a read comes back in it.
+const FILE_BATCH: usize = 2048;
+/// Longest name for [`Api::file_write`] and friends: `[a-z0-9_.]`, not starting with a dot.
+pub const FILE_NAME_MAX: usize = 20;
+/// Most bytes one [`Api::file_write`] takes (append more for a bigger file).
+pub const FILE_CHUNK: usize = FILE_BATCH - 6 - FILE_NAME_MAX;
+static mut FILE_REC: [u8; FILE_BATCH] = [0; FILE_BATCH];
+
+impl Api {
+    fn file_rec(&self, cmd: u8, name: &str, rest: &[u8], whole: bool) -> (i32, &'static [u8]) {
+        let n = name.len();
+        if self.abi_minor < 2 || n == 0 || n > FILE_NAME_MAX || 6 + n + rest.len() > FILE_BATCH {
+            return (-22, &[]);
+        }
+        // one app thread
+        let r = unsafe { &mut *core::ptr::addr_of_mut!(FILE_REC) };
+        r[..6].copy_from_slice(&[0x16, 0, 0, 0, cmd, n as u8]);
+        r[6..6 + n].copy_from_slice(name.as_bytes());
+        r[6 + n..6 + n + rest.len()].copy_from_slice(rest);
+        let len = if whole { FILE_BATCH } else { 6 + n + rest.len() };
+        let rc = (self.lv_submit)(r.as_ptr(), len);
+        (rc, &r[..rc.clamp(0, FILE_BATCH as i32) as usize])
+    }
+
+    /// Reads the app's own file `name` from byte `skip` into `buf`: bytes read, or < 0 (no such file). Big data that
+    /// does not fit the 4 KiB [`Api::save`] blob, such as offline map tiles. Needs a loader with FILE (-22 before).
+    pub fn file_read(&self, name: &str, skip: usize, buf: &mut [u8]) -> i32 {
+        let mut got = 0;
+        while got < buf.len() {
+            let (rc, data) = self.file_rec(1, name, &((skip + got) as u32).to_le_bytes(), true);
+            if rc < 0 {
+                return if got > 0 { got as i32 } else { rc };
+            }
+            let k = data.len().min(buf.len() - got);
+            buf[got..got + k].copy_from_slice(&data[..k]);
+            got += k;
+            if data.len() < FILE_BATCH {
+                break;
+            }
+        }
+        got as i32
+    }
+
+    /// Writes `data` (at most [`FILE_CHUNK`] bytes) to the app's file `name`, replacing it, or after its end with
+    /// `append`. Writes NAND synchronously.
+    pub fn file_write(&self, name: &str, data: &[u8], append: bool) -> i32 {
+        self.file_rec(if append { 3 } else { 2 }, name, data, false).0
+    }
+
+    pub fn file_delete(&self, name: &str) -> i32 {
+        self.file_rec(4, name, &[], false).0
+    }
+}
+
 /// WIDGET record for `lv_submit` (op 0x14, handle 0): title NUL-padded to 24 bytes, then the value NUL-padded to 40.
 #[doc(hidden)]
 pub fn widget_record(title: &str, value: &str) -> [u8; WIDGET_BATCH] {
@@ -505,9 +610,10 @@ pub fn __sim_run(start: extern "C" fn(&'static Api) -> i32) -> i32 {
 #[macro_export]
 macro_rules! app_icon {
     () => {
+        // `static mut`: an app may use the pixels as RAM once it runs (the menu shows its own copy; examples/atlas ram.rs)
         #[used]
         #[unsafe(link_section = ".wp2info")]
-        static WP2_ICON: [u8; include_bytes!(env!("WP2_ICON")).len()] = *include_bytes!(env!("WP2_ICON"));
+        pub(crate) static mut WP2_ICON: [u8; include_bytes!(env!("WP2_ICON")).len()] = *include_bytes!(env!("WP2_ICON"));
     };
 }
 
