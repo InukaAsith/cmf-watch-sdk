@@ -2,14 +2,14 @@
 # Bump a version when its app changes: CMFX offers an update when the bundled one is newer than the watch's.
 assistant	20	Gemini
 atlas	14	Maps
-browser	21	Browser
+browser	22	Browser
 chats	23	WhatsApp
-mail	11	Mail
+mail	12	Mail
 maps	8	Offline Maps
-nav	11	Navigation
+nav	12	Navigation
 notes	13	Notes
-photos	13	Photos
-spotify	11	Spotify Control
-spplayer	4	Spotify
+photos	14	Photos
+spotify	12	Spotify Control
+spplayer	5	Spotify
 ytmusic	8	YouTube Music
 recorder	2	Recorder

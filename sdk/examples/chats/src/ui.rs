@@ -16,8 +16,8 @@ use cmf_wp2_ui::geom::{chord, polar};
 use cmf_wp2_ui::haptic::{self, Motor};
 use cmf_wp2_ui::motion::isqrt;
 use cmf_wp2_ui::font::{self, centre, clip, fitted, wrap};
-use cmf_wp2_ui::text::{dots, dots_centre, fit};
-use cmf_wp2_ui::{C, Surface};
+use cmf_wp2_ui::text::{dots_centre, fit};
+use cmf_wp2_ui::{logo, C, Surface};
 
 cmf_wp2_app::entry!(main);
 
@@ -298,85 +298,6 @@ fn avatar(name: &str) -> Rgb {
     AVATARS[(h % 8) as usize]
 }
 
-/// The app's icon, small, for the top (its own icon's pixels, read before the emoji take that memory).
-const LOGO: i32 = 36;
-static mut LOGO_PX: [u16; (LOGO * LOGO) as usize] = [0; (LOGO * LOGO) as usize];
-static mut LOGO_OK: bool = false;
-
-/// The icon file (16 B descriptor, 96 × 96 RGB565 LE + A8) → LOGO × LOGO on black, each pixel the mean of its area.
-fn grab_logo(icon: &[u8]) {
-    let px = icon.get(16..).unwrap_or(&[]);
-    if px.len() < 96 * 96 * 3 {
-        return;
-    }
-    let out = unsafe { &mut *core::ptr::addr_of_mut!(LOGO_PX) };
-    let span = |k: i32| (k * 96 / LOGO, ((k + 1) * 96 / LOGO).max(k * 96 / LOGO + 1));
-    for y in 0..LOGO {
-        let (y0, y1) = span(y);
-        for x in 0..LOGO {
-            let (x0, x1) = span(x);
-            let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
-            for sy in y0..y1 {
-                for sx in x0..x1 {
-                    let i = ((sy * 96 + sx) * 3) as usize;
-                    let c = u32::from(u16::from_le_bytes([px[i], px[i + 1]]));
-                    let a = u32::from(px[i + 2]);
-                    r += (c >> 11 & 31) * a;
-                    g += (c >> 5 & 63) * a;
-                    b += (c & 31) * a;
-                    n += 255;
-                }
-            }
-            out[(y * LOGO + x) as usize] = ((r / n) << 11 | (g / n) << 5 | b / n) as u16;
-        }
-    }
-    unsafe { *core::ptr::addr_of_mut!(LOGO_OK) = true };
-}
-
-#[cfg(target_os = "none")]
-fn load_logo() {
-    let icon = unsafe { &*core::ptr::addr_of!(WP2_ICON) };
-    grab_logo(icon);
-}
-
-/// The simulator: the icon as built for the watch (scripts/build-app), if it is there.
-#[cfg(not(target_os = "none"))]
-fn load_logo() {
-    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/icons/", env!("CARGO_PKG_NAME"), ".wp2icon");
-    if let Ok(b) = std::fs::read(p) {
-        grab_logo(&b);
-    }
-}
-
-/// The icon at (x, y), or a disc of the accent without one.
-fn draw_logo(s: &mut impl Surface, x: i32, y: i32) {
-    if !unsafe { *core::ptr::addr_of!(LOGO_OK) } {
-        return disc(s, x + LOGO / 2, y + LOGO / 2, LOGO / 2, ACCENT, BLACK);
-    }
-    let px = unsafe { &*core::ptr::addr_of!(LOGO_PX) };
-    for row in 0..LOGO {
-        // runs of one colour as one rect
-        let line = &px[(row * LOGO) as usize..((row + 1) * LOGO) as usize];
-        let mut k = 0;
-        while k < LOGO as usize {
-            let mut e = k + 1;
-            while e < LOGO as usize && line[e] == line[k] {
-                e += 1;
-            }
-            Surface::rect(s, x + k as i32, y + row, (e - k) as i32, 1, line[k]);
-            k = e;
-        }
-    }
-}
-
-/// The icon and the app's name, centred, at the top of the list.
-fn app_title(s: &mut impl Surface, y: i32) {
-    let w = LOGO + 10 + font::width(crate::NAME);
-    let x = C - w / 2;
-    draw_logo(s, x, y);
-    font::draw(s, x + LOGO + 10, y + (LOGO - font::HEIGHT) / 2, crate::NAME, W);
-}
-
 /// The open chat's picture as a disc of radius 24 at (cx, cy): the phone's 12 × 12, 4 px a pixel; until it
 /// comes, the contact's colour with its initial.
 fn dp(s: &mut impl Surface, m: &Model, name: &str, cx: i32, cy: i32) {
@@ -602,7 +523,7 @@ const FRAME_MS: u32 = 80;
 fn main(api: &'static Api) -> i32 {
     api.own_back(true);
     // before the emoji take the icon's memory
-    load_logo();
+    logo::load(app_icon_bytes());
     emoji::init(api);
     let mut ui = Ui {
         api,
@@ -859,13 +780,6 @@ fn rule(s: &mut impl Surface, y: i32) {
     }
 }
 
-/// A heading in dots with the red dot after it.
-fn heading(s: &mut impl Surface, y: i32, text: &str, pitch: i32) {
-    let w = text.chars().count() as i32 * 8 * pitch;
-    dots(s, C - w / 2, y, text, pitch, pitch - 1, W);
-    disc(s, C + w / 2 + 8, y + 7 * pitch - 3, 4, ACCENT, BLACK);
-}
-
 impl Ui {
     /// The phone's list again (`R`: it answers with the chats as they are now).
     fn ask_list(&mut self) {
@@ -927,7 +841,7 @@ impl Ui {
         let mut s = Dot(self.api);
         // the heading over whatever scrolled under it, and the scroll dots on the right rim
         Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
-        app_title(&mut s, 30);
+        logo::title(&mut s, 30, crate::NAME, ACCENT);
         self.unread_line(&mut s);
         self.scroll_dots(self.list_scroll, self.list_max());
     }
@@ -1051,7 +965,7 @@ impl Ui {
         let x0 = C - (48 + 12 + tw) / 2;
         let (cx, cy) = (x0 + 24, 54);
         if crate::ASSISTANT {
-            draw_logo(&mut s, cx - LOGO / 2, cy - LOGO / 2);
+            logo::draw(&mut s, cx - logo::SIDE / 2, cy - logo::SIDE / 2, ACCENT);
         } else {
             dp(&mut s, m, name, cx, cy);
             if m.online {
@@ -1185,7 +1099,7 @@ impl Ui {
             centre(&mut s, C, y + 19, t, W);
         }
         Surface::rect(&mut s, 0, 0, 466, 90, 0);
-        heading(&mut s, 34, crate::QUICK_TITLE, 4);
+        logo::title(&mut s, 30, crate::QUICK_TITLE, ACCENT);
     }
 
     fn quick_max(&self) -> i32 {

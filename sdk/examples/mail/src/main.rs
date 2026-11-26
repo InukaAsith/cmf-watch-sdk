@@ -14,7 +14,13 @@ pub const TITLE: &str = "MAIL";
 pub const EMPTY: &str = "Loading";
 /// Notes: a page (title, plain text, checklists), not chat bubbles; the phone echoes what is typed.
 pub const PLAIN: bool = false;
-pub const QUICK_TITLE: &str = "REPLY";
+pub const QUICK_TITLE: &str = "Reply";
+/// The name at the top, beside the app's icon.
+pub const NAME: &str = "Mail";
+/// The app's colours: its accent (buttons, badges, the heading's dot), our bubbles, theirs.
+pub const ACCENT: u32 = 0xE8453C;
+pub const MINE: u32 = 0x5A1D1A;
+pub const THEIRS: u32 = 0x1E1E22;
 
 #[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}

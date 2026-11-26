@@ -13,7 +13,6 @@ use cmf_wp2_ui::draw::{arc, disc, rrect};
 use cmf_wp2_ui::font::{self, fitted};
 use cmf_wp2_ui::geom::chord;
 use cmf_wp2_ui::haptic::{self, Motor};
-use cmf_wp2_ui::text::dots_centre;
 use cmf_wp2_ui::{C, Surface};
 
 cmf_wp2_app::entry!(main);
@@ -282,8 +281,7 @@ impl Ui {
     fn draw_head(&self) {
         let mut s = self.api;
         Surface::rect(&mut s, 0, 0, 466, HEAD, 0);
-        dots_centre(&mut s, C - 8, 34, "PHOTOS", 3, 2, W);
-        disc(&mut s, C + 66, 34 + 18, 4, RED, BLACK);
+        cmf_wp2_ui::logo::title(&mut s, 24, "Photos", RED);
         // the view switch: the open one in white
         let (gw, lw) = (font::width("Grid"), font::width("List"));
         let x = C - (gw + 24 + lw) / 2;
@@ -822,6 +820,7 @@ impl Ui {
 }
 
 fn main(api: &'static Api) -> i32 {
+    cmf_wp2_ui::logo::load(app_icon_bytes());
     let mut saved = [1u8; 1];
     let grid = api.load(&mut saved) != 1 || saved[0] != 0;
     let mut ui = Ui {

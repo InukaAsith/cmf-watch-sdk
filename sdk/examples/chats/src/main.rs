@@ -13,7 +13,7 @@ pub const TITLE: &str = "WHATSAPP";
 pub const EMPTY: &str = "Loading";
 /// Notes: a page (title, plain text, checklists), not chat bubbles; the phone echoes what is typed.
 pub const PLAIN: bool = false;
-pub const QUICK_TITLE: &str = "REPLY";
+pub const QUICK_TITLE: &str = "Reply";
 /// The name at the top, beside the app's icon.
 pub const NAME: &str = "WhatsApp";
 /// The app's colours: its accent (buttons, badges, the heading's dot), our bubbles, theirs.

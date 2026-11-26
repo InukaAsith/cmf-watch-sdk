@@ -29,7 +29,6 @@ use cmf_wp2_ui::dial::Act;
 use cmf_wp2_ui::draw::{arc, disc, rrect};
 use cmf_wp2_ui::font;
 use cmf_wp2_ui::haptic::{self, Motor};
-use cmf_wp2_ui::text::dots_centre;
 use cmf_wp2_ui::{C, Surface};
 
 cmf_wp2_app::entry!(main);
@@ -164,6 +163,8 @@ struct Ui {
 }
 
 fn main(api: &'static Api) -> i32 {
+    // before the page store takes the icon's memory
+    cmf_wp2_ui::logo::load(app_icon_bytes());
     api.own_back(true);
     api.keep_screen_on(true);
     let mut ui = Ui {
@@ -571,8 +572,7 @@ impl Ui {
 
     fn draw_start(&self) {
         let mut s = self.api;
-        dots_centre(&mut s, C - 8, 34, "WEB", 3, 2, W);
-        disc(&mut s, C + 34, 52, 4, RED, BLACK);
+        cmf_wp2_ui::logo::title(&mut s, 34, "Browser", RED);
         let (y, h, w) = WHERE;
         rrect(&mut s, C - w / 2, y, w, h, h / 2, CARD, BLACK);
         centre_fit(&mut s, C, y + h / 2 - 12, "Search or address", w - 30, W);

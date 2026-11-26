@@ -12,7 +12,6 @@ use cmf_wp2_ui::draw::{arc, disc, ring, rrect};
 use cmf_wp2_ui::font::{self, centre, clip, fitted};
 use cmf_wp2_ui::geom::chord;
 use cmf_wp2_ui::haptic::{self, Motor};
-use cmf_wp2_ui::text::dots;
 use cmf_wp2_ui::{C, Surface};
 
 cmf_wp2_app::entry!(main);
@@ -432,13 +431,13 @@ impl Ui {
         }
         Surface::rect(&mut self.s, 0, 0, 466, 92, 0);
         let title = match l.kind {
-            b'P' => "LIBRARY",
-            b'T' => "TRACKS",
-            b'S' => "RESULTS",
-            b'D' => "DEVICES",
-            _ => "ADD TO",
+            b'P' => "Library",
+            b'T' => "Tracks",
+            b'S' => "Results",
+            b'D' => "Devices",
+            _ => "Add to",
         };
-        heading(&mut self.s, 36, title);
+        cmf_wp2_ui::logo::title(&mut self.s, 34, title, RED);
     }
 
     fn list_max(&self) -> i32 {
@@ -888,13 +887,6 @@ fn triangle(s: &mut impl Surface, cx: i32, cy: i32, r: i32, dir: i32, c: u16) {
     }
 }
 
-fn heading(s: &mut impl Surface, y: i32, text: &str) {
-    let pitch = 3;
-    let w = text.chars().count() as i32 * 8 * pitch;
-    dots(s, C - w / 2, y, text, pitch, pitch - 1, W);
-    disc(s, C + w / 2 + 8, y + 7 * pitch - 3, 4, RED, BLACK);
-}
-
 /// One keyboard row: up to 10 keys `(key, width)`, centred.
 fn row(r: usize, sym: bool) -> ([(K, i32); 10], usize) {
     let mut keys = [(K::Space, 0); 10];
@@ -941,6 +933,7 @@ const _: () = assert!(MAX_ROWS <= 255);
 
 fn main(api: &'static Api) -> i32 {
     api.own_back(true);
+    cmf_wp2_ui::logo::load(app_icon_bytes());
     let mut ui = Ui {
         api,
         s: Ink(api),
