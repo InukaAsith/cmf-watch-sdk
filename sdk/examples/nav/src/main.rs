@@ -1,5 +1,8 @@
 #![cfg_attr(any(target_os = "none", wp2_sim), no_main, cfg_attr(target_os = "none", no_std))]
 
+/// The scene buffer (scene.rs).
+pub const SCENE_CAP: usize = 30 * 1024;
+
 #[allow(dead_code)]
 mod state;
 
