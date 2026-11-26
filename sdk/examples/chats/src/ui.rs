@@ -1114,7 +1114,6 @@ impl Ui {
             // a note's title, as written
             let (t, _) = clip(name, 240);
             centre(&mut s, C, 36, t, W);
-            rule(&mut s, 70);
             Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
             return self.chat_buttons(&mut s);
         }
@@ -1146,7 +1145,6 @@ impl Ui {
             font::draw(&mut s, tx, cy - font::HEIGHT - 1, nm, W);
             font::draw(&mut s, tx, cy + 2, sb, sub_c);
         }
-        rule(&mut s, 84);
         Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
         self.chat_buttons(&mut s);
     }
