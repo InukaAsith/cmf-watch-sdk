@@ -280,6 +280,7 @@ pub fn file(cmd: wp2_core::lvcmd::FileCmd, batch: (*mut u8, usize)) -> i32 {
     let Some(slot) = slot() else { return E_RANGE };
     let name = match cmd {
         FileCmd::Read { name, .. } | FileCmd::Write { name, .. } | FileCmd::Delete { name } => name,
+        FileCmd::Emoji { .. } => b"emoji",
     };
     // "/NAND:/wp2apps/" + slot hex + "_" + name + NUL
     let mut path = [0u8; 48];
@@ -291,12 +292,18 @@ pub fn file(cmd: wp2_core::lvcmd::FileCmd, batch: (*mut u8, usize)) -> i32 {
     path[n + 2] = b'_';
     n += 3;
     path[n..n + name.len()].copy_from_slice(name);
+    if matches!(cmd, FileCmd::Emoji { .. }) {
+        // the stock's own emoji, read in place: nothing is copied or written
+        const EMOJI: &[u8] = b"/NAND:C/emoji28.font";
+        path = [0; 48];
+        path[..EMOJI.len()].copy_from_slice(EMOJI);
+    }
     let mut f: fs::File = [0; 0x2C];
-    if !matches!(cmd, FileCmd::Read { .. }) {
+    if !matches!(cmd, FileCmd::Read { .. } | FileCmd::Emoji { .. }) {
         file_close();
     }
     match cmd {
-        FileCmd::Read { skip, .. } => {
+        FileCmd::Read { skip, .. } | FileCmd::Emoji { skip } => {
             // the batch buffer itself takes the bytes (lv::submit checked it lies in the app block)
             let out = unsafe { core::slice::from_raw_parts_mut(batch.0, batch.1) };
             let rd = unsafe { &mut *core::ptr::addr_of_mut!(READER) };

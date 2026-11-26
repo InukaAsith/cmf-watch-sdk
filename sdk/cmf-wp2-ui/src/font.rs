@@ -4,7 +4,45 @@
 
 use crate::Surface;
 use crate::inter::{ADV, CODES, OFF, RECTS};
+use core::sync::atomic::{AtomicUsize, Ordering};
 pub use crate::inter::HEIGHT;
+
+/// Emoji take this much room in a line; an app draws them (`set_emoji`, e.g. the watch's own emoji), else a box.
+pub const EMOJI_W: i32 = 24;
+/// Draws emoji `cp` with its top-left at (x, y) through `rect`; false: not one it has (a box is drawn).
+pub type EmojiFn = fn(cp: u32, x: i32, y: i32, rect: &mut dyn FnMut(i32, i32, i32, i32, u16)) -> bool;
+static EMOJI: AtomicUsize = AtomicUsize::new(0);
+
+/// Who draws emoji (once, at the start).
+pub fn set_emoji(f: EmojiFn) {
+    EMOJI.store(f as usize, Ordering::Relaxed);
+}
+
+/// Pictographs and symbols drawn as emoji.
+pub fn is_emoji(c: u32) -> bool {
+    (0x1F000..0x1FB00).contains(&c) || (0x2600..0x27C0).contains(&c) || matches!(c, 0x2B50 | 0x2B55 | 0x2B1B | 0x2B1C | 0x203C | 0x2049)
+}
+
+/// Parts of an emoji that take no room: variation selectors, joiners, skin tones, tags.
+fn invisible(c: u32) -> bool {
+    matches!(c, 0xFE0E | 0xFE0F | 0x200D | 0x20E3) || (0x1F3FB..=0x1F3FF).contains(&c) || (0xE0020..=0xE007F).contains(&c)
+}
+
+fn draw_emoji(sf: &mut impl Surface, cp: u32, x: i32, y: i32, c: u16) {
+    let f = EMOJI.load(Ordering::Relaxed);
+    if f != 0 {
+        // a fn pointer stored by set_emoji
+        let f: EmojiFn = unsafe { core::mem::transmute::<usize, EmojiFn>(f) };
+        let mut rect = |x: i32, y: i32, w: i32, h: i32, c: u16| sf.rect(x, y, w, h, c);
+        if f(cp, x + 1, y - 1, &mut rect) {
+            return;
+        }
+    }
+    // a box, as a missing emoji shows
+    for (bx, by, bw, bh) in [(3, 0, 18, 2), (3, 18, 18, 2), (3, 0, 2, 20), (19, 0, 2, 20)] {
+        sf.rect(x + bx, y + by, bw, bh, c);
+    }
+}
 
 fn glyph(ch: char) -> usize {
     let c = ch as u32;
@@ -20,7 +58,14 @@ fn glyph(ch: char) -> usize {
 
 /// Advance of one char in px.
 pub fn advance(ch: char) -> i32 {
-    i32::from(ADV[glyph(ch)])
+    let c = ch as u32;
+    if invisible(c) {
+        0
+    } else if is_emoji(c) {
+        EMOJI_W
+    } else {
+        i32::from(ADV[glyph(ch)])
+    }
 }
 
 pub fn width(s: &str) -> i32 {
@@ -31,6 +76,15 @@ pub fn width(s: &str) -> i32 {
 pub fn draw(sf: &mut impl Surface, x: i32, y: i32, s: &str, c: u16) -> i32 {
     let mut x = x;
     for ch in s.chars() {
+        let cp = ch as u32;
+        if invisible(cp) {
+            continue;
+        }
+        if is_emoji(cp) {
+            draw_emoji(sf, cp, x, y, c);
+            x += EMOJI_W;
+            continue;
+        }
         let g = glyph(ch);
         for r in RECTS[usize::from(OFF[g]) * 4..usize::from(OFF[g + 1]) * 4].chunks_exact(4) {
             sf.rect(x + i32::from(r[0]), y + i32::from(r[1] as i8), i32::from(r[2]), i32::from(r[3]), c);
@@ -132,8 +186,10 @@ mod tests {
     fn proportional() {
         assert!(width("i") < width("m"));
         assert_eq!(width("ab"), advance('a') + advance('b'));
-        // unknown chars draw as '?'
-        assert_eq!(advance('\u{1F600}'), advance('?'));
+        // unknown chars draw as '?'; emoji take an emoji's room (drawn by the app, else a box), their joiners none
+        assert_eq!(advance('\u{0D85}'), advance('?'));
+        assert_eq!(advance('\u{1F600}'), EMOJI_W);
+        assert_eq!(width("\u{1F44D}\u{1F3FD}\u{FE0F}"), EMOJI_W);
     }
 
     #[test]

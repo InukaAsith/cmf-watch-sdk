@@ -935,6 +935,19 @@ extern "C" fn lv_submit(buf: *const u8, len: usize) -> i32 {
         FileCmd::Delete { name: n } => {
             if fs::remove_file(name(n)).is_ok() { 0 } else { -2 }
         }
+        // the watch's own emoji font, if one was put at runs/sim/emoji28.font (a vendor file: never committed)
+        FileCmd::Emoji { skip } => {
+            let root = std::env::var("WP2_SIM_ROOT").unwrap_or_default();
+            match fs::read(std::path::Path::new(&root).join("runs/sim/emoji28.font")) {
+                Ok(d) => {
+                    let from = (skip as usize).min(d.len());
+                    let k = (d.len() - from).min(rec.len());
+                    rec[..k].copy_from_slice(&d[from..from + k]);
+                    k as i32
+                }
+                Err(_) => -2,
+            }
+        }
     }
 }
 
