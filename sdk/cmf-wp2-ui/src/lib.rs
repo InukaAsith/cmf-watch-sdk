@@ -4,11 +4,15 @@
 
 pub mod ask;
 pub mod color;
+pub mod dial;
+pub mod dictate;
 pub mod draw;
+pub mod emoji;
 pub mod font;
 mod inter;
 pub mod geom;
 pub mod haptic;
+pub mod keyboard;
 pub mod logo;
 pub mod motion;
 pub mod text;
