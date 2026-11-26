@@ -102,7 +102,7 @@ class Mail:
 
 class Notes:
     QUICK = ["• Delete note", "• Clear done", "Buy ", "Call ", "Remember to "]
-    NEW = 1
+    NEW, NEW_LIST, REMIND = 1, 90, 91
 
     def __init__(self):
         self.items = {
@@ -115,7 +115,9 @@ class Notes:
 
     def rows(self):
         # new note, notes newest first, then reminder lists
-        out = [(self.NEW, "New note", NEW_ROW, "Write one on the watch")]
+        # the watch's buttons: +, a to-do list, a reminder
+        out = [(self.NEW, "New note", NEW_ROW, ""), (self.NEW_LIST, "New to-do list", NEW_ROW, ""),
+               (self.REMIND, "Reminder", NEW_ROW, "")]
         for i, it in reversed(self.items.items()):
             if it["kind"] == "note":
                 out.append((i, it["name"], 0, it["lines"][0][1] if it["lines"] else "No text yet"))
@@ -125,11 +127,15 @@ class Notes:
         return out
 
     def title(self, i):
-        return "New note" if i == self.NEW else self.items[i]["name"]
+        return {self.NEW: "New note", self.NEW_LIST: "New to-do list", self.REMIND: "Reminder"}.get(i) or self.items[i]["name"]
 
     def lines(self, i):
         if i == self.NEW:
             return []
+        if i == self.NEW_LIST:
+            return [(0, 0, "Type its name, then the to-dos")]
+        if i == self.REMIND:
+            return [(0, 0, 'What, and when: "Call mum at 5pm"')]
         it = self.items[i]
         return [(0, k, c) for k, t in it["lines"] for c in (chunks(t) if k == 0 else [t])]
 
@@ -137,6 +143,12 @@ class Notes:
         pass
 
     def send(self, i, text):
+        if i == self.REMIND:
+            return [(0, 3, text)], False
+        if i == self.NEW_LIST:
+            self.items[self.next] = dict(kind="list", name=text[:40], lines=[])
+            self.next += 1
+            return "reopen", True
         if i == self.NEW:
             # the first line written is the title; what follows is the body
             self.items[self.next] = dict(kind="note", name=text[:40], lines=[])
