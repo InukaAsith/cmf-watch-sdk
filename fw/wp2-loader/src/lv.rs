@@ -222,6 +222,8 @@ fn make_root() {
     }
     st().objs[0] = root;
     st().events[0] = KNOB_CB;
+    // the status bar on the root now: the image hides
+    crate::status::attach(root);
     // the image hides, the root takes the knob
     ui::show(true);
 }
@@ -619,6 +621,8 @@ pub fn teardown() {
     s.focus = 0; // before the delete, as in DEL
     crate::music::close();
     if !s.objs[0].is_null() {
+        // the status bar back on the image first, then the root with all of the app's objects
+        crate::status::attach(ui::image());
         // children first, scroll bars after their targets (created later)
         stock!(LV_OBJ_DEL, fn(Obj))(s.objs[0]);
     }

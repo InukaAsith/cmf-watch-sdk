@@ -217,6 +217,16 @@ pub extern "C" fn load(buf: *mut u8, cap: usize) -> i32 {
     if bad { E_IO } else { 0 }
 }
 
+/// The wall clock's hour and minute, None till the phone set it (the status bar).
+pub fn clock() -> Option<(u8, u8)> {
+    if unsafe { ((RTC_APP + 4) as *const u32).read_volatile() } == 0 {
+        return None;
+    }
+    let mut raw = [0u8; 16];
+    stock!(RTC_GET_TIME, fn(*mut u8))(raw.as_mut_ptr());
+    Some((raw[2], raw[1]))
+}
+
 pub extern "C" fn time(out: *mut Time) -> i32 {
     if out.is_null() || unsafe { ((RTC_APP + 4) as *const u32).read_volatile() } == 0 {
         return E_IO;

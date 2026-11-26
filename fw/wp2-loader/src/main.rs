@@ -32,6 +32,8 @@ mod storage;
 mod svc;
 #[cfg(target_os = "none")]
 mod ui;
+#[cfg(target_os = "none")]
+mod status;
 
 #[cfg(target_os = "none")]
 mod view {
@@ -352,6 +354,7 @@ mod view {
         svc::tick(app::running(), app::paused());
         crate::hr::tick(app::running(), app::paused());
         crate::gps::tick(app::running(), app::paused());
+        crate::status::tick();
         crate::media::tick(app::running(), app::paused());
         crate::audio::tick(app::running(), app::paused());
         crate::mic::tick(app::running(), app::paused());
