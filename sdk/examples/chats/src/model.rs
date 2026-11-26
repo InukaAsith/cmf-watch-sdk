@@ -548,6 +548,9 @@ mod tests {
 
     #[test]
     fn faces() {
+        if FACES == 0 {
+            return; // Assistant, Mail and Notes keep no list pictures
+        }
         let mut m = model();
         m.apply(&[b'C', 0, 9, 0, 1, b'A', 0]);
         assert!(m.face(9).is_none());
