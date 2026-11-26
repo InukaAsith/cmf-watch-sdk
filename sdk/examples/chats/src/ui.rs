@@ -511,6 +511,8 @@ struct Ui {
     down_at: u32,
     /// WhatsApp: the message held (its menu: reactions, Reply), and the one the typing replies to
     menu: Option<u8>,
+    /// the menu's second page: Delete for me / for everyone
+    del: bool,
     reply: Option<u8>,
     /// Gemini: a question sent, no answer yet: when, and whether it was sent again
     pending: Option<(u32, u8)>,
@@ -580,6 +582,7 @@ fn main(api: &'static Api) -> i32 {
         down: None,
         down_at: 0,
         menu: None,
+        del: false,
         reply: None,
         pending: None,
         thinking: false,
@@ -745,7 +748,10 @@ fn main(api: &'static Api) -> i32 {
                         }
                         return 0;
                     }
-                    Screen::Chat if ui.menu.take().is_some() => ui.draw(),
+                    Screen::Chat if ui.menu.take().is_some() => {
+                        ui.del = false;
+                        ui.draw()
+                    }
                     Screen::Chat => ui.go(Screen::List),
                     Screen::Quick | Screen::Qwerty | Screen::Dial => ui.go(Screen::Chat),
                     Screen::Emoji => ui.go(Screen::Qwerty),
@@ -909,6 +915,7 @@ impl Ui {
             let _ = self.api.send(&[b'y', 255]);
         }
         self.menu = None;
+        self.del = false;
         if RELIST && to == Screen::List && self.screen != Screen::List {
             self.ask_list();
         }
@@ -1799,6 +1806,16 @@ impl Ui {
     fn draw_menu(&mut self, i: u8) {
         let mut s = Dot(self.api);
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
+        if self.del {
+            centre(&mut s, C, 120, "Delete", SOFT);
+            let mine = model().msgs[usize::from(i)].me;
+            for (k, t) in ["Delete for me", "Delete for everyone"].iter().take(1 + usize::from(mine)).enumerate() {
+                let y = 190 + k as i32 * 80;
+                rrect(&mut s, C - 150, y, 300, 60, 30, if k == 1 { RED } else { KEYC }, BLACK);
+                centre(&mut s, C, y + 18, t, W);
+            }
+            return;
+        }
         centre(&mut s, C, 100, "React", SOFT);
         let on = model().msgs[usize::from(i)].react;
         for (k, &cp) in REACTS.iter().enumerate() {
@@ -1808,15 +1825,40 @@ impl Ui {
                 Surface::rect(&mut s, x, y, w, h, c)
             });
         }
-        rrect(&mut s, C - 80, 330, 160, 52, 26, KEYC, BLACK);
-        centre(&mut s, C, 344, "Reply", W);
+        for (x, t) in [(C - 145, "Reply"), (C + 5, "Delete")] {
+            rrect(&mut s, x, 330, 140, 52, 26, KEYC, BLACK);
+            centre(&mut s, x + 70, 344, t, W);
+        }
     }
 
     fn menu_tap(&mut self, x: i32, y: i32) {
         let Some(i) = self.menu.take() else { return };
+        if core::mem::take(&mut self.del) {
+            // `d idx 0` for me, `d idx 1` for everyone: hidden here at once (its slot kept, as the phone's index)
+            let k = (y - 180).div_euclid(80);
+            let msg = &mut model().msgs[usize::from(i)];
+            if (x - C).abs() < 160 && (k == 0 || (k == 1 && msg.me)) {
+                let _ = self.api.send(&[b'd', i, k as u8]);
+                if k == 0 {
+                    msg.kind = crate::model::NOT_YET;
+                } else {
+                    msg.text.set(b"This message was deleted");
+                    msg.kind = 0;
+                    msg.img = None;
+                    msg.react = 0;
+                }
+                self.motor.play(haptic::DONE);
+            }
+            return self.draw();
+        }
         let (k, r) = ((x - C + 120).div_euclid(80), (y - 155).div_euclid(70));
-        if (316..396).contains(&y) && (x - C).abs() < 90 {
-            return self.reply_to(i);
+        if (316..396).contains(&y) && (x - C).abs() < 150 {
+            if x < C {
+                return self.reply_to(i);
+            }
+            self.menu = Some(i);
+            self.del = true;
+            return self.draw();
         }
         if (0..3).contains(&k) && (0..2).contains(&r) {
             // its reaction; the same one again takes it back

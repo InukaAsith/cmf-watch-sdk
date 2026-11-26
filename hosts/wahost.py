@@ -260,6 +260,17 @@ async def main():
                     REACTS.pop((opened, k), None)
                 await ch.send(b"X" + bytes([m[1]]) + m[2:])
                 continue
+            if m[:1] == b"d" and len(m) == 3 and opened in CHATS:
+                # delete: for me (gone from the chat) or for everyone (it says so); the watch already shows it
+                msgs = CHATS[opened][1]
+                k = len(msgs) - min(len(msgs), MAX_MSGS) + m[1]
+                if k < len(msgs):
+                    if m[2]:
+                        msgs[k] = (msgs[k][0], 0, "This message was deleted")
+                    else:
+                        del msgs[k]
+                print("delete", "for everyone" if m[2] else "for me", k, flush=True)
+                continue
             if m[:1] == b"y" and len(m) == 2:
                 REPLY[0] = None if m[1] == 255 else m[1]
                 continue

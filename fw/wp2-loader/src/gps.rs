@@ -90,13 +90,16 @@ pub fn due() -> Option<Event> {
     Some(gps::event(&read()))
 }
 
-/// UI thread: the status bar's bars while the app holds the GPS (0 looking, 1-3), None when it doesn't.
+/// UI thread: the status bar's bars while the app holds the GPS (0 looking, 1-3), None when it doesn't. Only the two
+/// cells it needs (fix quality +0x4C, satellites in use +0x50), read as they are: not `read()`, whose float
+/// conversions (u128 arithmetic, soft float) are too much for the stock UI task's stack. Opening Offline Maps (the
+/// GPS on from its start) restarted the watch with loader 8.
 pub fn level() -> Option<u8> {
     if !ON.load(Ordering::Acquire) {
         return None;
     }
-    let f = read();
-    Some(crate::status::bars(f[16], f[17]))
+    let cell = |o: usize| unsafe { ((GPS_INFO as usize + o) as *const u32).read_volatile() }.min(255) as u8;
+    Some(crate::status::bars(cell(0x4C), cell(0x50)))
 }
 
 // UI thread, app thread aborted

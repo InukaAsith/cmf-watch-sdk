@@ -31,7 +31,8 @@ pub const MAX_QUICK: usize = 6;
 pub const STATUS_ROW: u8 = 255;
 /// `C`'s unread for the new-chat row (the + button)
 pub const NEW_ROW: u8 = 254;
-pub const POOL: usize = 24 * 1024;
+/// (only WhatsApp gets pictures: the other apps keep a token pool)
+pub const POOL: usize = if crate::VOICE { 23 * 1024 } else { 256 };
 
 #[derive(Clone, Copy)]
 pub struct Str<const N: usize> {
