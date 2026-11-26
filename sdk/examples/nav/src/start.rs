@@ -10,10 +10,10 @@ use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use cmf_wp2_app::Api;
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
-use cmf_wp2_ui::draw::{disc, rrect};
+use cmf_wp2_ui::draw::rrect;
 use cmf_wp2_ui::font;
 use cmf_wp2_ui::geom::chord;
-use cmf_wp2_ui::text::{dots_centre, fit};
+use cmf_wp2_ui::text::fit;
 use cmf_wp2_ui::{C, Surface};
 
 const PLACES: usize = 8;
@@ -219,8 +219,7 @@ impl Start {
     }
 
     fn draw_start(&self, s: &mut &'static Api) {
-        dots_centre(s, C - 8, 34, "NAV", 3, 2, W);
-        disc(s, C + 34, 52, 4, crate::ACCENT, BLACK);
+        cmf_wp2_ui::logo::title(s, 34, "Navigation", crate::ACCENT);
         let (y, h, w) = WHERE;
         self.pill(s, C, y, h, w, "Where to?", false, 1);
         self.pill(s, C - 66, MODE_Y, MODE_H, 120, "Walk", self.walking, 2);

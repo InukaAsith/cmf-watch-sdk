@@ -662,13 +662,26 @@ macro_rules! app_icon {
         #[used]
         #[unsafe(link_section = ".wp2info")]
         pub(crate) static mut WP2_ICON: [u8; include_bytes!(env!("WP2_ICON")).len()] = *include_bytes!(env!("WP2_ICON"));
+
+        /// The icon file (cmf_wp2_ui::logo reads it): read it before using its memory as RAM.
+        #[allow(dead_code)]
+        pub(crate) fn app_icon_bytes() -> &'static [u8] {
+            unsafe { &*core::ptr::addr_of!(WP2_ICON) }
+        }
     };
 }
 
 #[cfg(wp2_sim)]
 #[macro_export]
 macro_rules! app_icon {
-    () => {};
+    () => {
+        /// The simulator: the icon as `scripts/build-app` built it for the watch, if it is there.
+        #[allow(dead_code)]
+        pub(crate) fn app_icon_bytes() -> &'static [u8] {
+            let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/icons/", env!("CARGO_PKG_NAME"), ".wp2icon");
+            std::fs::read(p).map(|v| &*std::boxed::Box::leak(v.into_boxed_slice())).unwrap_or(&[])
+        }
+    };
 }
 
 /// `app_features!` flag: the app has a widget for the cards left of the watch face (`Api::widget`); the Apps menu

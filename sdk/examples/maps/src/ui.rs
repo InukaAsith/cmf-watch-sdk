@@ -22,7 +22,7 @@ use cmf_wp2_ui::draw::{disc, line, ring, rrect};
 use cmf_wp2_ui::font;
 use cmf_wp2_ui::haptic::{self, Motor};
 use cmf_wp2_ui::motion::{cos, sin};
-use cmf_wp2_ui::text::{dots_centre, int};
+use cmf_wp2_ui::text::int;
 use cmf_wp2_ui::{Surface, C};
 
 #[path = "find.rs"]
@@ -852,7 +852,8 @@ impl Ui {
     fn draw_loading(&self, done: u16, total: u16) {
         let mut s = self.s;
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
-        dots_centre(&mut s, C - 8, 150, "MAPS", 4, 3, W);
+        // (the icon's memory holds the map here: the name alone)
+        font::centre(&mut s, C, 160, "Offline Maps", W);
         disc(&mut s, C + 66, 174, 5, RED, BLACK);
         font::centre(&mut s, C, 222, "Saving map", W);
         let total = i32::from(total.max(1));
