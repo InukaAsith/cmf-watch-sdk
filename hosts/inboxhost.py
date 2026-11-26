@@ -37,8 +37,16 @@ def msg(op, *head, text=""):
     return op.encode() + bytes(head) + cut(text, 128 - 1 - len(head))
 
 
+# `C`'s unread for the new-chat row: the watch's + button
+NEW_ROW = 254
+
+
 class Mail:
     QUICK = ["• Archive", "• Mark unread", "Thanks!", "Got it, will reply soon", "Sounds good", "On it"]
+    NEW = 99
+    # whom a new mail can go to: the people written with
+    PEOPLE = {100: ("Priya Perera", "priya@example.com"), 101: ("Sam", "sam@example.com"),
+              102: ("Dilan Silva", "dilan@example.com"), 103: ("Amaya", "amaya@example.com")}
 
     def __init__(self):
         self.threads = {
@@ -50,22 +58,34 @@ class Mail:
         }
 
     def rows(self):
-        return [(i, t["name"], t["unread"], t["subject"]) for i, t in self.threads.items()]
+        return [(self.NEW, "New mail", NEW_ROW, "Write one")] + [
+            (i, t["name"], t["unread"], t["subject"]) for i, t in self.threads.items()]
+
+    def picker(self):
+        return [(i, n, 0, a) for i, (n, a) in self.PEOPLE.items()]
 
     def title(self, i):
-        return self.threads[i]["name"]
+        return "To " + self.PEOPLE[i][0] if i in self.PEOPLE else self.threads[i]["name"]
 
     def lines(self, i):
+        if i in self.PEOPLE:
+            return []
         out = []
         for me, text in self.threads[i]["body"]:
             out += [(me, 0, c) for c in chunks(text)]
         return out
 
     def opened(self, i):
-        self.threads[i]["unread"] = 0
+        if i in self.threads:
+            self.threads[i]["unread"] = 0
 
     def send(self, i, text):
         """→ (messages to append, list changed, chat closed)"""
+        if i in self.PEOPLE:
+            # a new mail: its first words the subject
+            n = max(self.threads) + 1
+            self.threads = {n: dict(name=self.PEOPLE[i][0], subject=text[:30], unread=0, body=[(1, text)]), **self.threads}
+            return [], True
         if text == "• Archive":
             del self.threads[i]
             return [], True
@@ -95,7 +115,7 @@ class Notes:
 
     def rows(self):
         # new note, notes newest first, then reminder lists
-        out = [(self.NEW, "New note", 0, "Write one on the watch")]
+        out = [(self.NEW, "New note", NEW_ROW, "Write one on the watch")]
         for i, it in reversed(self.items.items()):
             if it["kind"] == "note":
                 out.append((i, it["name"], 0, it["lines"][0][1] if it["lines"] else "No text yet"))
@@ -174,6 +194,14 @@ class Inbox:
         box = self.box
         if m == b"R":
             await self.send_list(ch)
+        elif m[:1] == b"o" and len(m) == 2 and hasattr(box, "picker") and m[1] == box.NEW:
+            # + : whom to write to, as a list under its title
+            rows = box.picker()
+            await self.out(ch, b"K" + b"New mail")
+            await self.out(ch, b"L" + bytes([len(rows)]))
+            for idx, (i, name, unread, preview) in enumerate(rows):
+                n, p = cut(name, 24), cut(preview, 40)
+                await self.out(ch, b"C" + bytes([idx, i, unread, len(n)]) + n + bytes([len(p)]) + p)
         elif m[:1] == b"o" and len(m) == 2:
             await self.open_(ch, m[1])
         elif m[:1] == b"s" and len(m) > 2:

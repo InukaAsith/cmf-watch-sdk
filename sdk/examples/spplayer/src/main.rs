@@ -22,4 +22,6 @@ mod brand {
     pub const NAME: &str = "Spotify";
     pub const SPOTIFY: bool = true;
     pub const RECORDER: bool = false;
+    pub const ACCENT: cmf_wp2_ui::color::Rgb = cmf_wp2_ui::color::Rgb(0x1E, 0xD7, 0x60);
+    pub const INK: u16 = 0;
 }

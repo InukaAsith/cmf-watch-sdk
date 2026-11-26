@@ -18,4 +18,6 @@ mod brand {
     pub const NAME: &str = "YouTube Music";
     pub const SPOTIFY: bool = false;
     pub const RECORDER: bool = false;
+    pub const ACCENT: cmf_wp2_ui::color::Rgb = cmf_wp2_ui::color::Rgb(0xFF, 0x1E, 0x2D);
+    pub const INK: u16 = 0xFFFF;
 }
