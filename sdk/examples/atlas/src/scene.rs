@@ -20,7 +20,9 @@
 //! `pts`: the first point `x:i16 y:i16`, then each next one as `dx:i8 dy:i8` from the one before, or, when either
 //! is beyond ±127, `0x80` then `dx:i16 dy:i16`.
 
-pub const CAP: usize = 30 * 1024;
+/// The scene's buffer: each app that draws scenes says how big (Maps 30 KB; Offline Maps' cells are kept under
+/// 16 KB by the phone).
+pub const CAP: usize = crate::SCENE_CAP;
 pub const CHUNK: usize = 124;
 const SEQS: usize = CAP.div_ceil(CHUNK);
 pub const MAX_NAMES: usize = 255;

@@ -23,7 +23,7 @@ const WATER_TEXT: u16 = rgb565(0x51, 0x7A, 0xB8);
 
 /// Pin colours by kind of place (scene.rs POI kinds): other, food, shop, green, transit, health, learning and
 /// worship, stay, culture, money, car; a searched place (red).
-const KINDS: [Rgb; 12] = [
+pub const KINDS: [Rgb; 12] = [
     Rgb(0x8A, 0x96, 0xA8),
     Rgb(0xF2, 0x9E, 0x3D),
     Rgb(0x4B, 0x8B, 0xF5),

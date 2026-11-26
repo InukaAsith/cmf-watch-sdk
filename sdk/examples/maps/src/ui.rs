@@ -2,9 +2,11 @@
 //! time), you on it from the watch's GPS (on while the app is open; the iPhone's, `l`/`L`, while it has no fix), markers, guidance to a marker or along a path
 //! (a route the phone found, or your track back to its start), all without the phone once the map is saved.
 //!
-//! Map: crown zooms, a drag pans, a tap moves there, a tap on a marker opens it, a hold on the map opens that place.
-//! Buttons: ◎ (left) back to you; along the bottom Mark (a marker where you are), Track (record your path / stop),
-//! Back (guide back along the track to its start), List (markers, stop guiding, clear the track, delete the map).
+//! Map: crown zooms, a drag pans, a tap moves there, a tap on a marker or a named place opens its card (Directions:
+//! car, bike or walk, up to three routes to pick; Go straight; a pin), a hold on the map opens that place.
+//! Buttons: ◎ (left) back to you (held: the watch's GPS only, or back to the iPhone's and the watch's); search
+//! (top right, find.rs); along the bottom Mark (a marker where you are), Track (record your path / stop), Back
+//! (guide back along the track to its start), List (markers, stop guiding, clear the track, delete the map).
 
 use crate::geo::{self, dist, follow, p32, Frame, OnPath, ARRIVED, OFF};
 use crate::marks::{self, Marks};
@@ -21,6 +23,10 @@ use cmf_wp2_ui::haptic::{self, Motor};
 use cmf_wp2_ui::motion::{cos, sin};
 use cmf_wp2_ui::text::{dots_centre, int};
 use cmf_wp2_ui::{Surface, C};
+
+#[path = "find.rs"]
+mod find;
+use find::{Hit, HITS, QUERY};
 
 cmf_wp2_app::entry!(main);
 cmf_wp2_app::app_icon!();
@@ -46,8 +52,12 @@ const B_TRACK: (i32, i32, i32) = (184, 417, 27);
 const B_BACK: (i32, i32, i32) = (282, 417, 27);
 const B_LIST: (i32, i32, i32) = (367, 367, 27);
 const B_ME: (i32, i32, i32) = (40, C, 26);
+const B_FIND: (i32, i32, i32) = (367, 99, 27);
+/// ◎ held this long: the watch's GPS only, or back to both.
+const GPS_HOLD_MS: u32 = 800;
 /// Panel boxes the buttons and the banner take: no names drawn under them.
-const KEEP: [(i32, i32, i32, i32); 6] = [
+const KEEP: [(i32, i32, i32, i32); 7] = [
+    (340, 72, 54, 54),
     (72, 340, 54, 54),
     (157, 390, 54, 54),
     (255, 390, 54, 54),
@@ -88,6 +98,10 @@ enum Screen {
     Confirm,
     /// deleting every file
     Cleaning,
+    /// search's keyboard, its places, route planning (find.rs)
+    Keys,
+    Results,
+    Ways,
 }
 
 /// What the banner guides you to.
@@ -153,6 +167,20 @@ struct Ui {
     route_metres: u32,
     /// Confirm asks about cleaning everything, not the map
     confirm_clean: bool,
+    /// the sheet's named place (n 0: none), search's query and places, route planning (find.rs)
+    place: Hit,
+    query: [u8; QUERY],
+    qn: usize,
+    sym: bool,
+    hits: [Hit; HITS],
+    n_hits: usize,
+    /// 0 car, 1 bike, 2 walk; the routes (secs, metres) the phone found
+    mode: u8,
+    ways: [(u32, u32); 3],
+    n_ways: usize,
+    ways_wait: bool,
+    /// ◎ held: the watch's GPS only (the iPhone's isn't asked)
+    watch_only: bool,
     clean: Option<Clean<'static>>,
     /// the phone asked for the clean (it is told how it went)
     clean_for_phone: bool,
@@ -294,6 +322,7 @@ impl Ui {
             }
         }
         let _ = self.api.file_delete("idx");
+        let _ = self.api.file_delete("n");
     }
 
     fn save_marks(&self) {
@@ -318,6 +347,9 @@ impl Ui {
             (Screen::List, _) => self.draw_list(),
             (Screen::Confirm, _) => self.draw_confirm(),
             (Screen::Cleaning, _) => self.draw_cleaning(),
+            (Screen::Keys, _) => self.draw_keys(),
+            (Screen::Results, _) => self.draw_results(),
+            (Screen::Ways, _) => self.draw_ways(),
         }
         self.api.show();
     }
@@ -608,6 +640,11 @@ impl Ui {
         for k in -1..=1 {
             Surface::rect(&mut s, x - 10, y + k * 7 - 1, 20, 3, W);
         }
+        // search: a magnifier
+        self.button(B_FIND, false);
+        let (x, y, _) = B_FIND;
+        ring(&mut s, x - 3, y - 3, 7, 10, WHITE, BTN);
+        line(&mut s, x + 4, y + 4, x + 11, y + 11, 4, WHITE, BTN);
         self.draw_me_button();
     }
 
@@ -621,6 +658,20 @@ impl Ui {
         if self.follow {
             disc(&mut s, x, y, 5, c, BTN);
         }
+    }
+
+    /// ◎ held: the watch's GPS only, or the iPhone's and the watch's again.
+    fn toggle_watch_only(&mut self) {
+        self.watch_only = !self.watch_only;
+        self.motor.play(haptic::DOUBLE);
+        if self.watch_only {
+            self.phone_at = None;
+            self.set_note("Watch GPS only");
+        } else {
+            self.asked_at = self.api.now().wrapping_sub(ASK_MS);
+            self.set_note("iPhone and watch GPS");
+        }
+        self.dirty = true;
     }
 
     fn watch_ok(&self) -> bool {
@@ -671,27 +722,40 @@ impl Ui {
         let (p, i) = self.sheet;
         let title = match i {
             Some(i) => marks().v[i].name(),
+            None if self.place.n > 0 => self.place.name(),
             None => "This place",
         };
-        font::centre(&mut s, C, 92, title, W);
+        font::centre(&mut s, C, 80, title, W);
         let mut b = [0u8; 16];
-        if let Some(me) = self.me {
-            font::centre(&mut s, C, 124, fmt_dist(dist(me, p), &mut b), GREY);
-        } else {
-            font::centre(&mut s, C, 124, "No GPS fix yet", GREY);
+        let mut line = [0u8; 48];
+        let mut n = 0;
+        let kind = if self.place.n > 0 && i.is_none() { find::kind_name(self.place.kind) } else { "" };
+        let d = match self.me {
+            Some(me) => fmt_dist(dist(me, p), &mut b),
+            None => "no GPS fix yet",
+        };
+        for part in [kind, if kind.is_empty() { "" } else { " \u{b7} " }, d] {
+            let k = part.len().min(48 - n);
+            line[n..n + k].copy_from_slice(&part.as_bytes()[..k]);
+            n += k;
         }
+        font::centre(&mut s, C, 114, core::str::from_utf8(&line[..n]).unwrap_or(""), GREY);
         for (k, label) in self.sheet_buttons().iter().enumerate() {
+            if label.is_empty() {
+                continue;
+            }
             let (x, y) = Self::sheet_box(k);
             let red = label.starts_with("Delete");
-            rrect(&mut s, x, y, 150, 62, 31, if red { RED } else { CARD }, BLACK);
+            let fill = if red { RED } else if k == 0 { BLUE } else { CARD };
+            rrect(&mut s, x, y, 150, 62, 31, fill, BLACK);
             font::centre(&mut s, x + 75, y + 20, label, W);
         }
     }
 
     fn sheet_buttons(&self) -> [&'static str; 4] {
         match self.sheet.1 {
-            Some(_) => ["Go there", "Walk route", "Drive route", "Delete"],
-            None => ["Go there", "Walk route", "Drive route", "Add a pin"],
+            Some(_) => ["Directions", "Go straight", "Delete", ""],
+            None => ["Directions", "Go straight", "Add a pin", ""],
         }
     }
 
@@ -907,7 +971,8 @@ impl Ui {
         self.start_guide(Guide::Path { back: true });
     }
 
-    /// A route to `to` from the phone (mode 0 drive, 2 walk); it comes as `G` + `g`.
+    /// Routes to `to` from the phone (mode 0 car, 1 bike, 2 walk): their times (`O`, `o`), then the one picked as
+    /// `G` + `g`.
     fn ask_route(&mut self, mode: u8, to: (i32, i32)) {
         let Some(f) = self.frame else { return };
         let mut m = [0u8; 18];
@@ -977,6 +1042,9 @@ impl Ui {
             } else {
                 self.backtrack();
             }
+        } else if hit(B_FIND, x, y) {
+            self.motor.play(haptic::TICK);
+            self.screen = Screen::Keys;
         } else if hit(B_LIST, x, y) {
             self.motor.play(haptic::TICK);
             self.list_top = 0;
@@ -1015,7 +1083,14 @@ impl Ui {
         if let Some((_, i)) = best {
             self.motor.play(haptic::TICK);
             self.sheet = (self.mark_xy(i).unwrap_or(self.centre), Some(i));
+            self.place = Hit::NONE;
             self.screen = Screen::Sheet;
+            return;
+        }
+        // a named place drawn there: its card
+        if let Some(h) = self.name_at(x, y) {
+            self.motor.play(haptic::TICK);
+            self.open_place(h);
             return;
         }
         // else: the map moves there
@@ -1033,17 +1108,16 @@ impl Ui {
                 let (p, i) = self.sheet;
                 self.screen = Screen::Map;
                 match (k, i) {
-                    (0, _) => self.start_guide(Guide::To(p, i)),
-                    (1, _) => self.ask_route(2, p),
-                    (2, _) => self.ask_route(0, p),
-                    (3, Some(i)) => {
+                    (0, _) => self.ask_ways(),
+                    (1, _) => self.start_guide(Guide::To(p, i)),
+                    (2, Some(i)) => {
                         marks().remove(i);
                         self.save_marks();
                         if matches!(self.guide, Guide::To(_, Some(_))) {
                             self.guide = Guide::None;
                         }
                     }
-                    (3, None) => {
+                    (2, None) => {
                         if let Some(f) = self.frame {
                             let (lat, lon) = f.lat_lon(p);
                             if marks().add(lat, lon) {
@@ -1055,6 +1129,16 @@ impl Ui {
                 }
                 return;
             }
+        }
+    }
+
+    /// The list or the search's places by `by` rows.
+    fn scroll(&mut self, by: i32) {
+        let n = if self.screen == Screen::Results { self.n_hits } else { self.rows().1 };
+        let t = (self.list_top as i32 + by).clamp(0, (n as i32 - ROWS as i32).max(0)) as usize;
+        if t != self.list_top {
+            self.list_top = t;
+            self.dirty = true;
         }
     }
 
@@ -1072,6 +1156,7 @@ impl Ui {
         match rows[k] {
             (0, i) => {
                 self.sheet = (self.mark_xy(i).unwrap_or(self.centre), Some(i));
+                self.place = Hit::NONE;
                 self.screen = Screen::Sheet;
             }
             (1, _) => {
@@ -1108,12 +1193,7 @@ impl Ui {
                     self.dirty = true;
                 }
             }
-            CROWN if self.screen == Screen::List => {
-                let (_, n) = self.rows();
-                let t = (self.list_top as i32 + i32::from(e.delta).signum()).clamp(0, (n as i32 - ROWS as i32).max(0));
-                self.list_top = t as usize;
-                self.dirty = true;
-            }
+            CROWN if matches!(self.screen, Screen::List | Screen::Results) => self.scroll(i32::from(e.delta).signum()),
             TOUCH_DOWN => {
                 self.down = Some((i32::from(e.x), i32::from(e.y), now));
                 self.held = false;
@@ -1137,7 +1217,12 @@ impl Ui {
                         }
                     }
                     Screen::Sheet => self.sheet_tap(x, y),
+                    // a drag scrolls the lists, a row at a time
+                    Screen::List | Screen::Results if dy.abs() > DRAG => self.scroll(-(dy + dy.signum() * ROW_H / 2) / ROW_H),
                     Screen::List => self.list_tap(y),
+                    Screen::Results => self.results_tap(y),
+                    Screen::Keys => self.keys_tap(x, y),
+                    Screen::Ways => self.ways_tap(x, y),
                     Screen::Confirm => {
                         self.screen = Screen::Map;
                         if (230..320).contains(&y) && x < C {
@@ -1165,14 +1250,25 @@ impl Ui {
                 self.held = true;
                 let v = self.view();
                 let p = (self.centre.0 + (x - C) * 256 / v.k.max(1), self.centre.1 - (y - C) * 256 / v.k.max(1));
-                self.motor.play(haptic::TICK);
-                self.sheet = (p, None);
-                self.screen = Screen::Sheet;
-                self.dirty = true;
+                if hit(B_ME, x, y) {
+                    if now.wrapping_sub(t) >= GPS_HOLD_MS {
+                        self.toggle_watch_only();
+                    } else {
+                        // (◎ toggles at GPS_HOLD_MS, not a place)
+                        self.held = false;
+                    }
+                } else if ![B_MARK, B_TRACK, B_BACK, B_LIST, B_FIND].iter().any(|&b| hit(b, x, y)) {
+                    self.motor.play(haptic::TICK);
+                    self.sheet = (p, None);
+                    self.place = Hit::NONE;
+                    self.screen = Screen::Sheet;
+                    self.dirty = true;
+                }
             }
         }
-        // where the phone is, every 2 s (it answers `L`; nothing while a map comes or the storage is cleaned)
-        if now.wrapping_sub(self.asked_at) >= ASK_MS && self.loading.is_none() && self.clean.is_none() {
+        // where the phone is, every 2 s (it answers `L`; nothing while a map comes or the storage is cleaned, nor in
+        // watch-only mode)
+        if now.wrapping_sub(self.asked_at) >= ASK_MS && self.loading.is_none() && self.clean.is_none() && !self.watch_only {
             self.asked_at = now;
             self.send(b"l");
         }
@@ -1192,9 +1288,9 @@ impl Ui {
         let now = self.api.now();
         let left = |t: u32| (t.wrapping_sub(now) as i32).max(0) as u32;
         let mut w = self.motor.wait().unwrap_or(u32::MAX);
-        if let Some((_, _, t)) = self.down {
+        if let Some((x, y, t)) = self.down {
             if !self.held {
-                w = w.min(left(t.wrapping_add(HOLD_MS)));
+                w = w.min(left(t.wrapping_add(if hit(B_ME, x, y) && now.wrapping_sub(t) >= HOLD_MS { GPS_HOLD_MS } else { HOLD_MS })));
             }
         }
         if self.n_note > 0 {
@@ -1215,7 +1311,7 @@ impl Ui {
             let u16_at = |i: usize| u16::from_le_bytes([m[i], m[i + 1]]);
             let u32_at = |i: usize| u32::from_le_bytes([m[i], m[i + 1], m[i + 2], m[i + 3]]);
             match m.first() {
-                Some(b'L') => {
+                Some(b'L') if !self.watch_only => {
                     // the phone's fix (lat, lon e7, accuracy m), or none
                     if m.len() == 11 {
                         let i32_at = |i: usize| u32_at(i) as i32;
@@ -1303,7 +1399,21 @@ impl Ui {
                         self.dirty = true;
                     }
                 }
+                Some(b'O') if m.len() == 2 => {
+                    // the routes found: their times and lengths come next
+                    self.n_ways = 0;
+                    self.ways_wait = m[1] > 0;
+                    self.dirty |= self.screen == Screen::Ways;
+                }
+                Some(b'o') if m.len() == 10 && usize::from(m[1]) < 3 => {
+                    let k = usize::from(m[1]);
+                    self.ways[k] = (u32_at(2), u32_at(6));
+                    self.n_ways = self.n_ways.max(k + 1);
+                    self.ways_wait = false;
+                    self.dirty |= self.screen == Screen::Ways;
+                }
                 Some(b'E') => {
+                    self.ways_wait = false;
                     let t = cmf_wp2_ui::text::fit(&m[1..], 40);
                     let mut b = [0u8; 40];
                     b[..t.len()].copy_from_slice(t.as_bytes());
@@ -1409,15 +1519,15 @@ impl Ui {
         font::centre(&mut s, C, 232, int(i32::from(n), &mut b), GREY);
     }
 
-    /// Back (the side button): to the map, else closes.
+    /// Back (the side button): a screen back, on the map closes.
     fn back(&mut self) -> bool {
-        if self.screen == Screen::Cleaning {
-            return true;
-        }
-        if self.screen == Screen::Map {
-            return false;
-        }
-        self.screen = Screen::Map;
+        self.screen = match self.screen {
+            Screen::Cleaning => return true,
+            Screen::Map => return false,
+            Screen::Results => Screen::Keys,
+            Screen::Ways => Screen::Sheet,
+            _ => Screen::Map,
+        };
         self.dirty = true;
         true
     }
@@ -1464,6 +1574,17 @@ fn main(api: &'static Api) -> i32 {
         route_got: 0,
         route_metres: 0,
         confirm_clean: false,
+        place: Hit::NONE,
+        query: [0; QUERY],
+        qn: 0,
+        sym: false,
+        hits: [Hit::NONE; HITS],
+        n_hits: 0,
+        mode: 0,
+        ways: [(0, 0); 3],
+        n_ways: 0,
+        ways_wait: false,
+        watch_only: false,
         clean: None,
         clean_for_phone: false,
         dirty: true,

@@ -2,6 +2,9 @@
 //! Offline Maps: a map saved on the watch and drawn by it (pack.rs), the watch's own GPS, markers, a route from the
 //! phone followed without it, a track of where you went and the way back to its start.
 
+/// The scene buffer (scene.rs).
+pub const SCENE_CAP: usize = 16 * 1024;
+
 #[allow(dead_code)]
 mod geo;
 #[allow(dead_code)]
