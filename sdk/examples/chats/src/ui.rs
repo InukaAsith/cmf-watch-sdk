@@ -7,6 +7,7 @@
 
 use crate::model::{Effect, Model, Msg, MAX_MSGS, STATUS_ROW};
 use crate::rle::{self, Decoder};
+use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, BLACK, Rgb};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
@@ -301,6 +302,9 @@ const Q_PITCH: i32 = 66;
 // --- typing
 const TYPED_MAX: usize = 100;
 const KH: i32 = 58;
+/// the voice typing button, right of the typed text
+const MIC_X: i32 = 404;
+const MIC_Y: i32 = 140;
 const ROW_Y: [i32; 4] = [184, 242, 300, 358];
 // --- dial
 /// The two dials: `#` on the rim switches between them.
@@ -315,6 +319,8 @@ enum Screen {
     Dial,
     /// the watch's emoji, a page of EM_PAGE at a time
     Emoji,
+    /// voice typing (cmf_wp2_ui::dictate)
+    Voice,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -421,6 +427,9 @@ struct Ui {
     flash: Option<(K, u32)>,
     /// the emoji page shown
     em_page: usize,
+    /// voice typing, and the keyboard it came from
+    dict: Dictate,
+    voice_from: Screen,
     /// the rotary keyboard (cmf_wp2_ui::dial)
     dial: Dial,
     motor: Motor,
@@ -470,6 +479,8 @@ fn main(api: &'static Api) -> i32 {
         n_typed: 0,
         sym: false,
         em_page: 0,
+        dict: Dictate::new(),
+        voice_from: Screen::Qwerty,
         shift: true,
         flash: None,
         dial: Dial::new(),
@@ -529,6 +540,7 @@ fn main(api: &'static Api) -> i32 {
             .then(|| LIST_MS.saturating_sub(now.wrapping_sub(ui.list_ask)).max(1));
         let paced = ui.due.then(|| FRAME_MS.saturating_sub(now.wrapping_sub(ui.shown_at)).max(1));
         let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let wait = ui.dict.wait_ms(wait);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
             None => api.event(wait),
@@ -586,6 +598,10 @@ fn main(api: &'static Api) -> i32 {
             ui.motor.play(haptic::TICK);
             api.show();
         }
+        if ui.dict.active() {
+            let o = ui.dict.tick(api);
+            ui.voice_out(o);
+        }
         let Some(e) = e else { continue };
         match e.kind {
             TOUCH_UP if ui.screen == Screen::Dial => {
@@ -605,10 +621,19 @@ fn main(api: &'static Api) -> i32 {
                     Screen::Chat => ui.go(Screen::List),
                     Screen::Quick | Screen::Qwerty | Screen::Dial => ui.go(Screen::Chat),
                     Screen::Emoji => ui.go(Screen::Qwerty),
+                    Screen::Voice => {
+                        let o = ui.dict.cancel(api);
+                        ui.voice_out(o);
+                    }
                 }
             }
             PAUSE => {
                 ui.motor.off();
+                // the loader stops the mic while paused: dictation ends with it
+                if ui.dict.active() {
+                    let o = ui.dict.cancel(api);
+                    ui.voice_out(o);
+                }
                 if crate::PLAIN {
                     kept().save(api);
                 }
@@ -646,6 +671,10 @@ fn main(api: &'static Api) -> i32 {
                     list = true;
                 }
                 while let Some(m) = api.recv(&mut msg) {
+                    if let Some(o) = ui.dict.message(m) {
+                        ui.voice_out(o);
+                        continue;
+                    }
                     if m.first() == Some(&b'T') || (m.first() == Some(&b'A') && m.get(1) == Some(&0)) {
                         answer = true;
                     }
@@ -726,6 +755,7 @@ impl Ui {
             Screen::Chat => self.chat_scroll = 0,
             Screen::Quick => self.quick_scroll = 0,
             Screen::Emoji => self.flash = None,
+            Screen::Voice => {}
             Screen::Qwerty | Screen::Dial => {
                 self.sym = false;
                 self.shift = self.n_typed == 0;
@@ -753,6 +783,7 @@ impl Ui {
             Screen::Qwerty => self.draw_qwerty(),
             Screen::Dial => self.draw_dial(),
             Screen::Emoji => self.draw_emoji(),
+            Screen::Voice => self.dict.draw(&mut s),
         }
         self.api.show();
         self.shown_at = self.api.now();
@@ -1048,12 +1079,12 @@ impl Ui {
         let mut s = Dot(self.api);
         match self.screen {
             Screen::Qwerty => {
-                Surface::rect(&mut s, 0, 64, 466, 108, 0);
-                self.draw_typed(76, 3, 320);
+                Surface::rect(&mut s, 0, 64, 380, 108, 0);
+                self.draw_typed(76, 3, 290);
             }
             Screen::Emoji => {
-                Surface::rect(&mut s, 0, 64, 466, 84, 0);
-                self.draw_typed(76, 2, 300);
+                Surface::rect(&mut s, 0, 64, 380, 84, 0);
+                self.draw_typed(76, 2, 290);
             }
             _ => {
                 Surface::rect(&mut s, 100, 104, 266, 54, 0);
@@ -1072,9 +1103,22 @@ impl Ui {
         let w = font::width("To ") + font::width(to);
         let x = font::draw(&mut s, C - w / 2, 32, "To ", GREY);
         font::draw(&mut s, x, 32, to, SOFT);
-        self.draw_typed(76, 3, 320);
+        self.draw_typed(76, 3, 290);
         rule(&mut s, 172);
         each_key(self.sym, |k, _, _, _| self.draw_key(k, false));
+        cmf_wp2_ui::dictate::mic_button(&mut s, MIC_X, MIC_Y);
+    }
+
+    /// The mic button beside the typed text: voice typing.
+    fn mic_tap(&mut self, x: i32, y: i32) -> bool {
+        if !cmf_wp2_ui::dictate::mic_hit(MIC_X, MIC_Y, x, y) {
+            return false;
+        }
+        self.motor.play(haptic::TICK);
+        self.voice_from = self.screen;
+        self.dict.start(self.api, false);
+        self.go(Screen::Voice);
+        true
     }
 
     fn draw_key(&self, key: K, pressed: bool) {
@@ -1116,6 +1160,7 @@ impl Ui {
                 K::Emoji if self.screen == Screen::Emoji => "abc",
                 K::Emoji => "",
             };
+
             if k == K::Emoji && self.screen != Screen::Emoji {
                 // a small smiling face
                 let cx = x + w / 2;
@@ -1134,6 +1179,9 @@ impl Ui {
     }
 
     fn qwerty_tap(&mut self, x: i32, y: i32) {
+        if self.mic_tap(x, y) {
+            return;
+        }
         let mut hit = None;
         each_key(self.sym, |k, kx, ky, w| {
             if (kx..kx + w).contains(&x) && (ky..ky + KH).contains(&y) {
@@ -1152,6 +1200,7 @@ impl Ui {
                 self.em_page = 0;
                 return self.go(Screen::Emoji);
             }
+
             K::Sym => {
                 self.sym = !self.sym;
                 return self.draw();
@@ -1197,6 +1246,35 @@ impl Ui {
         }
     }
 
+    // --- voice typing
+
+    /// What the dictation screen asks for.
+    fn voice_out(&mut self, o: DictOut) {
+        match o {
+            DictOut::None => {}
+            DictOut::Redraw => {
+                if self.screen == Screen::Voice {
+                    self.draw();
+                }
+            }
+            DictOut::Done => {
+                // the words after what is typed, a space between
+                let t = self.dict.text().trim();
+                let mut n = self.n_typed;
+                if n > 0 && self.typed[n - 1] != b' ' && !t.is_empty() && n < TYPED_MAX {
+                    self.typed[n] = b' ';
+                    n += 1;
+                }
+                let fits = fit(t.as_bytes(), TYPED_MAX - n);
+                self.typed[n..n + fits.len()].copy_from_slice(fits.as_bytes());
+                self.n_typed = n + fits.len();
+                self.motor.play(haptic::TICK);
+                self.go(self.voice_from);
+            }
+            DictOut::Cancel => self.go(self.voice_from),
+        }
+    }
+
     // --- emoji
 
     fn em_pages(&self) -> usize {
@@ -1205,7 +1283,7 @@ impl Ui {
 
     fn draw_emoji(&self) {
         let mut s = Dot(self.api);
-        self.draw_typed(76, 2, 300);
+        self.draw_typed(76, 2, 290);
         let all = emoji::all();
         let from = self.em_page * EM_PAGE;
         let x0 = C - EM_CELL * EM_COLS as i32 / 2;
@@ -1223,6 +1301,7 @@ impl Ui {
             Surface::rect(&mut s, C - n * 8 + p * 16 + 4, EM_TOP - 12, 6, 6, if on { W } else { GREY });
         }
         each_emoji_key(|k, _, _, _| self.draw_key(k, false));
+        cmf_wp2_ui::dictate::mic_button(&mut s, MIC_X, MIC_Y);
     }
 
     fn em_turn(&mut self, d: i32) {
@@ -1235,6 +1314,9 @@ impl Ui {
     }
 
     fn emoji_tap(&mut self, x: i32, y: i32) {
+        if self.mic_tap(x, y) {
+            return;
+        }
         if y >= ROW_Y[3] {
             let mut hit = None;
             each_emoji_key(|k, kx, ky, w| {
@@ -1429,6 +1511,7 @@ impl Ui {
             }
             Screen::Qwerty => return,
             Screen::Emoji => return self.em_turn(d.signum()),
+            Screen::Voice => return,
         }
         self.refresh();
     }
@@ -1506,6 +1589,10 @@ impl Ui {
             }
             Screen::Qwerty => self.qwerty_tap(x, y),
             Screen::Emoji => self.emoji_tap(x, y),
+            Screen::Voice => {
+                let o = self.dict.tap(self.api, x, y);
+                self.voice_out(o);
+            }
             Screen::Dial => {
                 let a = self.dial.down(&mut Dot(self.api), x, y, self.api.now());
                 self.dial_act(a);

@@ -27,6 +27,9 @@ impl Hit {
 
 pub const HITS: usize = 12;
 pub const QUERY: usize = 24;
+/// the mic in the search field
+const MIC_X: i32 = 376;
+const MIC_Y: i32 = 128;
 pub const STREET: u8 = 20;
 const KH: i32 = 58;
 const KEY_Y: [i32; 4] = [184, 242, 300, 358];
@@ -222,10 +225,12 @@ impl Ui {
         Surface::rect(&mut s, 0, 0, 466, 466, 0);
         font::centre(&mut s, C, 44, if self.pack.is_some() { "Search the map" } else { "No map saved" }, GREY);
         rrect(&mut s, 60, 98, 346, 60, 30, CARD, BLACK);
+        // voice typing, at the field's end
+        cmf_wp2_ui::dictate::mic_icon(&mut s, MIC_X, MIC_Y, W, 1);
         let q = core::str::from_utf8(&self.query[..self.qn]).unwrap_or("");
-        let w = font::width(q).min(300);
-        font::fitted(&mut s, C - w / 2, 114, q, 300, W);
-        Surface::rect(&mut s, C + w / 2 + 2, 114, 3, 26, BLUE.rgb565());
+        let w = font::width(q).min(250);
+        font::fitted(&mut s, C - 16 - w / 2, 114, q, 250, W);
+        Surface::rect(&mut s, C - 16 + w / 2 + 2, 114, 3, 26, BLUE.rgb565());
         let sym = self.sym;
         each_key(sym, |k, x, y, w| {
             let fill = match k {
@@ -248,6 +253,12 @@ impl Ui {
     }
 
     pub fn keys_tap(&mut self, x: i32, y: i32) {
+        if cmf_wp2_ui::dictate::mic_hit(MIC_X, MIC_Y, x, y) {
+            self.motor.play(haptic::TICK);
+            self.dict.start(self.api, false);
+            self.screen = Screen::Voice;
+            return;
+        }
         let mut key = None;
         each_key(self.sym, |k, kx, ky, w| {
             if (kx..kx + w).contains(&x) && (ky..ky + KH).contains(&y) {

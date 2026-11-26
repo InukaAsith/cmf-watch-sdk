@@ -77,6 +77,7 @@ pub fn request(cmd: AudioCmd) -> i32 {
             if e != 0 { e } else { HEAD.load(Ordering::Acquire).wrapping_sub(TAIL.load(Ordering::Acquire)) as i32 }
         }
         AudioCmd::Write { ptr, len } => write(ptr, len),
+        AudioCmd::MicOpen | AudioCmd::MicRead { .. } | AudioCmd::MicClose => crate::mic::request(cmd),
     }
 }
 

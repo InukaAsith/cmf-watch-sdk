@@ -731,6 +731,10 @@ pub enum AudioCmd {
     Close,
     Volume { percent: u8 },
     State,
+    /// The mic: 16 kHz mono 16-bit PCM while open (mic.rs).
+    MicOpen,
+    MicRead { ptr: u32, len: u32 },
+    MicClose,
 }
 
 pub const AUDIO_RATES_KHZ: [u8; 5] = [8, 16, 24, 32, 48];
@@ -745,6 +749,9 @@ pub fn audio(buf: &[u8]) -> Option<AudioCmd> {
         [0x18, 1, 0, 0, 3] => Some(AudioCmd::Close),
         [0x18, 2, 0, 0, 4, percent @ 0..=100] => Some(AudioCmd::Volume { percent }),
         [0x18, 1, 0, 0, 5] => Some(AudioCmd::State),
+        [0x18, 1, 0, 0, 6] => Some(AudioCmd::MicOpen),
+        [0x18, 9, 0, 0, 7, ref rest @ ..] if rest.len() == 8 => Some(AudioCmd::MicRead { ptr: u(&rest[..4]), len: u(&rest[4..]) }),
+        [0x18, 1, 0, 0, 8] => Some(AudioCmd::MicClose),
         _ => None,
     }
 }
@@ -775,6 +782,10 @@ mod audio_tests {
         assert_eq!(audio(&[0x18, 2, 0, 0, 4, 100]), Some(AudioCmd::Volume { percent: 100 }));
         assert_eq!(audio(&[0x18, 2, 0, 0, 4, 101]), None);
         assert_eq!(audio(&[0x18, 1, 0, 0, 5]), Some(AudioCmd::State));
+        assert_eq!(audio(&[0x18, 1, 0, 0, 6]), Some(AudioCmd::MicOpen));
+        assert_eq!(audio(&[0x18, 1, 0, 0, 8]), Some(AudioCmd::MicClose));
+        w[4] = 7;
+        assert_eq!(audio(&w), Some(AudioCmd::MicRead { ptr: 0x3800_1000, len: 0x201 }));
         assert_eq!(audio(&[0x18, 1, 1, 0, 3]), None, "handle 0 only");
         assert_eq!(audio(&[0x18, 1, 0, 0, 3, 0x02, 0, 1, 0]), None, "alone in its batch");
         assert_eq!(validate(&[0x18, 1, 0, 0, 3], &Table::new(), 0), Err(Error::Malformed), "op 0x18 is not an LVGL record");

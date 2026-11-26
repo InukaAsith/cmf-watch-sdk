@@ -36,6 +36,43 @@ impl State {
         self.index = (i32::from(self.index) + INDEX[(code & 7) as usize]).clamp(0, 88) as u8;
         self.predictor
     }
+
+    /// The 4-bit code for `sample` (the standard IMA encoder); the state moves as `decode` of that code does, so
+    /// encoder and decoder stay in step.
+    pub fn encode(&mut self, sample: i16) -> u8 {
+        let step = STEPS[self.index as usize];
+        let mut diff = i32::from(sample) - i32::from(self.predictor);
+        let mut code = 0;
+        if diff < 0 {
+            code = 8;
+            diff = -diff;
+        }
+        let mut s = step;
+        for bit in [4, 2, 1] {
+            if diff >= s {
+                code |= bit;
+                diff -= s;
+            }
+            s >>= 1;
+        }
+        self.decode(code);
+        code
+    }
+}
+
+/// Encodes `samples` (an even count) as one block into `out`: the header (the state before), then the codes;
+/// returns the bytes written, 0 if `out` is too short.
+pub fn encode_block(state: &mut State, samples: &[i16], out: &mut [u8]) -> usize {
+    let n = BLOCK_HEADER + samples.len() / 2;
+    if out.len() < n {
+        return 0;
+    }
+    out[..2].copy_from_slice(&state.predictor.to_le_bytes());
+    out[2] = state.index;
+    for (i, pair) in samples.chunks_exact(2).enumerate() {
+        out[BLOCK_HEADER + i] = state.encode(pair[0]) | state.encode(pair[1]) << 4;
+    }
+    n
 }
 
 /// Block header: predictor i16 LE, index u8, then the codes, low nibble first.
@@ -77,6 +114,18 @@ mod tests {
             got.extend(out.chunks(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
         }
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn encodes_what_decodes_back() {
+        let pcm: std::vec::Vec<i16> = (0..256).map(|i| ((i as f32 * 0.2).sin() * 9000.0) as i16).collect();
+        let mut st = State::default();
+        let mut block = [0u8; 3 + 128];
+        assert_eq!(encode_block(&mut st, &pcm, &mut block), 131);
+        let mut out = [0u8; 512];
+        assert_eq!(decode_block(&block, &mut out), 512);
+        let err = pcm.iter().zip(out.chunks(2)).skip(16).map(|(a, b)| (i32::from(*a) - i32::from(i16::from_le_bytes([b[0], b[1]]))).abs()).max();
+        assert!(err.unwrap() < 1500, "{err:?}");
     }
 
     #[test]
