@@ -631,8 +631,9 @@ impl Ui {
         self.phone_at.is_some_and(|t| self.api.now().wrapping_sub(t) < 6000)
     }
 
-    /// Where the position comes from, as Maps' ◎: blue the iPhone's GPS (the watch's off), orange both (blinking:
-    /// the iPhone's while the watch looks for satellites), red the watch's only (blinking: it looks, no iPhone).
+    /// Where the position comes from, as Maps' ◎: blue the iPhone's GPS (the watch's off), orange both (orange and
+    /// blue in turn: the iPhone's while the watch looks for satellites), red the watch's only (blinking: it looks,
+    /// no iPhone).
     /// `blink`: the looking ones blink.
     fn source(&self, blink: bool) -> Rgb {
         let (p, w) = (self.phone_ok(), self.watch_ok());
@@ -642,7 +643,11 @@ impl Ui {
             (false, _) if self.gps_on => RED,
             (false, _) => DIM,
         };
-        if blink && self.gps_on && !w && self.blink { DIM } else { c }
+        match (blink && self.gps_on && !w && self.blink, p) {
+            (true, true) => BLUE,
+            (true, false) => DIM,
+            _ => c,
+        }
     }
 
     fn draw_zoom(&self) {
