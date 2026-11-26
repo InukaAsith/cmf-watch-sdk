@@ -26,3 +26,14 @@ mod render;
 mod ram;
 #[cfg(any(target_os = "none", wp2_sim))]
 mod ui;
+// turn by turn: Navigation's state and views (examples/nav), in Maps' blue
+#[cfg(any(target_os = "none", wp2_sim))]
+#[path = "../../nav/src/state.rs"]
+#[allow(dead_code)]
+mod state;
+#[cfg(any(target_os = "none", wp2_sim))]
+#[path = "../../nav/src/view.rs"]
+#[allow(dead_code)]
+mod view;
+#[cfg(any(target_os = "none", wp2_sim))]
+const ACCENT: cmf_wp2_ui::color::Rgb = cmf_wp2_ui::color::Rgb(0x42, 0x85, 0xF4);

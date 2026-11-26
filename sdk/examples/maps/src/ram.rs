@@ -7,6 +7,18 @@ use crate::render::Buffers;
 
 pub const TRACK: usize = 1500;
 pub const ROUTE: usize = 1500;
+pub const STEPS: usize = 64;
+
+/// A turn of the route (trip.rs): nav state.rs kind and direction, where (frame metres), its point on the path.
+#[derive(Clone, Copy)]
+pub struct Step {
+    pub kind: u8,
+    pub dir: u8,
+    pub p: (i16, i16),
+    pub idx: u16,
+    pub name: [u8; 32],
+    pub n: u8,
+}
 
 #[repr(C)]
 pub struct Ram {
@@ -15,6 +27,9 @@ pub struct Ram {
     /// the path followed: a route from the phone, or the track backwards
     pub path: [(i16, i16); ROUTE],
     pub path_n: usize,
+    pub steps: [Step; STEPS],
+    /// turn by turn, as Navigation's (all zero is its empty state)
+    pub nav: crate::state::Nav,
 }
 
 const ROOM: usize = 96 * 96 * 3;
