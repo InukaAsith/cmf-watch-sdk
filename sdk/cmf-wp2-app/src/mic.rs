@@ -30,8 +30,9 @@ pub struct Voice {
 const TARGET: i32 = 22000;
 const GAIN_MAX: i32 = 12 * 256;
 
-/// One read's worth (16 ms of stereo); `pump` reads until the loader has no more.
-static mut RAW: [u8; 1024] = [0; 1024];
+/// One read's worth (8 ms of stereo), on the stack (a static is bytes in every app's image); `pump` reads until the
+/// loader has no more.
+const READ: usize = 512;
 
 impl Voice {
     pub fn start(api: &Api) -> (Voice, i32) {
@@ -59,8 +60,8 @@ impl Voice {
     }
 
     fn pump_once(&mut self, api: &Api, out: &mut impl FnMut(i16)) -> i32 {
-        // one app thread
-        let raw = unsafe { &mut *core::ptr::addr_of_mut!(RAW) };
+        let mut buf = [0u8; READ];
+        let raw = &mut buf;
         let n = api.mic_read(raw);
         if n <= 0 {
             return n;

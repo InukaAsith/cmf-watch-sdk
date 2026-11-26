@@ -401,6 +401,8 @@ struct Ui {
     me_down: Option<u32>,
     /// the watch's GPS: 0 off, 1 on, looking for satellites (◎ blinking), 2 a fix
     gps: u8,
+    /// the watch's last fix as sent (`Y`): held and sent again while under cover
+    held: Option<[u8; 14]>,
     blink: bool,
     /// the phone's last `y`, and whether it had its own fix then
     used_at: Option<u32>,
@@ -2029,6 +2031,7 @@ impl Ui {
             return;
         }
         self.gps = if on { 1 } else { 0 };
+        self.held = None;
         self.used_at = None;
         self.motor.play(haptic::DOUBLE);
         if !on {
@@ -2044,6 +2047,8 @@ impl Ui {
         match self.gps {
             1 if self.blink && phone => Some(BLUE),
             1 if self.blink => Some(Rgb(0x50, 0x50, 0x50)),
+            // held under cover: red and dim red in turn
+            2 if self.blink && !phone => Some(Rgb(0x60, 0x18, 0x18)),
             1 | 2 if phone => Some(ORANGE),
             1 | 2 => Some(RED),
             _ => None,
@@ -2079,6 +2084,16 @@ impl Ui {
                 m[9..13].copy_from_slice(&f.alt_dm.to_le_bytes());
                 m[13] = f.sats;
                 self.send(&m);
+                self.held = Some(m);
+                self.blink = false;
+            }
+            // under cover after a fix: the watch's last position holds (as the stock workouts do), the phone keeps
+            // getting it and never switches to its own; ◎ blinks till the fix is back
+            _ if self.held.is_some() => {
+                self.blink = !self.blink;
+                if let Some(m) = self.held {
+                    self.send(&m);
+                }
             }
             _ => {
                 self.gps = 1;
@@ -2532,6 +2547,7 @@ fn main(api: &'static Api) -> i32 {
         pending: None,
         me_down: None,
         gps: 0,
+        held: None,
         blink: false,
         phone_fix: false,
         used_at: None,
