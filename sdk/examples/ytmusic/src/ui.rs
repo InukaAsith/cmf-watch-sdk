@@ -70,6 +70,8 @@ const YELLOW: Rgb = Rgb(0xF5, 0xC5, 0x18);
 const CARD: Rgb = Rgb(0x17, 0x17, 0x17);
 const KEYC: Rgb = Rgb(0x26, 0x26, 0x26);
 const TRACK: Rgb = Rgb(crate::brand::ACCENT.0 / 5, crate::brand::ACCENT.1 / 5, crate::brand::ACCENT.2 / 5);
+/// the open player's buttons: the mini player's shade, a little lighter
+const KEY: Rgb = Rgb(crate::brand::ACCENT.0 / 7 * 2, crate::brand::ACCENT.1 / 7 * 2, crate::brand::ACCENT.2 / 7 * 2);
 const W: u16 = 0xFFFF;
 const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
 const GREY: u16 = rgb565(0x80, 0x80, 0x80);
@@ -324,7 +326,7 @@ impl Ui {
         let playing = p.now.is_some() && !p.paused || p.loading();
         // previous: bar + triangle pointing left; next: mirrored
         for (cx, dir) in [(CTRL_X[0], -1), (CTRL_X[2], 1)] {
-            ring(s, cx, CTRL_Y, 27, 29, TINT, BLACK);
+            disc(s, cx, CTRL_Y, 29, KEY, BLACK);
             triangle(s, cx - dir * 2, CTRL_Y, 11, dir, W);
             Surface::rect(s, cx + dir * 10 - 2, CTRL_Y - 11, 4, 22, W);
         }
@@ -355,14 +357,14 @@ impl Ui {
         }
         // the music apps: back down to browsing (a chevron), and up next
         for (i, &x) in REC_X.iter().enumerate() {
-            ring(s, x, TOOL_Y, 21, 23, TINT, BLACK);
+            disc(s, x, TOOL_Y, 23, KEY, BLACK);
             if i == 0 {
                 for k in 0..9 {
                     Surface::rect(s, x - 10 + k, TOOL_Y - 5 + k, 3, 3, W);
                     Surface::rect(s, x + 8 - k, TOOL_Y - 5 + k, 3, 3, W);
                 }
             } else {
-                glyph(s, 0, x, TOOL_Y, WHITE, BLACK);
+                glyph(s, 0, x, TOOL_Y, WHITE, KEY);
             }
         }
     }
