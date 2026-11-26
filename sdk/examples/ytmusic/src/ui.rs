@@ -71,6 +71,12 @@ const CARD: Rgb = Rgb(0x17, 0x17, 0x17);
 const KEYC: Rgb = Rgb(0x26, 0x26, 0x26);
 const TRACK: Rgb = Rgb(crate::brand::ACCENT.0 / 5, crate::brand::ACCENT.1 / 5, crate::brand::ACCENT.2 / 5);
 /// the open player's buttons: the mini player's shade, a little lighter
+/// the open player's background: the brand's colour, very dark (the Recorder: black)
+const BG: Rgb = if crate::brand::RECORDER {
+    BLACK
+} else {
+    Rgb(crate::brand::ACCENT.0 / 9, crate::brand::ACCENT.1 / 9, crate::brand::ACCENT.2 / 9)
+};
 const KEY: Rgb = Rgb(crate::brand::ACCENT.0 / 7 * 2, crate::brand::ACCENT.1 / 7 * 2, crate::brand::ACCENT.2 / 7 * 2);
 const W: u16 = 0xFFFF;
 const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
@@ -186,7 +192,8 @@ impl Ui {
     }
 
     fn draw(&mut self) {
-        Surface::rect(&mut self.s, 0, 0, 466, 466, 0);
+        let bg = if self.screen == Screen::Now && !self.record_home() { BG } else { BLACK };
+        Surface::rect(&mut self.s, 0, 0, 466, 466, bg.rgb565());
         match self.screen {
             Screen::Home => self.draw_home(),
             Screen::Now => self.draw_now(),
@@ -280,12 +287,12 @@ impl Ui {
             return;
         }
         // inside the ring: at y 30 the ring's inner edge is outside x 140..326
-        Surface::rect(&mut self.s, 140, 28, 186, 28, 0);
+        Surface::rect(&mut self.s, 140, 28, 186, 28, BG.rgb565());
         self.shown_state = self.state();
         if self.toast_until.is_some() {
             let note = model().note.as_str();
             let w = font::width(note).min(150) + 28;
-            rrect(&mut self.s, C - w / 2, 29, w, 26, 13, KEYC, BLACK);
+            rrect(&mut self.s, C - w / 2, 29, w, 26, 13, KEYC, BG);
             fitted(&mut self.s, C - w / 2 + 14, 31, note, 150, W);
             return;
         }
@@ -298,7 +305,7 @@ impl Ui {
             _ => crate::brand::NAME,
         };
         let w = font::width(top) + 16;
-        disc(&mut self.s, C - w / 2 + 3, 42, 4, RED, BLACK);
+        disc(&mut self.s, C - w / 2 + 3, 42, 4, RED, BG);
         font::draw(&mut self.s, C - w / 2 + 14, 31, top, GREY);
     }
 
@@ -311,11 +318,11 @@ impl Ui {
         let want = if dur == 0 { 0 } else { (u32::from(pos.min(dur)) * 65536 / u32::from(dur)).min(65536) };
         let top = 49152u16;
         if full || want < self.drawn {
-            arc(&mut self.s, C, C, RING.0, RING.1, top, 65536, TRACK, None, BLACK);
+            arc(&mut self.s, C, C, RING.0, RING.1, top, 65536, TRACK, None, BG);
             self.drawn = 0;
         }
         if want > self.drawn {
-            arc(&mut self.s, C, C, RING.0, RING.1, top.wrapping_add(self.drawn as u16), want - self.drawn, RED, None, BLACK);
+            arc(&mut self.s, C, C, RING.0, RING.1, top.wrapping_add(self.drawn as u16), want - self.drawn, RED, None, BG);
             self.drawn = want;
         }
     }
@@ -326,11 +333,11 @@ impl Ui {
         let playing = p.now.is_some() && !p.paused || p.loading();
         // previous: bar + triangle pointing left; next: mirrored
         for (cx, dir) in [(CTRL_X[0], -1), (CTRL_X[2], 1)] {
-            disc(s, cx, CTRL_Y, 29, KEY, BLACK);
+            disc(s, cx, CTRL_Y, 29, KEY, BG);
             triangle(s, cx - dir * 2, CTRL_Y, 11, dir, W);
             Surface::rect(s, cx + dir * 10 - 2, CTRL_Y - 11, 4, 22, W);
         }
-        disc(s, C, CTRL_Y, 36, RED, BLACK);
+        disc(s, C, CTRL_Y, 36, RED, BG);
         if playing {
             Surface::rect(s, C - 11, CTRL_Y - 13, 8, 26, INK);
             Surface::rect(s, C + 3, CTRL_Y - 13, 8, 26, INK);
@@ -344,9 +351,9 @@ impl Ui {
         if crate::brand::RECORDER {
             // record: a red dot; the recordings: three lines, the first red
             for (i, &x) in REC_X.iter().enumerate() {
-                ring(s, x, TOOL_Y, 21, 23, TINT, BLACK);
+                ring(s, x, TOOL_Y, 21, 23, TINT, BG);
                 if i == 0 {
-                    disc(s, x, TOOL_Y, 11, RED, BLACK);
+                    disc(s, x, TOOL_Y, 11, RED, BG);
                 } else {
                     for k in 0..3 {
                         Surface::rect(s, x - 9, TOOL_Y - 8 + k * 7, 18, 3, if k == 0 { RED.rgb565() } else { W });
@@ -357,7 +364,7 @@ impl Ui {
         }
         // the music apps: back down to browsing (a chevron), and up next
         for (i, &x) in REC_X.iter().enumerate() {
-            disc(s, x, TOOL_Y, 23, KEY, BLACK);
+            disc(s, x, TOOL_Y, 23, KEY, BG);
             if i == 0 {
                 for k in 0..9 {
                     Surface::rect(s, x - 10 + k, TOOL_Y - 5 + k, 3, 3, W);
@@ -1137,12 +1144,12 @@ impl Ui {
             return false;
         }
         let top = 49152u16;
-        ring(&mut self.s, C, MARK_Y, 58, 67, WHITE, BLACK);
+        ring(&mut self.s, C, MARK_Y, 58, 67, WHITE, BG);
         if let Some(w) = want {
             // one arc from the top each time: pieces drawn one after another leave seams at their edges
             let f = w & !1;
             if f > 0 {
-                arc(&mut self.s, C, MARK_Y, 58, 67, top, f, if w & 1 == 1 { YELLOW } else { RED }, None, BLACK);
+                arc(&mut self.s, C, MARK_Y, 58, 67, top, f, if w & 1 == 1 { YELLOW } else { RED }, None, BG);
             }
         }
         self.filled = want;
@@ -1171,18 +1178,18 @@ impl Ui {
 /// The app's mark, as its icon: a white ring and a red play triangle (YouTube Music), or three red waves
 /// (Spotify), inside it.
 fn mark(s: &mut impl Surface, cx: i32, cy: i32) {
-    ring(s, cx, cy, 58, 67, WHITE, BLACK);
+    ring(s, cx, cy, 58, 67, WHITE, BG);
     if crate::brand::RECORDER {
         // a microphone: the capsule, its cradle and stand
-        rrect(s, cx - 13, cy - 32, 26, 42, 13, WHITE, BLACK);
-        rrect(s, cx - 8, cy - 27, 16, 32, 8, BLACK, WHITE);
-        arc(s, cx, cy - 2, 21, 26, 0, 32768, WHITE, None, BLACK);
+        rrect(s, cx - 13, cy - 32, 26, 42, 13, WHITE, BG);
+        rrect(s, cx - 8, cy - 27, 16, 32, 8, BG, WHITE);
+        arc(s, cx, cy - 2, 21, 26, 0, 32768, WHITE, None, BG);
         Surface::rect(s, cx - 2, cy + 24, 5, 10, W);
-        disc(s, cx, cy - 11, 5, RED, BLACK);
+        disc(s, cx, cy - 11, 5, RED, BG);
     } else if crate::brand::SPOTIFY {
         // arcs of circles centred under the mark, each 60° about the top (49152 in arc's 65536 a turn)
         for (r, w, half) in [(84, 9, 5600u32), (63, 8, 5300), (43, 7, 4900)] {
-            arc(s, cx, cy + 62, r - w, r, (49152 - half) as u16, 2 * half, RED, None, BLACK);
+            arc(s, cx, cy + 62, r - w, r, (49152 - half) as u16, 2 * half, RED, None, BG);
         }
     } else {
         triangle(s, cx + 6, cy, 26, 1, RED.rgb565());
@@ -1221,7 +1228,7 @@ fn glyph(s: &mut impl Surface, i: usize, x: i32, y: i32, ink: Rgb, bg: Rgb) {
 fn mark_small(s: &mut impl Surface, cx: i32, cy: i32) {
     if crate::brand::SPOTIFY {
         for (r, w, half) in [(30, 4, 5600u32), (22, 3, 5300), (15, 3, 4900)] {
-            arc(s, cx, cy + 20, r - w, r, (49152 - half) as u16, 2 * half, RED, None, BLACK);
+            arc(s, cx, cy + 20, r - w, r, (49152 - half) as u16, 2 * half, RED, None, BG);
         }
     } else {
         triangle(s, cx + 3, cy, 9, 1, RED.rgb565());
