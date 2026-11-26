@@ -4,6 +4,7 @@
 use cmf_wp2_app::Api;
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
+use cmf_wp2_ui::dictate::{mic_button, mic_hit, Dictate, Out};
 use cmf_wp2_ui::draw::rrect;
 use cmf_wp2_ui::font;
 use cmf_wp2_ui::{C, Surface};
@@ -12,6 +13,9 @@ pub const MAX: usize = 100;
 
 const ROW_Y: [i32; 4] = [184, 242, 300, 358];
 const KH: i32 = 58;
+/// the voice typing button, right of the words
+const MIC_X: i32 = 404;
+const MIC_Y: i32 = 120;
 const W: u16 = 0xFFFF;
 const GREY: u16 = rgb565(0x80, 0x80, 0x80);
 const KEYC: Rgb = Rgb(0x2A, 0x2A, 0x2A);
@@ -51,11 +55,13 @@ pub struct Keys {
     pub dial: Dial,
     /// shown while nothing is typed
     pub hint: &'static str,
+    /// voice typing (cmf_wp2_ui::dictate): its screen is up while it runs
+    pub dict: Dictate,
 }
 
 impl Keys {
     pub const fn new() -> Self {
-        Keys { text: [0; MAX], n: 0, sym: false, lit: None, rotary: false, dial: Dial::new(), hint: "" }
+        Keys { text: [0; MAX], n: 0, sym: false, lit: None, rotary: false, dial: Dial::new(), hint: "", dict: Dictate::new() }
     }
 
     pub fn open(&mut self, hint: &'static str) {
@@ -73,12 +79,40 @@ impl Keys {
 
     pub fn draw(&self, api: &'static Api) {
         let mut s = api;
+        if self.dict.active() {
+            return self.dict.draw(&mut s);
+        }
         self.draw_text(&mut s);
         if self.rotary {
             self.dial.draw(&mut s);
         } else {
             let sym = self.sym;
             each_key(sym, |k, _, _, _| draw_key(&mut s, sym, k, false));
+            mic_button(&mut s, MIC_X, MIC_Y);
+        }
+    }
+
+    /// What the dictation screen asks for, as a touch's answer: the words onto the text.
+    pub fn voice(&mut self, o: Out) -> Tap {
+        match o {
+            Out::None => Tap::Shown,
+            Out::Redraw => Tap::Redraw,
+            Out::Done | Out::Cancel => {
+                if o == Out::Done {
+                    let t = self.dict.text().trim();
+                    if self.n > 0 && self.text[self.n - 1] != b' ' && self.n < MAX && !t.is_empty() {
+                        self.text[self.n] = b' ';
+                        self.n += 1;
+                    }
+                    let mut k = t.len().min(MAX - self.n);
+                    while !t.is_char_boundary(k) {
+                        k -= 1;
+                    }
+                    self.text[self.n..self.n + k].copy_from_slice(&t.as_bytes()[..k]);
+                    self.n += k;
+                }
+                Tap::Redraw
+            }
         }
     }
 
@@ -91,7 +125,7 @@ impl Keys {
             return;
         }
         // the end of a long text stays in view
-        let max = if self.rotary { 200 } else { 300 };
+        let max = if self.rotary { 200 } else { 250 };
         let mut start = 0;
         while font::width(&q[start..]) > max && start < q.len() {
             start += 1;
@@ -115,6 +149,15 @@ impl Keys {
 
     /// A touch on the keys (not the rotary one): typed at once, the key lit till the next touch.
     pub fn down(&mut self, api: &'static Api, x: i32, y: i32) -> Tap {
+        if self.dict.active() {
+            let o = self.dict.tap(api, x, y);
+            return self.voice(o);
+        }
+        if mic_hit(MIC_X, MIC_Y, x, y) {
+            self.lit = None;
+            self.dict.start(api, false);
+            return Tap::Redraw;
+        }
         let mut s = api;
         let sym = self.sym;
         if let Some(old) = self.lit.take() {

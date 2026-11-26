@@ -21,8 +21,28 @@ use cmf_wp2_ui::color::Rgb;
 use cmf_wp2_ui::draw::rrect;
 use cmf_wp2_ui::{font, Surface};
 
-/// Shares its memory with the reader page (ui.rs): the two are never shown at once.
-pub const STORE: usize = 50 * 1024;
+/// The store is in two parts: `LOW` bytes here, which share their memory with the reader page (ui.rs: the two are
+/// never shown at once), then `FAR` bytes in the icon's memory. The loader shows its own copy of an app's icon in the
+/// menu (docs/app-icons.md), so once the app runs the icon's pixels at the front of the image are RAM nobody reads;
+/// every launch reloads the image, so the icon is whole again next time. An entry is never split between the two:
+/// one that would cross moves to the far part whole.
+const LOW: usize = 28 * 1024;
+const FAR: usize = 96 * 96 * 3;
+pub const STORE: usize = LOW + FAR;
+const _: () = assert!(STORE <= u16::MAX as usize);
+
+/// The far part: the icon's pixels, after its 16-byte descriptor.
+#[cfg(target_os = "none")]
+fn far() -> *mut u8 {
+    unsafe { (core::ptr::addr_of_mut!(crate::ui::WP2_ICON) as *mut u8).add(16) }
+}
+
+/// The simulator has no icon in front of its code: a plain buffer.
+#[cfg(not(target_os = "none"))]
+fn far() -> *mut u8 {
+    static mut SIM: [u8; FAR] = [0; FAR];
+    core::ptr::addr_of_mut!(SIM) as *mut u8
+}
 pub const ENTRIES: usize = 200;
 const NONE: u16 = 0xFFFF;
 const BAND: u8 = 0;
@@ -41,7 +61,7 @@ struct Entry {
 }
 
 pub struct Long {
-    store: [u8; STORE],
+    low: [u8; LOW],
     used: usize,
     entries: [Entry; ENTRIES],
     n: usize,
@@ -74,7 +94,7 @@ fn rgb(c: u16) -> Rgb {
 impl Long {
     pub const fn new() -> Self {
         Long {
-            store: [0; STORE],
+            low: [0; LOW],
             used: 0,
             entries: [Entry { kind: 0, off: 0, len: 0, y0: 0, y1: 0 }; ENTRIES],
             n: 0,
@@ -92,6 +112,40 @@ impl Long {
         self.ops = 0;
         self.height = 0;
         self.done = 0;
+    }
+
+    /// The bytes at `o..o + l` of the store (never across the two parts).
+    fn bytes(&self, o: usize, l: usize) -> &[u8] {
+        if o >= LOW {
+            unsafe { core::slice::from_raw_parts(far().add(o - LOW), l) }
+        } else {
+            &self.low[o..o + l]
+        }
+    }
+
+    /// `t` onto the end of the entry being received (`entries[n]`, its `off` set); false: no room.
+    fn put(&mut self, t: &[u8]) -> bool {
+        if self.used + t.len() > STORE {
+            return false;
+        }
+        if self.used < LOW && self.used + t.len() > LOW {
+            // it would cross into the far part: the entry so far moves there
+            let start = usize::from(self.entries[self.n].off);
+            let k = self.used - start;
+            if LOW + k + t.len() > STORE {
+                return false;
+            }
+            unsafe { core::ptr::copy_nonoverlapping(self.low.as_ptr().add(start), far(), k) };
+            self.entries[self.n].off = LOW as u16;
+            self.used = LOW + k;
+        }
+        if self.used >= LOW {
+            unsafe { core::ptr::copy_nonoverlapping(t.as_ptr(), far().add(self.used - LOW), t.len()) };
+        } else {
+            self.low[self.used..self.used + t.len()].copy_from_slice(t);
+        }
+        self.used += t.len();
+        true
     }
 
     /// The part of the page that came, panel px.
@@ -134,9 +188,7 @@ impl Long {
             }
             Some(b'p') => {
                 let t = &m[1..];
-                if self.ops == 1 && self.used + t.len() <= STORE {
-                    self.store[self.used..self.used + t.len()].copy_from_slice(t);
-                    self.used += t.len();
+                if self.ops == 1 && self.put(t) {
                     self.entries[self.n].len += t.len() as u16;
                 }
                 Got::None
@@ -144,14 +196,15 @@ impl Long {
             Some(b'I') if m.len() == HEADER => {
                 let got = self.close_ops();
                 self.open = NONE;
-                if self.n >= ENTRIES || self.used + HEADER > STORE {
+                if self.n >= ENTRIES {
                     return got;
                 }
                 let (h, scale, y0) = (u16_at(m, 3), u16::from(m[5].max(1)), u16_at(m, 8));
-                self.store[self.used..self.used + HEADER].copy_from_slice(m);
                 self.entries[self.n] =
                     Entry { kind: BAND, off: self.used as u16, len: HEADER as u16, y0, y1: y0.saturating_add(h * scale) };
-                self.used += HEADER;
+                if !self.put(m) {
+                    return got;
+                }
                 self.open = 0;
                 got
             }
@@ -160,14 +213,12 @@ impl Long {
                     return Got::None;
                 }
                 let t = &m[2..];
-                if u16::from(m[1]) != self.open || self.used + t.len() > STORE {
+                if u16::from(m[1]) != self.open || !self.put(t) {
                     // out of order or no room: the band goes
                     self.open = NONE;
                     self.used = usize::from(self.entries[self.n].off);
                     return Got::None;
                 }
-                self.store[self.used..self.used + t.len()].copy_from_slice(t);
-                self.used += t.len();
                 self.entries[self.n].len += t.len() as u16;
                 self.open = (self.open + 1) & 0xFF;
                 Got::None
@@ -201,13 +252,14 @@ impl Long {
             }
             let (o, l) = (usize::from(e.off), usize::from(e.len));
             if e.kind == BAND {
-                let hdr = &self.store[o..o + HEADER];
+                let b = self.bytes(o, l);
+                let hdr = &b[..HEADER];
                 let x0 = i32::from(i16::from_le_bytes([hdr[6], hdr[7]]));
                 if dec.start(hdr, x0, y0, hdr[5]) {
-                    dec.feed(&self.store[o + HEADER..o + l], pic);
+                    dec.feed(&b[HEADER..], pic);
                 }
             } else {
-                draw_ops(&self.store[o..o + l], s, scroll, top, bottom);
+                draw_ops(self.bytes(o, l), s, scroll, top, bottom);
             }
         }
     }
@@ -318,5 +370,40 @@ fn logo(s: &mut impl Surface, id: u8, cx: i32, cy: i32, top: i32, bottom: i32) {
                 py += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 13 ops entries of 4 KB (7 fit here, 6 far): the one that would cross into the far part moves there whole, and every entry
+    /// reads back as it came.
+    #[test]
+    fn entries_cross_into_the_far_part_whole() {
+        let mut l = Box::new(Long::new());
+        assert!(matches!(l.message(&[b'J', 0, 40]), Got::Begin));
+        let mut kept = 0;
+        for i in 0..13u8 {
+            l.message(&[b'o', i, 0, i + 1, 0, 0]);
+            for j in 0..32u8 {
+                let mut m = [i ^ j; 128];
+                m[0] = b'p';
+                l.message(&m);
+            }
+            kept = l.n;
+        }
+        l.message(b"j");
+        assert_eq!(l.n, 13, "{kept}");
+        for (i, e) in l.entries[..l.n].iter().enumerate() {
+            let (o, n) = (usize::from(e.off), usize::from(e.len));
+            assert_eq!(n, 32 * 127);
+            assert!(o + n <= LOW || o >= LOW, "entry {i} split");
+            let b = l.bytes(o, n);
+            for j in 0..32 {
+                assert!(b[j * 127..(j + 1) * 127].iter().all(|&v| v == i as u8 ^ j as u8), "entry {i} piece {j}");
+            }
+        }
+        assert!(l.entries[..l.n].iter().any(|e| usize::from(e.off) >= LOW));
     }
 }
