@@ -985,7 +985,7 @@ impl Ui {
         // the heading over whatever scrolled under it, and the scroll dots on the right rim
         Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
         let picker = model().picker.as_str();
-        logo::title(&mut s, 30, if picker.is_empty() { crate::NAME } else { picker }, ACCENT);
+        logo::title(&mut s, 30, if !picker.is_empty() { picker } else if let Some(t) = crate::TABS.get(usize::from(self.tab)) { t } else { crate::NAME }, ACCENT);
         self.unread_line(&mut s);
         self.scroll_dots(self.list_scroll, self.list_max());
     }
@@ -1243,7 +1243,7 @@ impl Ui {
                 // the title too: a picker came, or went
                 Surface::rect(&mut s, 0, 0, 466, HEAD_H, 0);
                 let picker = model().picker.as_str();
-                logo::title(&mut s, 30, if picker.is_empty() { crate::NAME } else { picker }, ACCENT);
+                logo::title(&mut s, 30, if !picker.is_empty() { picker } else if let Some(t) = crate::TABS.get(usize::from(self.tab)) { t } else { crate::NAME }, ACCENT);
                 self.unread_line(&mut s);
                 self.scroll_dots(self.list_scroll, self.list_max());
             }
