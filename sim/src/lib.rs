@@ -479,10 +479,48 @@ impl State {
         ]);
     }
 
+    /// The panel as the watch shows it: the app's frame with the loader's status bar over it (fw status.rs: the
+    /// GPS bars while the app holds the GPS, the time; the stock 24 px font there, the SDK's here).
+    pub fn panel(&self) -> Vec<u16> {
+        struct Px<'a>(&'a mut [u16]);
+        impl cmf_wp2_ui::Surface for Px<'_> {
+            fn rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: u16) {
+                for yy in y.max(0)..(y + h).min(H as i32) {
+                    for xx in x.max(0)..(x + w).min(W as i32) {
+                        self.0[yy as usize * W + xx as usize] = c;
+                    }
+                }
+            }
+            fn text(&mut self, _: i32, _: i32, _: &str, _: u16) {}
+        }
+        let mut px = self.shown.clone();
+        let t = self.time().map_or("--:--".to_string(), |t| format!("{:02}:{:02}", t.hour, t.minute));
+        let bars = self.gps_on.then(|| match (self.gps.3, self.gps.4) {
+            (0, _) => 0,
+            (_, 8..) => 3,
+            (_, 5..) => 2,
+            _ => 1,
+        });
+        let mut s = Px(&mut px);
+        let tw = cmf_wp2_ui::font::width(&t);
+        // fw status.rs: bars 3 × 3 px, 3 px apart, then the time in a 72 px box, centred; top 4
+        let (lw, bw) = (72, 15);
+        let x0 = 233 - if bars.is_some() { (bw + lw) / 2 } else { lw / 2 };
+        if let Some(l) = bars {
+            for i in 0..3 {
+                let c = if i < l { 0xFFFF } else { 0x4208 };
+                cmf_wp2_ui::Surface::rect(&mut s, x0 + i * 6, 9, 3, 17, c);
+            }
+        }
+        let lx = if bars.is_some() { x0 + bw } else { x0 };
+        cmf_wp2_ui::font::draw(&mut s, lx + (lw - tw) / 2, 5, &t, 0xFFFF);
+        px
+    }
+
     pub fn shot(&mut self, name: &str) {
         let Some(dir) = self.cfg.frames.clone() else { return };
         let path = dir.join(format!("{name}.png"));
-        let rc = out::png(&path, &self.shown);
+        let rc = out::png(&path, &self.panel());
         self.log("shot", &[("file", V::S(&path.to_string_lossy())), ("ok", V::B(rc.is_ok()))]);
     }
 
