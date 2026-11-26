@@ -1052,15 +1052,27 @@ impl Ui {
             rrect(&mut s, x0, y, x1 - x0, CARD_H, CARD_H / 2, CARD, BLACK);
             let (ax, ay) = (x0 + 46, y + CARD_H / 2);
             // the contact's colour, its initial in dots; a ring of the accent while unread
-            if status {
+            if let Some(f) = m.face(c.id).filter(|_| !status) {
+                // their picture: 4 px a pixel, the square's corners rounded off, the accent ring while unread
+                for (i, &px) in f.iter().enumerate() {
+                    let (fx, fy) = ((i % crate::model::DP) as i32, (i / crate::model::DP) as i32);
+                    Surface::rect(&mut s, ax - 24 + fx * 4, ay - 24 + fy * 4, 4, 4, px);
+                }
+                ring(&mut s, ax, ay, 24, 35, CARD, CARD);
+                if unread > 0 {
+                    ring(&mut s, ax, ay, 24, 27, ACCENT, CARD);
+                }
+            } else if status {
                 ring(&mut s, ax, ay, 25, 27, RED, CARD);
             } else {
                 disc(&mut s, ax, ay, 27, if unread > 0 { ACCENT } else { CARD }, CARD);
                 disc(&mut s, ax, ay, if unread > 0 { 24 } else { 27 }, avatar(c.name.as_str()), if unread > 0 { ACCENT } else { CARD });
             }
-            let mut b = [0u8; 4];
-            let ch = c.name.as_str().chars().next().unwrap_or('?').to_ascii_uppercase();
-            dots_centre(&mut s, ax, ay - 12, ch.encode_utf8(&mut b), 3, 2, W);
+            if m.face(c.id).is_none() || status {
+                let mut b = [0u8; 4];
+                let ch = c.name.as_str().chars().next().unwrap_or('?').to_ascii_uppercase();
+                dots_centre(&mut s, ax, ay - 12, ch.encode_utf8(&mut b), 3, 2, W);
+            }
             let tx = x0 + 86;
             let right = x1 - if unread > 0 { 52 } else { 24 };
             let ink = if status { RED.rgb565() } else if unread > 0 { W } else { SOFT };

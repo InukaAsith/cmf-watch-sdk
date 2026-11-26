@@ -34,6 +34,8 @@ DP = {1: ((40, 90, 200), (240, 200, 170)), 2: ((200, 80, 120), (220, 170, 140)),
 # whom a new chat can go to (the + button's picker)
 CONTACTS = {20: "Dad", 21: "Nimal", 22: "Ayesha", 23: "Kasun", 24: "Tharushi"}
 NEW = 200
+# the chats whose list picture the watch has
+FACES_SENT = set()
 QUICK = ["OK", "On my way", "Call you later", "Yes", "No", "Thanks!"]
 
 
@@ -142,6 +144,12 @@ async def send_list(ch, syncing=False):
     await ch.send(b"L" + bytes([len(rows)]))
     for r in rows:
         await ch.send(r)
+    # the rows' pictures (`g id part px`), once a session
+    for cid in CHATS:
+        if cid in DP and cid not in FACES_SENT:
+            FACES_SENT.add(cid)
+            for part in dp_parts(*DP[cid]):
+                await ch.send(b"g" + bytes([cid]) + part[1:])
 
 
 async def send_picker(ch):
@@ -247,6 +255,7 @@ async def main():
                 await open_chat(ch, opened)
                 continue
             if m == b"R":
+                FACES_SENT.clear()
                 await send_list(ch)
                 for i, q in enumerate(QUICK):
                     await ch.send(b"Q" + bytes([i]) + q.encode())
