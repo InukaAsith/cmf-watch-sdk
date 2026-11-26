@@ -272,6 +272,39 @@ const SOFT: u16 = rgb565(0xC8, 0xC8, 0xC8);
 const GREY: u16 = rgb565(0x80, 0x80, 0x80);
 const DIM: u16 = rgb565(0x3A, 0x3A, 0x3A);
 const GREEN: Rgb = Rgb(0x25, 0xD3, 0x66);
+const fn hex(c: u32) -> Rgb {
+    Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+/// the app's own colours (main.rs): WhatsApp green, Gemini blue, Notes yellow
+const ACCENT: Rgb = hex(crate::ACCENT);
+const MINE: Rgb = hex(crate::MINE);
+const THEIRS: Rgb = hex(crate::THEIRS);
+/// read: the blue ticks
+const READ: Rgb = Rgb(0x53, 0xBD, 0xEB);
+/// A colour of each contact's own (by name), as phones give them.
+const AVATARS: [Rgb; 8] = [
+    Rgb(0xE5, 0x48, 0x4D),
+    Rgb(0xF7, 0x6B, 0x15),
+    Rgb(0xE2, 0xA3, 0x36),
+    Rgb(0x30, 0xA4, 0x6C),
+    Rgb(0x12, 0xA5, 0x94),
+    Rgb(0x00, 0x90, 0xFF),
+    Rgb(0x8E, 0x4E, 0xC6),
+    Rgb(0xD6, 0x40, 0x9F),
+];
+
+fn avatar(name: &str) -> Rgb {
+    let h = name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
+    AVATARS[(h % 8) as usize]
+}
+
+/// A microphone, `c` on `bg`, about 24 px tall.
+fn mic_glyph(s: &mut impl Surface, cx: i32, cy: i32, c: Rgb, bg: Rgb) {
+    rrect(s, cx - 6, cy - 14, 12, 19, 6, c, bg);
+    arc(s, cx, cy - 4, 9, 12, 0, 32768, c, None, bg);
+    Surface::rect(s, cx - 1, cy + 8, 3, 6, c.rgb565());
+    Surface::rect(s, cx - 6, cy + 13, 13, 3, c.rgb565());
+}
 
 // --- list
 const HEAD_H: i32 = 96;
@@ -333,6 +366,8 @@ enum K {
     Send,
     /// to the emoji page and back
     Emoji,
+    /// to the rotary keyboard
+    Dial,
 }
 
 /// The emoji page: EM_COLS × EM_ROWS cells of EM_CELL px from EM_TOP, the keys row below.
@@ -383,16 +418,18 @@ fn row(r: usize, sym: bool) -> Row {
         _ => {
             let mut row = chars_row(b"", 0);
             if emoji::all().is_empty() {
-                row.keys[0] = (K::Sym, 62);
-                row.keys[1] = (K::Space, 122);
-                row.keys[2] = (K::Send, 72);
-                row.n = 3;
-            } else {
-                row.keys[0] = (K::Sym, 60);
-                row.keys[1] = (K::Emoji, 50);
-                row.keys[2] = (K::Space, 100);
+                row.keys[0] = (K::Sym, 58);
+                row.keys[1] = (K::Dial, 54);
+                row.keys[2] = (K::Space, 104);
                 row.keys[3] = (K::Send, 66);
                 row.n = 4;
+            } else {
+                row.keys[0] = (K::Sym, 54);
+                row.keys[1] = (K::Emoji, 46);
+                row.keys[2] = (K::Dial, 46);
+                row.keys[3] = (K::Space, 82);
+                row.keys[4] = (K::Send, 58);
+                row.n = 5;
             }
             row
         }
@@ -727,7 +764,7 @@ fn rule(s: &mut impl Surface, y: i32) {
 fn heading(s: &mut impl Surface, y: i32, text: &str, pitch: i32) {
     let w = text.chars().count() as i32 * 8 * pitch;
     dots(s, C - w / 2, y, text, pitch, pitch - 1, W);
-    disc(s, C + w / 2 + 8, y + 7 * pitch - 3, 4, RED, BLACK);
+    disc(s, C + w / 2 + 8, y + 7 * pitch - 3, 4, ACCENT, BLACK);
 }
 
 fn upper(s: &str, out: &mut [u8; 24]) -> usize {
@@ -816,7 +853,7 @@ impl Ui {
             let mut n = [0u8; 11];
             let t = cmf_wp2_ui::text::int(unread as i32, &mut n);
             let w = font::width(t) + font::width(" unread");
-            let x = font::draw(s, C - w / 2, 70, t, GREY);
+            let x = font::draw(s, C - w / 2, 70, t, ACCENT.rgb565());
             font::draw(s, x, 70, " unread", GREY);
         }
     }
@@ -844,7 +881,13 @@ impl Ui {
             surround(&mut s, x0, y, x1 - x0, CARD_H, CARD_H / 2);
             rrect(&mut s, x0, y, x1 - x0, CARD_H, CARD_H / 2, CARD, BLACK);
             let (ax, ay) = (x0 + 46, y + CARD_H / 2);
-            ring(&mut s, ax, ay, 25, 27, if status { RED } else if unread > 0 { WHITE } else { Rgb(0x70, 0x70, 0x70) }, CARD);
+            // the contact's colour, its initial in dots; a ring of the accent while unread
+            if status {
+                ring(&mut s, ax, ay, 25, 27, RED, CARD);
+            } else {
+                disc(&mut s, ax, ay, 27, if unread > 0 { ACCENT } else { CARD }, CARD);
+                disc(&mut s, ax, ay, if unread > 0 { 24 } else { 27 }, avatar(c.name.as_str()), if unread > 0 { ACCENT } else { CARD });
+            }
             let mut b = [0u8; 4];
             let ch = c.name.as_str().chars().next().unwrap_or('?').to_ascii_uppercase();
             dots_centre(&mut s, ax, ay - 12, ch.encode_utf8(&mut b), 3, 2, W);
@@ -854,9 +897,9 @@ impl Ui {
             fitted(&mut s, tx, y + 16, c.name.as_str(), right - tx, ink);
             fitted(&mut s, tx, y + 46, c.preview.as_str(), x1 - 30 - tx, GREY);
             if unread > 0 {
-                disc(&mut s, x1 - 32, y + 26, 13, RED, CARD);
+                disc(&mut s, x1 - 32, y + 26, 13, ACCENT, CARD);
                 let mut n = [0u8; 11];
-                centre(&mut s, x1 - 32, y + 18, cmf_wp2_ui::text::int(unread.min(9) as i32, &mut n), W);
+                centre(&mut s, x1 - 32, y + 18, cmf_wp2_ui::text::int(unread.min(9) as i32, &mut n), 0);
             }
         }
         let end = LIST_TOP + m.n_chats as i32 * PITCH - self.list_scroll;
@@ -899,8 +942,8 @@ impl Ui {
         if crate::PLAIN {
             // a note's title, as written
             let (t, _) = clip(name, 240);
-            centre(&mut s, C, 30, t, W);
-            rule(&mut s, 66);
+            centre(&mut s, C, 36, t, W);
+            rule(&mut s, 70);
             Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
             return self.chat_buttons(&mut s);
         }
@@ -913,29 +956,28 @@ impl Ui {
             }
         }
         let (shown, _) = cmf_wp2_ui::text::clip(fit(&up[..n], 24), 9);
-        heading(&mut s, 26, shown, 3);
+        heading(&mut s, 34, shown, 3);
         if m.online {
             // online: a green dot before the name
             let w = shown.chars().count() as i32 * 24;
-            disc(&mut s, C - w / 2 - 16, 37, 7, GREEN, BLACK);
+            disc(&mut s, C - w / 2 - 16, 45, 7, GREEN, BLACK);
         }
-        rule(&mut s, 66);
+        rule(&mut s, 70);
         Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
         self.chat_buttons(&mut s);
     }
 
     /// The messages, each over the last frame's, the gaps between cleared; the heading and buttons left alone.
     fn chat_buttons(&self, s: &mut Dot) {
-        // keyboard · quick replies · dial
-        ring(s, BTN_X[0], BTN_Y, 24, 26, WHITE, BLACK);
-        centre(s, BTN_X[0], BTN_Y - 8, "Aa", W);
-        disc(s, BTN_X[1], BTN_Y, 28, RED, BLACK);
+        // keyboard · quick replies · voice typing (the rotary keyboard is a key on the keyboard)
+        disc(s, BTN_X[0], BTN_Y, 26, KEYC, BLACK);
+        centre(s, BTN_X[0], BTN_Y - 9, "Aa", W);
+        disc(s, BTN_X[1], BTN_Y, 29, ACCENT, BLACK);
         for dx in [-10, 0, 10] {
-            Surface::rect(s, BTN_X[1] + dx - 2, BTN_Y - 2, 4, 4, W);
+            disc(s, BTN_X[1] + dx, BTN_Y, 3, BLACK, ACCENT);
         }
-        ring(s, BTN_X[2], BTN_Y, 24, 26, WHITE, BLACK);
-        ring(s, BTN_X[2], BTN_Y, 10, 12, WHITE, BLACK);
-        disc(s, BTN_X[2], BTN_Y - 17, 3, RED, BLACK);
+        disc(s, BTN_X[2], BTN_Y, 26, KEYC, BLACK);
+        mic_glyph(s, BTN_X[2], BTN_Y, WHITE, KEYC);
     }
 
     /// Where the newest message ends: the feed's foot (chats), or a page's text from the top while it fits (notes).
@@ -960,8 +1002,9 @@ impl Ui {
             if msg.pic == 1 && top >= FEED_TOP && bottom <= FEED_END {
                 let cx = if msg.me { BUBBLE_X1 - SPIN_W / 2 } else { BUBBLE_X0 + SPIN_W / 2 };
                 let cy = top + (LINE + 18) / 2;
-                arc(&mut s, cx, cy, 9, 13, 0, 65536, Rgb(0x40, 0x40, 0x40), None, CARD);
-                arc(&mut s, cx, cy, 9, 13, self.spin.1, 65536 / 4, WHITE, None, CARD);
+                let bg = if msg.me { MINE } else { THEIRS };
+                arc(&mut s, cx, cy, 9, 13, 0, 65536, Rgb(0x40, 0x40, 0x40), None, bg);
+                arc(&mut s, cx, cy, 9, 13, self.spin.1, 65536 / 4, ACCENT, None, bg);
             }
             bottom = top - GAP;
         }
@@ -1034,8 +1077,7 @@ impl Ui {
             if x1 - x0 < 120 {
                 continue;
             }
-            rrect(&mut s, x0, y, x1 - x0, 54, 27, WHITE, BLACK);
-            rrect(&mut s, x0 + 2, y + 2, x1 - x0 - 4, 50, 25, BLACK, WHITE);
+            rrect(&mut s, x0, y, x1 - x0, 54, 27, MINE, BLACK);
             let (t, _) = clip(m.quick[i].as_str(), x1 - x0 - 28);
             centre(&mut s, C, y + 19, t, W);
         }
@@ -1054,7 +1096,7 @@ impl Ui {
         let typed = fit(&self.typed[..self.n_typed], TYPED_MAX);
         if typed.is_empty() {
             centre(&mut s, C, y0, "Message", DIM);
-            Surface::rect(&mut s, C - 44, y0 - 2, 3, 20, RED.rgb565());
+            Surface::rect(&mut s, C - 44, y0 - 2, 3, 20, ACCENT.rgb565());
             return;
         }
         let mut lines = [""; 8];
@@ -1072,7 +1114,7 @@ impl Ui {
             last_y = y;
         }
         let trailing = typed.ends_with(' ') as i32 * font::advance(' ');
-        Surface::rect(&mut s, C + last_w / 2 + trailing + 2, last_y - 2, 3, 20, RED.rgb565());
+        Surface::rect(&mut s, C + last_w / 2 + trailing + 2, last_y - 2, 3, 20, ACCENT.rgb565());
     }
 
     fn redraw_typed(&self) {
@@ -1137,7 +1179,7 @@ impl Ui {
             }
             let fill = match (pressed, k) {
                 (true, _) => WHITE,
-                (_, K::Send) => RED,
+                (_, K::Send) => ACCENT,
                 (_, K::Shift) if shift => WHITE,
                 (_, K::Ch(_)) => KEYC,
                 _ => CARD,
@@ -1158,8 +1200,15 @@ impl Ui {
                 K::Space => "space",
                 K::Send => ">",
                 K::Emoji if self.screen == Screen::Emoji => "abc",
-                K::Emoji => "",
+                K::Emoji | K::Dial => "",
             };
+            if k == K::Dial {
+                // the rotary keyboard: a ring with its marker
+                let (cx, cy) = (x + w / 2, y + KH / 2);
+                ring(&mut s, cx, cy, 9, 11, if pressed { BLACK } else { WHITE }, fill);
+                disc(&mut s, cx, cy - 14, 3, ACCENT, fill);
+                return;
+            }
 
             if k == K::Emoji && self.screen != Screen::Emoji {
                 // a small smiling face
@@ -1173,7 +1222,7 @@ impl Ui {
                 }
                 return;
             }
-            let ink = if k == K::Space && !pressed { GREY } else { ink };
+            let ink = if k == K::Space && !pressed { GREY } else if k == K::Send && !pressed { 0 } else { ink };
             centre(&mut s, x + w / 2, y + KH / 2 - 8, label, ink);
         });
     }
@@ -1196,6 +1245,7 @@ impl Ui {
         }
         match k {
             K::Send => return self.send_typed(),
+            K::Dial => return self.go(Screen::Dial),
             K::Emoji => {
                 self.em_page = 0;
                 return self.go(Screen::Emoji);
@@ -1269,7 +1319,8 @@ impl Ui {
                 self.typed[n..n + fits.len()].copy_from_slice(fits.as_bytes());
                 self.n_typed = n + fits.len();
                 self.motor.play(haptic::TICK);
-                self.go(self.voice_from);
+                // from the chat: into the keyboard, to send or change
+                self.go(if self.voice_from == Screen::Chat { Screen::Qwerty } else { self.voice_from });
             }
             DictOut::Cancel => self.go(self.voice_from),
         }
@@ -1572,10 +1623,15 @@ impl Ui {
                     }
                     return;
                 }
-                let to = [Screen::Qwerty, Screen::Quick, Screen::Dial];
                 if let Some(b) = BTN_X.iter().position(|&bx| (x - bx).abs() < 34) {
                     self.motor.play(haptic::TICK);
-                    self.go(to[b]);
+                    if b == 2 {
+                        // voice typing: the words come into the keyboard, to send or change
+                        self.voice_from = Screen::Chat;
+                        self.dict.start(self.api, false);
+                        return self.go(Screen::Voice);
+                    }
+                    self.go([Screen::Qwerty, Screen::Quick][b]);
                 }
             }
             Screen::Quick => {
@@ -1665,7 +1721,7 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
             let cy = top + LINE / 2 + 2;
             ring(s, PLAIN_X + 12, cy, 9, 11, WHITE, BLACK);
             if msg.kind == 4 {
-                disc(s, PLAIN_X + 12, cy, 6, RED, BLACK);
+                disc(s, PLAIN_X + 12, cy, 6, ACCENT, BLACK);
             }
         }
         let c = if msg.kind == 4 { GREY } else { W };
@@ -1687,7 +1743,7 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
     let widest = ls.l[..n].iter().map(|l| font::width(l)).max().unwrap_or(0).min(TEXT_W);
     let (w, h) = (if msg.pic == 1 && matches!(msg.kind, 1 | 2) { SPIN_W } else { widest.max(24) + 32 }, n as i32 * LINE + 18);
     let x = if msg.me { BUBBLE_X1 - w } else { BUBBLE_X0 };
-    let (fill, ink) = if msg.me { (WHITE, 0) } else { (CARD, W) };
+    let (fill, ink) = if msg.me { (MINE, W) } else { (THEIRS, W) };
     surround(s, x, top, w, h, 20);
     let rest = bubble_h(msg) - h;
     if rest > 0 {
@@ -1699,9 +1755,9 @@ fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32) {
         fitted(s, x + 16, top + 8 + i as i32 * LINE, l, TEXT_W, c);
     }
     if msg.me && !crate::ASSISTANT {
-        // at the top, left of our bubble: . delivered, .. read
+        // at the top, left of our bubble: . delivered, .. read (blue)
         for k in 0..msg.state.min(2) as i32 {
-            disc(s, x - 10 - k * 12, top + 10, 4, WHITE, BLACK);
+            disc(s, x - 10 - k * 12, top + 10, 4, if msg.state >= 2 { READ } else { Rgb(0x8A, 0x8A, 0x8A) }, BLACK);
         }
     }
 }
