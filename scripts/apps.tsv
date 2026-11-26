@@ -1,15 +1,15 @@
 # The watch apps CMFX ships in its IPA (scripts/release-apps): crate, version, name on the watch.
 # Bump a version when its app changes: CMFX offers an update when the bundled one is newer than the watch's.
-assistant	22	Gemini
-atlas	14	Maps
-browser	22	Browser
-chats	25	WhatsApp
-mail	14	Mail
-maps	8	Offline Maps
-nav	12	Navigation
-notes	15	Notes
+assistant	23	Gemini
+atlas	15	Maps
+browser	23	Browser
+chats	26	WhatsApp
+mail	15	Mail
+maps	9	Offline Maps
+nav	13	Navigation
+notes	16	Notes
 photos	14	Photos
-spotify	13	Spotify Control
-spplayer	7	Spotify
-ytmusic	10	YouTube Music
-recorder	4	Recorder
+spotify	14	Spotify Control
+spplayer	8	Spotify
+ytmusic	11	YouTube Music
+recorder	5	Recorder

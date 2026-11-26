@@ -142,6 +142,9 @@ pub struct Model {
 /// Pictures kept for the list: WhatsApp's (every row), none in the other apps.
 pub const FACES: usize = if crate::VOICE { MAX_CHATS } else { 0 };
 
+/// A message slot whose `M` has not come yet (the phone sends a chat newest first).
+pub const NOT_YET: u8 = 0xFE;
+
 /// The chat picture's side, px (shown 4× as a disc).
 pub const DP: usize = 12;
 
@@ -239,6 +242,10 @@ impl Model {
                 self.title.set(&a[1..]);
                 self.n_msgs = 0;
                 self.used = 0;
+                // the phone sends the newest first: slots under them not come yet are left out
+                for m in self.msgs.iter_mut() {
+                    m.kind = NOT_YET;
+                }
                 Effect::Chat
             }
             b'M' if a.len() >= 3 => {

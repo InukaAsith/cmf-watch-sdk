@@ -175,7 +175,8 @@ async def open_chat(ch, cid):
         for part in dp_parts(*DP[cid]):
             await ch.send(part)
     shown = msgs[-MAX_MSGS:]
-    for i, (me, kind, text) in enumerate(shown):
+    # newest first (as CMFX): the watch shows the end at once, the older ones above as they come
+    for i, (me, kind, text) in reversed(list(enumerate(shown))):
         await ch.send(text_msg("M", i, me, kind, text=text))
     for i, (me, kind, text) in enumerate(shown):
         if kind in (1, 2):

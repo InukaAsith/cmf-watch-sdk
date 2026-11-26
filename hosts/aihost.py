@@ -131,7 +131,7 @@ async def main():
         async def open_chat(i):
             bubbles = [(t["role"] == "user", c) for t in convos[i] for c in chunks(t["parts"][0]["text"])][-10:]
             await ch.send(b"H" + bytes([i]) + b"Gemini")
-            for k, (me, c) in enumerate(bubbles):
+            for k, (me, c) in reversed(list(enumerate(bubbles))):
                 await ch.send(b"M" + bytes([k, int(me), 0]) + c.encode()[:120])
 
         await send_when_open(ch, b"?")  # waits till the app is open

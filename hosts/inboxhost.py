@@ -208,7 +208,8 @@ class Inbox:
         self.opened = i
         self.box.opened(i)
         await self.out(ch, b"H" + bytes([i]) + cut(self.box.title(i), 24))
-        for idx, (me, kind, text) in enumerate(self.box.lines(i)[-MAX_MSGS:]):
+        # newest first (as CMFX)
+        for idx, (me, kind, text) in reversed(list(enumerate(self.box.lines(i)[-MAX_MSGS:]))):
             await self.out(ch, msg("M", idx, me, kind, text=text))
 
     async def handle(self, ch, m):

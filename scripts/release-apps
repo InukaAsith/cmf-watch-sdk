@@ -2,8 +2,9 @@
 # The watch apps CMFX bundles, as one GitHub release (tag apps-<date>-<sha>, assets <crate>.wp2app and apps.json):
 # CMFX's iOS build puts the newest one in the IPA (cmfx ios/fetch-apps.sh) and its Apps page installs them.
 #   scripts/release-apps [notes]
-# Built with the committed icons only (WP2_PUBLIC: no icon.local.svg brand logos). A release is built binaries,
-# never a commit (AGENTS.md rule 2). Needs llvm-objcopy and resvg on PATH (or nix-shell).
+# Built with the owner's icon.local.svg logos where there are (WhatsApp, Spotify, YouTube Music: the owner wants them
+# on the watch, 2026-11-26); WP2_PUBLIC=1 builds with the committed icons only. A release is built binaries, never a
+# commit (AGENTS.md rule 2). Needs llvm-objcopy and resvg on PATH (or nix-shell).
 set -euo pipefail
 notes=${1:-}
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -14,7 +15,7 @@ mkdir -p "$out"
 json="["
 while IFS=$'\t' read -r crate version name; do
     [[ -z "$crate" || "$crate" == \#* ]] && continue
-    WP2_PUBLIC=1 scripts/build-app "$crate" "$version" "$name" >/dev/null
+    scripts/build-app "$crate" "$version" "$name" >/dev/null
     cp "target/$crate.wp2app" "$out/$crate.wp2app"
     json+="{\"file\":\"$crate.wp2app\",\"name\":\"$name\",\"version\":$version},"
 done < scripts/apps.tsv

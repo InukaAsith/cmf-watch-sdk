@@ -534,6 +534,10 @@ struct Ui {
     /// once in FRAME_MS, the rest waits in `due` (the panel takes a frame from the buffer we draw into)
     shown_at: u32,
     due: bool,
+    /// the open chat: a draw of only its header (the picture, last seen), and when its `H` came (an empty chat
+    /// says so only after a while: its messages may still be coming)
+    head_only: bool,
+    head_at: u32,
     /// when the list was last asked for: back on the list, and every LIST_MS while it is open, the phone sends it
     /// again (new chats while the app stays open; the phone may have gone quiet meanwhile)
     list_ask: u32,
@@ -549,6 +553,7 @@ const PERIODIC: bool = RELIST && matches!(crate::TITLE.as_bytes(), b"WHATSAPP");
 
 /// The least time between two frames that messages bring.
 const FRAME_MS: u32 = 80;
+const EMPTY_MS: u32 = 1500;
 
 fn main(api: &'static Api) -> i32 {
     api.own_back(true);
@@ -589,6 +594,8 @@ fn main(api: &'static Api) -> i32 {
         spin: (0, 0),
         shown_at: 0,
         due: false,
+        head_only: false,
+        head_at: 0,
         list_ask: api.now(),
     };
     if crate::PLAIN && kept().load(api) {
@@ -635,10 +642,21 @@ fn main(api: &'static Api) -> i32 {
         }
         let relist = periodic
             .then(|| LIST_MS.saturating_sub(now.wrapping_sub(ui.list_ask)).max(1));
+        // an empty chat: "No messages yet" once EMPTY_MS passed
+        let mut empty = None;
+        if ui.screen == Screen::Chat && model().n_msgs == 0 && model().headed && ui.head_at != 0 {
+            let left = EMPTY_MS.saturating_sub(now.wrapping_sub(ui.head_at));
+            if left == 0 {
+                ui.head_at = 0;
+                ui.due = true;
+            } else {
+                empty = Some(left);
+            }
+        }
         let paced = ui.due.then(|| FRAME_MS.saturating_sub(now.wrapping_sub(ui.shown_at)).max(1));
         ui.sync_step();
         let sync = (ui.sync_bar() && ui.screen == Screen::List).then_some(SYNC_MS);
-        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist, sync, ui.voice.wait().filter(|_| crate::VOICE)].into_iter().flatten().min().unwrap_or(u32::MAX);
+        let wait = [ui.motor.wait(), flash, hold, again, asked, spin, paced, relist, sync, empty, ui.voice.wait().filter(|_| crate::VOICE)].into_iter().flatten().min().unwrap_or(u32::MAX);
         let wait = ui.dict.wait_ms(wait);
         let mut e = match ahead.take() {
             Some(e) => Some(e),
@@ -817,6 +835,9 @@ fn main(api: &'static Api) -> i32 {
                     if crate::PLAIN {
                         kept().keep(m);
                     }
+                    if m.first() == Some(&b'H') {
+                        ui.head_at = api.now();
+                    }
                     if matches!(m.first(), Some(b'P' | b'W' | b'G')) {
                         // the online dot is in the header
                         head = true;
@@ -834,9 +855,21 @@ fn main(api: &'static Api) -> i32 {
                     if ui.screen == Screen::Chat {
                         ui.draw();
                     }
-                } else if head && ui.screen == Screen::Chat {
-                    ui.draw();
-                } else if (list && ui.screen == Screen::List) || (chat && ui.screen == Screen::Chat) {
+                } else if ui.screen == Screen::Chat && (head || chat) {
+                    if head {
+                        // the picture or last seen: the header alone
+                        ui.head_only = true;
+                        ui.draw();
+                    }
+                    if chat {
+                        // the newest come first (the phone sends them so): the chat grows upwards
+                        if api.now().wrapping_sub(ui.shown_at) >= FRAME_MS {
+                            ui.refresh();
+                        } else {
+                            ui.due = true;
+                        }
+                    }
+                } else if list && ui.screen == Screen::List {
                     if api.now().wrapping_sub(ui.shown_at) >= FRAME_MS {
                         ui.refresh();
                     } else {
@@ -1136,7 +1169,10 @@ impl Ui {
         if let Some(i) = self.menu.filter(|_| crate::VOICE) {
             return self.draw_menu(i);
         }
-        self.feed();
+        let full = !core::mem::take(&mut self.head_only);
+        if full {
+            self.feed();
+        }
         let mut s = Dot(self.api);
         let m = model();
         Surface::rect(&mut s, 0, 0, 466, FEED_TOP, 0);
@@ -1180,8 +1216,10 @@ impl Ui {
             font::draw(&mut s, tx, cy - font::HEIGHT - 1, nm, W);
             font::draw(&mut s, tx, cy + 2, sb, sub_c);
         }
-        Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
-        self.chat_buttons(&mut s);
+        if full {
+            Surface::rect(&mut s, 0, FEED_END, 466, 466 - FEED_END, 0);
+            self.chat_buttons(&mut s);
+        }
     }
 
     /// The messages, each over the last frame's, the gaps between cleared; the heading and buttons left alone.
@@ -1251,6 +1289,9 @@ impl Ui {
         Surface::rect(&mut s, 0, bottom, 466, FEED_END - bottom, 0);
         let mut total = 0;
         for msg in m.msgs[..m.n_msgs].iter().rev() {
+            if msg.kind == crate::model::NOT_YET {
+                continue;
+            }
             let h = bubble_h(msg);
             let top = bottom - h;
             if top < FEED_END && bottom > FEED_TOP {
@@ -1271,7 +1312,8 @@ impl Ui {
         Surface::rect(&mut s, 0, FEED_TOP, 466, bottom - FEED_TOP, 0);
         self.chat_max = (total - (FEED_END - FEED_TOP)).max(0);
         if m.n_msgs == 0 {
-            let t = if m.headed && crate::EMPTY == "Loading" { "No messages yet" } else { crate::EMPTY };
+            let late = self.head_at == 0 || self.api.now().wrapping_sub(self.head_at) >= EMPTY_MS;
+            let t = if m.headed && late && crate::EMPTY == "Loading" { "No messages yet" } else { crate::EMPTY };
             centre(&mut s, C, C - 8, t, GREY);
         }
     }
@@ -1732,6 +1774,9 @@ impl Ui {
         let m = model();
         let mut bottom = self.feed_bottom();
         for i in (0..m.n_msgs).rev() {
+            if m.msgs[i].kind == crate::model::NOT_YET {
+                continue;
+            }
             let top = bottom - bubble_h(&m.msgs[i]);
             if (top..bottom).contains(&y) {
                 return Some(i as u8);
@@ -2068,6 +2113,10 @@ const REACTS: [u32; 6] = [0x1F44D, 0x1F497, 0x1F602, 0x1F631, 0x1F62D, 0x1F64F];
 const REACT_H: i32 = 14;
 
 fn bubble_h(msg: &Msg) -> i32 {
+    if msg.kind == crate::model::NOT_YET {
+        // not come yet: nothing, its gap taken back
+        return -GAP;
+    }
     (if crate::VOICE && msg.react != 0 { REACT_H } else { 0 }) + match msg.img.filter(|i| i.ok) {
         Some(img) => img.size().1 + if msg.text.as_str().is_empty() { 0 } else { LINE + 8 },
         None if crate::PLAIN => lines(msg).n.max(1) as i32 * LINE + if matches!(msg.kind, 3 | 4) { 12 } else { 2 },
