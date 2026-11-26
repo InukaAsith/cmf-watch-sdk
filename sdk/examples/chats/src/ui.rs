@@ -12,7 +12,7 @@ use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOW
 use cmf_wp2_ui::color::{rgb565, BLACK, Rgb};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
 use cmf_wp2_ui::draw::{arc, disc, ring, rrect};
-use cmf_wp2_ui::geom::{chord, polar};
+use cmf_wp2_ui::geom::chord;
 use cmf_wp2_ui::haptic::{self, Motor};
 use cmf_wp2_ui::motion::isqrt;
 use cmf_wp2_ui::font::{self, centre, clip, fitted, wrap};
@@ -1081,21 +1081,9 @@ impl Ui {
     }
 
     /// Seven dots on the right rim; the lit one shows how far down the list is.
+    /// The stock lists' round scroll bar (as the Apps menu).
     fn scroll_dots(&self, at: i32, max: i32) {
-        if max == 0 {
-            return;
-        }
-        let mut s = Dot(self.api);
-        let lit = (at * 6 + max / 2) / max;
-        for i in 0..7 {
-            let a = (65536 - 6 * 512 + i * 1024) as u16;
-            let (x, y) = polar(C - 12, a);
-            let c = if i == lit { WHITE } else { Rgb(0x40, 0x40, 0x40) };
-            if i != lit {
-                Surface::rect(&mut s, x - 4, y - 4, 9, 9, 0);
-            }
-            disc(&mut s, x, y, if i == lit { 4 } else { 3 }, c, BLACK);
-        }
+        cmf_wp2_ui::draw::scroll_bar(&mut Dot(self.api), at, max, 466 - LIST_TOP - 30, BLACK);
     }
 
     // --- chat
