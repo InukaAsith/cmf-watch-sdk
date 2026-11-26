@@ -6,6 +6,7 @@
 //! (what was searched for, or the recent ones); `E text`: what it is doing or why it couldn't. Asks: `R` (the
 //! recent places when no route is on), `Q text`, `S idx walking`.
 
+use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use cmf_wp2_app::Api;
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
@@ -19,6 +20,9 @@ const PLACES: usize = 8;
 const NAME: usize = 40;
 const DETAIL: usize = 60;
 const QUERY: usize = 40;
+/// the voice typing button, right of the typed words
+const MIC_X: i32 = 404;
+const MIC_Y: i32 = 120;
 
 const W: u16 = 0xFFFF;
 const GREY: u16 = rgb565(0x80, 0x80, 0x80);
@@ -49,6 +53,8 @@ pub enum Screen {
     /// the rotary keyboard
     Dial,
     List,
+    /// voice typing into the query (cmf_wp2_ui::dictate)
+    Voice,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +97,7 @@ pub struct Start {
     sym: bool,
     /// the key lit since it was typed (till the next touch)
     lit: Option<K>,
+    pub dict: Dictate,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -124,6 +131,7 @@ impl Start {
             searched: false,
             walking: true,
             query: [0; QUERY],
+            dict: Dictate::new(),
             n_query: 0,
             dial: Dial::new(),
             note: [0; 60],
@@ -192,7 +200,9 @@ impl Start {
                 self.draw_query(&mut s);
                 let sym = self.sym;
                 each_key(sym, |k, _, _, _| draw_key(&mut s, sym, k, false));
+                cmf_wp2_ui::dictate::mic_button(&mut s, MIC_X, MIC_Y);
             }
+            Screen::Voice => self.dict.draw(&mut s),
             Screen::Dial => {
                 self.draw_query(&mut s);
                 self.dial.draw(&mut s);
@@ -245,7 +255,7 @@ impl Start {
             return centre_fit(s, C, 110, "Where to?", 300, GREY);
         }
         // the end of a long query stays in view
-        let max = if self.screen == Screen::Dial { 200 } else { 300 };
+        let max = if self.screen == Screen::Dial { 200 } else { 250 };
         let mut start = 0;
         while font::width(&q[start..]) > max && start < q.len() {
             start += 1;
@@ -279,6 +289,12 @@ impl Start {
                 hit = Some(k);
             }
         });
+        if cmf_wp2_ui::dictate::mic_hit(MIC_X, MIC_Y, x, y) {
+            self.lit = None;
+            self.dict.start(api, false);
+            self.screen = Screen::Voice;
+            return Tap::Redraw;
+        }
         let Some(k) = hit else { return Tap::Shown };
         match k {
             K::Ch(c) if self.n_query < QUERY => {
@@ -374,7 +390,7 @@ impl Start {
                 (self.searched && y >= LIST_Y && (0..LIST_ROWS as i32).contains(&r) && (i as usize) < self.n)
                     .then(|| 10 + i as u8)
             }
-            Screen::Keys | Screen::Dial => None,
+            Screen::Keys | Screen::Dial | Screen::Voice => None,
         }
     }
 
@@ -440,6 +456,31 @@ impl Start {
 
     /// Back: the rotary keyboard to the keys, the keys or the list to the start (then the recent places are asked
     /// again: `R`); false on the start.
+    /// What the dictation screen asks for: the words into the query. True: draw again.
+    pub fn voice_out(&mut self, o: DictOut) -> bool {
+        match o {
+            DictOut::None => false,
+            DictOut::Redraw => true,
+            DictOut::Done | DictOut::Cancel => {
+                if o == DictOut::Done {
+                    let t = self.dict.text().trim().trim_end_matches('.');
+                    if self.n_query > 0 && self.query[self.n_query - 1] != b' ' && self.n_query < QUERY && !t.is_empty() {
+                        self.query[self.n_query] = b' ';
+                        self.n_query += 1;
+                    }
+                    let mut k = t.len().min(QUERY - self.n_query);
+                    while !t.is_char_boundary(k) {
+                        k -= 1;
+                    }
+                    self.query[self.n_query..self.n_query + k].copy_from_slice(&t.as_bytes()[..k]);
+                    self.n_query += k;
+                }
+                self.screen = Screen::Keys;
+                true
+            }
+        }
+    }
+
     pub fn back(&mut self) -> bool {
         match self.screen {
             Screen::Start => return false,

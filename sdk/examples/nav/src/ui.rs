@@ -92,8 +92,14 @@ fn main(api: &'static Api) -> i32 {
         let hold = typing.then(|| ui.start.dial.hold_wait(api.now())).flatten();
         let quiet = nav().quiet_wait(api.now());
         let w = [ui.motor.wait(), ask.wait(api.now()), pace, hold, quiet].into_iter().flatten().min().unwrap_or(u32::MAX);
-        let e = api.event(w);
+        let e = api.event(ui.start.dict.wait_ms(w));
         ui.motor.update();
+        if ui.start.dict.active() {
+            let o = ui.start.dict.tick(api);
+            if ui.start.voice_out(o) {
+                ui.draw();
+            }
+        }
         if typing && ui.start.dial.tick(&mut ui.api, api.now()) == Act::Show {
             // held: a capital
             ui.motor.play(haptic::TICK);
@@ -116,6 +122,11 @@ fn main(api: &'static Api) -> i32 {
             ask.answered();
         }
         match e.kind {
+            BUTTON if ui.start.screen == Screen::Voice => {
+                let o = ui.start.dict.cancel(api);
+                ui.start.voice_out(o);
+                ui.draw();
+            }
             BUTTON if !nav().active && ui.start.back() => {
                 // the rotary keyboard: back to the keys; the keys or the list: to the start, the recent places again
                 if ui.start.screen == Screen::Start {
@@ -130,6 +141,10 @@ fn main(api: &'static Api) -> i32 {
             }
             PAUSE => {
                 ui.motor.off();
+                if ui.start.dict.active() {
+                    let o = ui.start.dict.cancel(api);
+                    ui.start.voice_out(o);
+                }
                 loop {
                     match api.event(u32::MAX) {
                         Some(e) if e.kind == RESUME => break,
@@ -139,6 +154,12 @@ fn main(api: &'static Api) -> i32 {
                 }
                 ui.drawn = Drawn::Other;
                 ui.draw();
+            }
+            TOUCH_DOWN if !nav().active && ui.start.screen == Screen::Voice => {
+                let o = ui.start.dict.tap(api, e.x.into(), e.y.into());
+                if ui.start.voice_out(o) {
+                    ui.draw();
+                }
             }
             TOUCH_DOWN if !nav().active => {
                 if ui.start.on_query(e.x.into(), e.y.into()) {
@@ -223,6 +244,10 @@ fn main(api: &'static Api) -> i32 {
             MESSAGE => {
                 let mut redraw = false;
                 while let Some(m) = api.recv(&mut msg) {
+                    if let Some(o) = ui.start.dict.message(m) {
+                        redraw |= ui.start.voice_out(o);
+                        continue;
+                    }
                     // the map view's streets (Maps' scene): drawn once all of it is here
                     if matches!(m.first(), Some(b'S' | b'd')) {
                         if scene().message(m) == Ev::Done && ui.map && nav().active {
