@@ -221,6 +221,11 @@ class Inbox:
         elif m[:1] == b"f" and len(m) == 2 and hasattr(box, "tab"):
             box.tab = min(m[1], 2)
             await self.send_list(ch)
+        elif m[:1] == b"D" and len(m) == 2 and hasattr(box, "items"):
+            # a row held and deleted on the watch (Notes): gone, the list again
+            box.items.pop(m[1], None)
+            print("deleted", m[1], flush=True)
+            await self.send_list(ch)
         elif m[:1] == b"o" and len(m) == 2 and hasattr(box, "picker") and m[1] == box.NEW:
             # + : whom to write to, as a list under its title
             rows = box.picker()

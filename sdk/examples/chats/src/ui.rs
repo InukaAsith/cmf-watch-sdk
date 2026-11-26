@@ -513,6 +513,8 @@ struct Ui {
     menu: Option<u8>,
     /// the menu's second page: Delete for me / for everyone
     del: bool,
+    /// Notes, Gemini: the list row held, its deletion to confirm (its id)
+    doomed: Option<u8>,
     reply: Option<u8>,
     /// Gemini: a question sent, no answer yet: when, and whether it was sent again
     pending: Option<(u32, u8)>,
@@ -583,6 +585,7 @@ fn main(api: &'static Api) -> i32 {
         down_at: 0,
         menu: None,
         del: false,
+        doomed: None,
         reply: None,
         pending: None,
         thinking: false,
@@ -736,6 +739,7 @@ fn main(api: &'static Api) -> i32 {
                 ui.motor.off();
                 ui.dial.cancel();
                 match ui.screen {
+                    Screen::List if crate::DELETE && ui.doomed.take().is_some() => ui.draw(),
                     Screen::List if !model().picker.as_str().is_empty() => {
                         // out of the picker: the usual list
                         ui.ask_list();
@@ -798,7 +802,17 @@ fn main(api: &'static Api) -> i32 {
                     } else {
                         None
                     };
-                    if let Some(i) = at {
+                    // Notes, Gemini: a list row held asks to delete it
+                    let row = if crate::DELETE && held && ui.screen == Screen::List && ui.doomed.is_none() && model().picker.as_str().is_empty() {
+                        ui.row_at(y)
+                    } else {
+                        None
+                    };
+                    if let Some(id) = row {
+                        ui.motor.play(haptic::TICK);
+                        ui.doomed = Some(id);
+                        ui.draw();
+                    } else if let Some(i) = at {
                         // WhatsApp: a swipe to the right replies to it, a hold opens its menu
                         if swipe {
                             ui.reply_to(i);
@@ -844,8 +858,8 @@ fn main(api: &'static Api) -> i32 {
                     if m.first() == Some(&b'H') {
                         ui.head_at = api.now();
                     }
-                    if matches!(m.first(), Some(b'P' | b'W' | b'G')) {
-                        // the online dot is in the header
+                    if matches!(m.first(), Some(b'P' | b'W' | b'G' | b'H')) {
+                        // the online dot and the title (Notes: a new note's, once named) are in the header
                         head = true;
                     }
                     match model().apply(m) {
@@ -916,6 +930,7 @@ impl Ui {
         }
         self.menu = None;
         self.del = false;
+        self.doomed = None;
         if RELIST && to == Screen::List && self.screen != Screen::List {
             self.ask_list();
         }
@@ -946,6 +961,7 @@ impl Ui {
         }
         self.due = false;
         match self.screen {
+            Screen::List if let Some(id) = self.doomed.filter(|_| crate::DELETE) => self.draw_doomed(id),
             Screen::List => self.draw_list(),
             Screen::Chat => self.draw_chat(),
             Screen::Quick => self.draw_quick(),
@@ -1958,7 +1974,49 @@ impl Ui {
         self.refresh();
     }
 
+    /// Notes, Gemini: the list row at y (its id), not the status row.
+    fn row_at(&self, y: i32) -> Option<u8> {
+        let p = (y - LIST_TOP + self.list_scroll).div_euclid(PITCH);
+        let (v, n) = self.vis();
+        let m = model();
+        if y < HEAD_H || p < 0 || p as usize >= n || (y - LIST_TOP + self.list_scroll) % PITCH > CARD_H {
+            return None;
+        }
+        let c = &m.chats[v[p as usize]];
+        (c.unread != STATUS_ROW).then_some(c.id)
+    }
+
+    /// Notes, Gemini: delete the row held? Delete (red) or Cancel.
+    fn draw_doomed(&mut self, id: u8) {
+        let mut s = Dot(self.api);
+        Surface::rect(&mut s, 0, 0, 466, 466, 0);
+        let m = model();
+        let name = m.chats[..m.n_chats].iter().find(|c| c.id == id).map_or("", |c| c.name.as_str());
+        centre(&mut s, C, 110, "Delete?", SOFT);
+        let (t, _) = font::clip(name, 320);
+        centre(&mut s, C, 160, t, W);
+        for (k, t) in ["Delete", "Cancel"].iter().enumerate() {
+            let y = 240 + k as i32 * 80;
+            rrect(&mut s, C - 120, y, 240, 60, 30, if k == 0 { RED } else { KEYC }, BLACK);
+            centre(&mut s, C, y + 18, t, W);
+        }
+    }
+
     fn tap(&mut self, x: i32, y: i32) {
+        if let Some(id) = self.doomed.take().filter(|_| crate::DELETE) {
+            if (x - C).abs() < 130 && (240..300).contains(&y) {
+                // `D id`: the phone deletes it and sends the list; gone here at once
+                let _ = self.api.send(&[b'D', id]);
+                let m = model();
+                if let Some(i) = m.chats[..m.n_chats].iter().position(|c| c.id == id) {
+                    m.chats.copy_within(i + 1..m.n_chats, i);
+                    m.n_chats -= 1;
+                }
+                self.list_scroll = self.list_scroll.min(self.list_max());
+                self.motor.play(haptic::DONE);
+            }
+            return self.draw();
+        }
         match self.screen {
             Screen::List => {
                 if y < HEAD_H {

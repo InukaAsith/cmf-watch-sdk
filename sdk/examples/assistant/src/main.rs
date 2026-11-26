@@ -18,6 +18,8 @@ pub const PLAIN: bool = false;
 /// WhatsApp's voice notes: recorded and sent, played on the speaker (voice.rs).
 pub const VOICE: bool = false;
 /// Tabs under the title that filter the list (`f tab` to the phone).
+/// A list row held: delete it (after a confirm)
+pub const DELETE: bool = true;
 pub const TABS: &[&str] = &[];
 pub const QUICK_TITLE: &str = "Ask";
 /// The name at the top, beside the app's icon.

@@ -141,6 +141,12 @@ async def main():
             print("watch:", m, flush=True)
             if m == b"R":
                 await send_list()
+            elif m[:1] == b"D" and len(m) == 2:
+                # a conversation deleted on the watch
+                convos.pop(m[1], None)
+                if current[0] == m[1]:
+                    current[0] = None
+                await send_list()
             elif m[:1] == b"o" and len(m) == 2:
                 current[0] = None if m[1] == 1 else m[1]
                 if m[1] in convos:
