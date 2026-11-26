@@ -978,6 +978,9 @@ fn storage(rec: &mut [u8]) -> i32 {
 /// ABI 1.2: LVGL apps are not simulated (a later plan); FILE records (offline data) are: runs/sim/<app>/files/.
 extern "C" fn lv_submit(buf: *const u8, len: usize) -> i32 {
     use wp2_core::lvcmd::{file, FileCmd};
+    if buf.is_null() || len == 0 {
+        return -95; // an empty batch: nothing LVGL to run
+    }
     let rec = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, len) };
     // storage inspection v1 (docs/storage-inspection.md), enough for a scan: the app's files as slot 0's
     if len == 132 && rec[..4] == [0x19, 128, 0, 0] {
