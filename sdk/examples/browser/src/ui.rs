@@ -214,8 +214,12 @@ fn main(api: &'static Api) -> i32 {
         }
         let pace = ui.due.then(|| FRAME_MS.saturating_sub(api.now().wrapping_sub(ui.shown_at)));
         let w = [ui.motor.wait(), hold, pace].into_iter().flatten().min().unwrap_or(u32::MAX);
-        let e = api.event(w);
+        let e = api.event(ui.keys.dict.wait_ms(w));
         ui.motor.update();
+        if ui.keys.dict.active() {
+            let o = ui.keys.dict.tick(api);
+            ui.voice(o);
+        }
         if typing && ui.keys.dial.tick(&mut { api }, api.now()) == Act::Show {
             ui.motor.play(haptic::TICK);
             api.show();
@@ -236,6 +240,10 @@ fn main(api: &'static Api) -> i32 {
             }
             PAUSE => {
                 ui.motor.off();
+                if ui.keys.dict.active() {
+                    let o = ui.keys.dict.cancel(api);
+                    ui.keys.voice(o);
+                }
                 loop {
                     match api.event(u32::MAX) {
                         Some(e) if e.kind == RESUME => break,
@@ -252,6 +260,10 @@ fn main(api: &'static Api) -> i32 {
                 let mut redraw = false;
                 let mut drew = false;
                 while let Some(m) = api.recv(&mut msg) {
+                    if let Some(o) = ui.keys.dict.message(m) {
+                        ui.voice(o);
+                        continue;
+                    }
                     match ui.message(m) {
                         Got::Redraw => redraw = true,
                         Got::Drew => drew = true,
@@ -486,7 +498,21 @@ impl Ui {
 
     /// Back: the keyboard to where it came from, a page to the one before (the phone answers `Z` when there is
     /// none); false on the start screen (close).
+    /// What voice typing asks for (keys.rs).
+    fn voice(&mut self, o: cmf_wp2_ui::dictate::Out) {
+        if let Tap::Redraw = self.keys.voice(o) {
+            if self.screen == Screen::Keys {
+                self.draw();
+            }
+        }
+    }
+
     fn back(&mut self) -> bool {
+        if self.keys.dict.active() {
+            let o = self.keys.dict.cancel(self.api);
+            self.voice(o);
+            return true;
+        }
         match self.screen {
             Screen::Start => return false,
             Screen::Keys if self.field => self.screen = Screen::Page,
