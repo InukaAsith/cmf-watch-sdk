@@ -19,6 +19,9 @@ use cmf_wp2_ui::text::{dots, dots_centre, fit};
 use cmf_wp2_ui::{C, Surface};
 
 cmf_wp2_app::entry!(main);
+
+#[path = "emoji.rs"]
+mod emoji;
 cmf_wp2_app::app_icon!();
 
 static mut MODEL: Model = Model::new();
@@ -310,6 +313,8 @@ enum Screen {
     Quick,
     Qwerty,
     Dial,
+    /// the watch's emoji, a page of EM_PAGE at a time
+    Emoji,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -320,6 +325,25 @@ enum K {
     Sym,
     Space,
     Send,
+    /// to the emoji page and back
+    Emoji,
+}
+
+/// The emoji page: EM_COLS × EM_ROWS cells of EM_CELL px from EM_TOP, the keys row below.
+const EM_COLS: usize = 6;
+const EM_ROWS: usize = 3;
+const EM_PAGE: usize = EM_COLS * EM_ROWS;
+const EM_CELL: i32 = 58;
+const EM_TOP: i32 = 166;
+
+/// The emoji page's bottom row.
+fn each_emoji_key(mut f: impl FnMut(K, i32, i32, i32)) {
+    let keys = [(K::Emoji, 62), (K::Del, 52), (K::Space, 90), (K::Send, 72)];
+    let mut x = C - keys.iter().map(|k| k.1).sum::<i32>() / 2;
+    for (k, w) in keys {
+        f(k, x, ROW_Y[3], w);
+        x += w;
+    }
 }
 
 /// One keyboard row: up to 10 keys `(key, width)`, centred.
@@ -352,10 +376,18 @@ fn row(r: usize, sym: bool) -> Row {
         }
         _ => {
             let mut row = chars_row(b"", 0);
-            row.keys[0] = (K::Sym, 62);
-            row.keys[1] = (K::Space, 122);
-            row.keys[2] = (K::Send, 72);
-            row.n = 3;
+            if emoji::all().is_empty() {
+                row.keys[0] = (K::Sym, 62);
+                row.keys[1] = (K::Space, 122);
+                row.keys[2] = (K::Send, 72);
+                row.n = 3;
+            } else {
+                row.keys[0] = (K::Sym, 60);
+                row.keys[1] = (K::Emoji, 50);
+                row.keys[2] = (K::Space, 100);
+                row.keys[3] = (K::Send, 66);
+                row.n = 4;
+            }
             row
         }
     }
@@ -387,6 +419,8 @@ struct Ui {
     shift: bool,
     /// a key drawn pressed, to draw plain again at this time
     flash: Option<(K, u32)>,
+    /// the emoji page shown
+    em_page: usize,
     /// the rotary keyboard (cmf_wp2_ui::dial)
     dial: Dial,
     motor: Motor,
@@ -424,6 +458,7 @@ const FRAME_MS: u32 = 80;
 
 fn main(api: &'static Api) -> i32 {
     api.own_back(true);
+    emoji::init(api);
     let mut ui = Ui {
         api,
         screen: Screen::List,
@@ -434,6 +469,7 @@ fn main(api: &'static Api) -> i32 {
         typed: [0; TYPED_MAX],
         n_typed: 0,
         sym: false,
+        em_page: 0,
         shift: true,
         flash: None,
         dial: Dial::new(),
@@ -539,7 +575,7 @@ fn main(api: &'static Api) -> i32 {
         if let Some((k, t)) = ui.flash {
             if api.now().wrapping_sub(t) as i32 >= 0 {
                 ui.flash = None;
-                if ui.screen == Screen::Qwerty {
+                if matches!(ui.screen, Screen::Qwerty | Screen::Emoji) {
                     ui.draw_key(k, false);
                     api.show();
                 }
@@ -568,6 +604,7 @@ fn main(api: &'static Api) -> i32 {
                     }
                     Screen::Chat => ui.go(Screen::List),
                     Screen::Quick | Screen::Qwerty | Screen::Dial => ui.go(Screen::Chat),
+                    Screen::Emoji => ui.go(Screen::Qwerty),
                 }
             }
             PAUSE => {
@@ -688,6 +725,7 @@ impl Ui {
         match to {
             Screen::Chat => self.chat_scroll = 0,
             Screen::Quick => self.quick_scroll = 0,
+            Screen::Emoji => self.flash = None,
             Screen::Qwerty | Screen::Dial => {
                 self.sym = false;
                 self.shift = self.n_typed == 0;
@@ -714,6 +752,7 @@ impl Ui {
             Screen::Quick => self.draw_quick(),
             Screen::Qwerty => self.draw_qwerty(),
             Screen::Dial => self.draw_dial(),
+            Screen::Emoji => self.draw_emoji(),
         }
         self.api.show();
         self.shown_at = self.api.now();
@@ -1012,6 +1051,10 @@ impl Ui {
                 Surface::rect(&mut s, 0, 64, 466, 108, 0);
                 self.draw_typed(76, 3, 320);
             }
+            Screen::Emoji => {
+                Surface::rect(&mut s, 0, 64, 466, 84, 0);
+                self.draw_typed(76, 2, 300);
+            }
             _ => {
                 Surface::rect(&mut s, 100, 104, 266, 54, 0);
                 self.draw_typed(108, 2, 230);
@@ -1037,7 +1080,14 @@ impl Ui {
     fn draw_key(&self, key: K, pressed: bool) {
         let mut s = Dot(self.api);
         let (sym, shift) = (self.sym, self.shift);
-        each_key(sym, |k, x, y, w| {
+        let each = |f: &mut dyn FnMut(K, i32, i32, i32)| {
+            if self.screen == Screen::Emoji {
+                each_emoji_key(|k, x, y, w| f(k, x, y, w));
+            } else {
+                each_key(sym, |k, x, y, w| f(k, x, y, w));
+            }
+        };
+        each(&mut |k, x, y, w| {
             if k != key {
                 return;
             }
@@ -1063,7 +1113,21 @@ impl Ui {
                 K::Sym => "?12",
                 K::Space => "space",
                 K::Send => ">",
+                K::Emoji if self.screen == Screen::Emoji => "abc",
+                K::Emoji => "",
             };
+            if k == K::Emoji && self.screen != Screen::Emoji {
+                // a small smiling face
+                let cx = x + w / 2;
+                let cy = y + KH / 2;
+                let face = 0x1F603;
+                if !emoji::draw_scaled(face, cx - emoji::SIZE / 2, cy - emoji::SIZE / 2, 1, &mut |x, y, w, h, c| {
+                    Surface::rect(&mut s, x, y, w, h, c)
+                }) {
+                    centre(&mut s, cx, cy - 8, ":)", ink);
+                }
+                return;
+            }
             let ink = if k == K::Space && !pressed { GREY } else { ink };
             centre(&mut s, x + w / 2, y + KH / 2 - 8, label, ink);
         });
@@ -1084,6 +1148,10 @@ impl Ui {
         }
         match k {
             K::Send => return self.send_typed(),
+            K::Emoji => {
+                self.em_page = 0;
+                return self.go(Screen::Emoji);
+            }
             K::Sym => {
                 self.sym = !self.sym;
                 return self.draw();
@@ -1127,6 +1195,89 @@ impl Ui {
             }
             _ => {}
         }
+    }
+
+    // --- emoji
+
+    fn em_pages(&self) -> usize {
+        emoji::all().len().div_ceil(EM_PAGE).max(1)
+    }
+
+    fn draw_emoji(&self) {
+        let mut s = Dot(self.api);
+        self.draw_typed(76, 2, 300);
+        let all = emoji::all();
+        let from = self.em_page * EM_PAGE;
+        let x0 = C - EM_CELL * EM_COLS as i32 / 2;
+        let big = emoji::SIZE * 2;
+        for (i, &cp) in all.iter().enumerate().skip(from).take(EM_PAGE) {
+            let (col, row) = ((i - from) % EM_COLS, (i - from) / EM_COLS);
+            let x = x0 + col as i32 * EM_CELL + (EM_CELL - big) / 2;
+            let y = EM_TOP + row as i32 * EM_CELL + (EM_CELL - big) / 2;
+            emoji::draw_scaled(cp, x, y, 2, &mut |x, y, w, h, c| Surface::rect(&mut s, x, y, w, h, c));
+        }
+        // which page: dots, the crown or a drag turns them
+        let n = self.em_pages() as i32;
+        for p in 0..n {
+            let on = p as usize == self.em_page;
+            Surface::rect(&mut s, C - n * 8 + p * 16 + 4, EM_TOP - 12, 6, 6, if on { W } else { GREY });
+        }
+        each_emoji_key(|k, _, _, _| self.draw_key(k, false));
+    }
+
+    fn em_turn(&mut self, d: i32) {
+        let p = (self.em_page as i32 + d).clamp(0, self.em_pages() as i32 - 1) as usize;
+        if p != self.em_page {
+            self.em_page = p;
+            self.motor.play(haptic::TICK);
+            self.draw();
+        }
+    }
+
+    fn emoji_tap(&mut self, x: i32, y: i32) {
+        if y >= ROW_Y[3] {
+            let mut hit = None;
+            each_emoji_key(|k, kx, ky, w| {
+                if (kx..kx + w).contains(&x) && (ky..ky + KH).contains(&y) {
+                    hit = Some(k);
+                }
+            });
+            let Some(k) = hit else { return };
+            self.motor.play(haptic::TICK);
+            if let Some((old, _)) = self.flash.take() {
+                self.draw_key(old, false);
+            }
+            match k {
+                K::Send => return self.send_typed(),
+                K::Emoji => return self.go(Screen::Qwerty),
+                _ => {}
+            }
+            self.type_key(k);
+            self.redraw_typed();
+            self.draw_key(k, true);
+            self.api.show();
+            self.flash = Some((k, self.api.now().wrapping_add(110)));
+            return;
+        }
+        let x0 = C - EM_CELL * EM_COLS as i32 / 2;
+        let (col, row) = ((x - x0).div_euclid(EM_CELL), (y - EM_TOP).div_euclid(EM_CELL));
+        if !(0..EM_COLS as i32).contains(&col) || !(0..EM_ROWS as i32).contains(&row) {
+            return;
+        }
+        let i = self.em_page * EM_PAGE + row as usize * EM_COLS + col as usize;
+        let Some(&cp) = emoji::all().get(i) else { return };
+        let Some(ch) = char::from_u32(cp) else { return };
+        let mut b = [0u8; 4];
+        let b = ch.encode_utf8(&mut b).as_bytes();
+        if self.n_typed + b.len() > TYPED_MAX {
+            return;
+        }
+        self.typed[self.n_typed..self.n_typed + b.len()].copy_from_slice(b);
+        self.n_typed += b.len();
+        self.shift = false;
+        self.motor.play(haptic::TICK);
+        self.redraw_typed();
+        self.api.show();
     }
 
     // --- rotary dial
@@ -1208,7 +1359,7 @@ impl Ui {
 
     /// Screens that scroll: a drag scrolls them, a tap acts on TOUCH_UP.
     fn scrolls(&self) -> bool {
-        matches!(self.screen, Screen::List | Screen::Chat | Screen::Quick)
+        matches!(self.screen, Screen::List | Screen::Chat | Screen::Quick | Screen::Emoji)
     }
 
     /// A drag of `dy` px (down > 0): the content follows the finger.
@@ -1236,6 +1387,8 @@ impl Ui {
                 }
                 self.quick_scroll = next;
             }
+            // up: the next page
+            Screen::Emoji => return self.em_turn(if dy < 0 { 1 } else { -1 }),
             _ => return,
         }
         self.refresh();
@@ -1275,6 +1428,7 @@ impl Ui {
                 return;
             }
             Screen::Qwerty => return,
+            Screen::Emoji => return self.em_turn(d.signum()),
         }
         self.refresh();
     }
@@ -1351,6 +1505,7 @@ impl Ui {
                 self.send_bytes(q.as_str().as_bytes());
             }
             Screen::Qwerty => self.qwerty_tap(x, y),
+            Screen::Emoji => self.emoji_tap(x, y),
             Screen::Dial => {
                 let a = self.dial.down(&mut Dot(self.api), x, y, self.api.now());
                 self.dial_act(a);

@@ -574,6 +574,9 @@ pub enum FileCmd<'a> {
     Read { name: &'a [u8], skip: u32 },
     Write { name: &'a [u8], data: &'a [u8], append: bool },
     Delete { name: &'a [u8] },
+    /// The stock emoji font (`/NAND:C/emoji28.font`, read-only: the 52 emoji the stock notifications draw), from
+    /// byte `skip`. Op 5 with the name `emoji`; an older loader refuses it (-22).
+    Emoji { skip: u32 },
 }
 
 pub const FILE_NAME_MAX: usize = 20;
@@ -593,6 +596,7 @@ pub fn file(buf: &[u8]) -> Option<FileCmd<'_>> {
         1 if rest.len() >= 4 => Some(FileCmd::Read { name, skip: u(0) }),
         2 | 3 => Some(FileCmd::Write { name, data: rest, append: *cmd == 3 }),
         4 if rest.is_empty() => Some(FileCmd::Delete { name }),
+        5 if rest.len() >= 4 && name == b"emoji" => Some(FileCmd::Emoji { skip: u(0) }),
         _ => None,
     }
 }
@@ -798,6 +802,12 @@ mod file_tests {
         assert_eq!(file(&r), Some(FileCmd::Read { name: b"a_1", skip: 4096 }));
         assert_eq!(file(&[0x16, 0, 0, 0, 3, 1, b't', 9, 9]), Some(FileCmd::Write { name: b"t", data: &[9, 9], append: true }));
         assert_eq!(file(&[0x16, 0, 0, 0, 4, 2, b'm', b'p']), Some(FileCmd::Delete { name: b"mp" }));
+        let mut e = std::vec![0x16, 0, 0, 0, 5, 5];
+        e.extend_from_slice(b"emoji");
+        e.extend_from_slice(&16u32.to_le_bytes());
+        assert_eq!(file(&e), Some(FileCmd::Emoji { skip: 16 }));
+        e[6] = b'x';
+        assert_eq!(file(&e), None);
         // no paths, no hidden names, no upper case, no empty names
         assert_eq!(file(&[0x16, 0, 0, 0, 4, 2, b'.', b'.']), None);
         assert_eq!(file(&[0x16, 0, 0, 0, 4, 3, b'a', b'/', b'b']), None);

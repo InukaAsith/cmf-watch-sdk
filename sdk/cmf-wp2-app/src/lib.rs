@@ -523,6 +523,25 @@ impl Api {
         self.file_rec(if append { 3 } else { 2 }, name, data, false).0
     }
 
+    /// Reads the watch's own emoji font (`/NAND:C/emoji28.font`, read-only: the 52 emoji the stock notifications
+    /// draw) from byte `skip`, as [`Api::file_read`]. `-22` on a loader before 6.
+    pub fn emoji_read(&self, skip: usize, buf: &mut [u8]) -> i32 {
+        let mut got = 0;
+        while got < buf.len() {
+            let (rc, data) = self.file_rec(5, "emoji", &((skip + got) as u32).to_le_bytes(), true);
+            if rc < 0 {
+                return if got > 0 { got as i32 } else { rc };
+            }
+            let k = data.len().min(buf.len() - got);
+            buf[got..got + k].copy_from_slice(&data[..k]);
+            got += k;
+            if data.len() < FILE_BATCH {
+                break;
+            }
+        }
+        got as i32
+    }
+
     pub fn file_delete(&self, name: &str) -> i32 {
         self.file_rec(4, name, &[], false).0
     }
