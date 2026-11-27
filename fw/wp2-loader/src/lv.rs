@@ -7,7 +7,7 @@ use core::ptr::{addr_of_mut, null_mut};
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU8, Ordering};
 use wp2_core::events::{Event, CROWN, LV};
 use wp2_core::layout::stub_ram;
-use wp2_core::lvcmd::{self, Class, Rec, Table, FOCUS_MAX, MAX_FONTS, MAX_OBJS, MAX_OPTIONS};
+use wp2_core::lvcmd::{self, Class, Rec, Table, FOCUS_MAX, MAX_FONTS, MAX_IMAGES, MAX_OBJS, MAX_OPTIONS};
 use wp2_core::stock::*;
 
 type Obj = *mut c_void;
@@ -72,7 +72,21 @@ struct Lv {
     focus_icon: u16,
     focus_sel: i16,
     focus_last: [u32; FOCUS_MAX],
+    /// `lv_img_dsc_t` per image object for IMAGE_SRC, with its handle (0 = free): in the loader block, so it
+    /// outlives the batch buffer; freed with the object (docs/bitmap-assets.md). Its `data` points into the app block.
+    /// A pool, not one per handle: the loader block has no room for 193 of them (validate allows MAX_IMAGES).
+    dsc: [(u16, ImgDsc); MAX_IMAGES],
 }
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct ImgDsc {
+    header: u32,
+    data_size: u32,
+    data: *const u8,
+}
+
+const NO_DSC: ImgDsc = ImgDsc { header: 0, data_size: 0, data: core::ptr::null() };
 
 // Lives in the loader block: zero again on every open of the view. Table::new() is not const: the zeroed table is
 // reset on the first submit (no root yet).
@@ -87,6 +101,7 @@ static mut LV_STATE: Lv = Lv {
     focus_icon: 0,
     focus_sel: -1,
     focus_last: [0; FOCUS_MAX],
+    dsc: [(0, NO_DSC); MAX_IMAGES],
 };
 
 fn st() -> &'static mut Lv {
@@ -120,8 +135,23 @@ pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
     if buf.is_null() || len > BATCH_MAX || p < block || p - block > size || len > size - (p - block) {
         return E_ARG;
     }
+    let sl = unsafe { core::slice::from_raw_parts(buf, len) };
+    // BLIT (docs/bitmap-assets.md): the pixels named by the record must be in the app block as well, like the
+    // record itself. Handled on the app thread before LVGL so a canvas app can draw without a root.
+    if let Some((px, x, y, w, h)) = lvcmd::blit(sl) {
+        let at = px as usize;
+        let bytes = w as usize * h as usize * 2;
+        if at < block || at - block > size || bytes > size - (at - block) {
+            return E_ARG;
+        }
+        return crate::app::blit(px as *const u16, x, y, w, h);
+    }
+    // IMAGE_SRC pixels follow the same range rule for every record in the batch (validation runs after this)
+    if !lvcmd::image_src_in(sl, block as u32, size as u32) {
+        return E_ARG;
+    }
     // SENSOR (heart rate, GPS) needs no LVGL: a canvas app sends it too, and it must not make the root
-    if let Some((sensor, on)) = lvcmd::sensor(unsafe { core::slice::from_raw_parts(buf, len) }) {
+    if let Some((sensor, on)) = lvcmd::sensor(sl) {
         if sensor == wp2_core::gps::SENSOR_GPS {
             return crate::gps::request(on);
         }
@@ -248,6 +278,7 @@ fn exec(r: &Rec) -> Result<(), i32> {
                 Class::Bar => LV_BAR_CREATE,
                 Class::Slider => LV_SLIDER_CREATE,
                 Class::Roller => LV_ROLLER_CREATE,
+                Class::Image => LV_IMG_CREATE,
                 Class::Pager | Class::PagerH => LV_TILEVIEW_CREATE,
                 Class::Page => {
                     // the next row of its pager, or the next column of a horizontal one (validated: the parent is one)
@@ -315,9 +346,27 @@ fn exec(r: &Rec) -> Result<(), i32> {
                     stock!(LV_OBJ_DEL, fn(Obj))(s.objs[x]);
                 }
                 s.objs[x] = null_mut();
+                if let Some(d) = s.dsc.iter_mut().find(|d| d.0 == x as u16) {
+                    d.0 = 0;
+                }
             }
         }
         Rec::AppIcon {h,slot,side} => crate::menu::lv::app_icon(o(h),slot,side)?,
+        Rec::Image { h, ptr, w, hh, cf } => {
+            // The app may have written its pixels since the package load: clean the cache so LVGL reads them.
+            wp2_core::load::sync_psram(ptr as *mut u8, u32::from(w) * u32::from(hh) * 2);
+            // validate keeps at most MAX_IMAGES image objects, and DEL frees theirs: a slot is always there
+            let Some(slot) = s.dsc.iter_mut().position(|d| d.0 == h).or_else(|| s.dsc.iter().position(|d| d.0 == 0))
+            else {
+                return Err(E_ARG);
+            };
+            let (owner, d) = &mut s.dsc[slot];
+            *owner = h;
+            d.header = u32::from(cf) | u32::from(w) << 10 | u32::from(hh) << 21;
+            d.data_size = u32::from(w) * u32::from(hh) * 2;
+            d.data = ptr as *const u8;
+            stock!(LV_IMG_SET_SRC, fn(Obj, *const ImgDsc))(o(h), d);
+        }
         Rec::Size { h, w, hh } => stock!(LV_OBJ_SET_SIZE, fn(Obj, i32, i32))(o(h), w, hh),
         Rec::Align { h, align, x, y } => stock!(LV_OBJ_ALIGN, fn(Obj, u32, i32, i32))(o(h), align.into(), x.into(), y.into()),
         Rec::Flags { h, set, clear } => {
@@ -622,6 +671,7 @@ pub fn teardown() {
         }
     }
     s.fonts_open = 0;
+    s.dsc = [(0, NO_DSC); MAX_IMAGES];
     s.objs = [null_mut(); MAX_OBJS + 1];
     s.events = [0; MAX_OBJS + 1];
     s.options = [0; MAX_OBJS + 1];
