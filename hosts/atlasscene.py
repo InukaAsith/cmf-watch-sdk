@@ -237,15 +237,15 @@ def tiles_round(lat0, lon0, centre, r):
 # --- the blob
 
 def build(feats, cap=CAP - 512, report=False):
-    """Records in order of importance, as many as fit in `cap`: water, main roads, parks, streets, names, places,
-    places of interest (by rank), waterways, paths, railways."""
+    """Records in order of importance, as many as fit in `cap`: places' names, water, main roads, parks, streets,
+    names, places of interest (by rank), waterways, paths, railways."""
     tiers = [
+        [f for f in feats if f[0] == "label" and f[1] in (PLACE, WATER_NAME)],
         [f for f in feats if f[0] == "area" and f[1] == WATER],
         [f for f in feats if f[0] == "line" and f[1] <= TERTIARY],
         [f for f in feats if f[0] == "area" and f[1] == PARK],
         [f for f in feats if f[0] == "line" and f[1] == MINOR],
         [f for f in feats if f[0] == "carrier" and f[1] <= TERTIARY],
-        [f for f in feats if f[0] == "label" and f[1] in (PLACE, WATER_NAME)],
         [f for f in feats if f[0] == "label" and f[1] == SEARCHED],
         sorted([f for f in feats if f[0] == "label" and (f[1] == POI or FOOD <= f[1] < SEARCHED)], key=lambda f: f[4])[:48],
         [f for f in feats if f[0] == "carrier" and f[1] == MINOR],

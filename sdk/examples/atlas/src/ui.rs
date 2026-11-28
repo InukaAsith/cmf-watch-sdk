@@ -109,8 +109,14 @@ const ME: (i32, i32, i32) = (402, C, 36);
 const LIST: (i32, i32, i32, i32) = (C, 412, 120, 56);
 /// A tap this far from the centre (off the buttons) moves the map a third of the panel that way.
 const EDGE_R: i32 = 120;
-/// Home's zooms: px a metre × 256 (5 m … 0.8 m a pixel).
-const HOME_K: [i32; 5] = [48, 80, 128, 208, 320];
+/// Home's zooms: px a metre × 256 (10 m … 0.8 m a pixel).
+const HOME_K: [i32; 6] = [26, 48, 80, 128, 208, 320];
+/// Farther out than this the map asks for a wide scene (`H … wide`: main roads, their names and the areas' names
+/// over a few km); a wide scene is kept up to WIDE_OUT, then a close one comes again.
+const WIDE_IN: i32 = 48;
+const WIDE_OUT: i32 = 80;
+/// A scene this wide (half side, m) is a wide one.
+const WIDE_R: i32 = 2000;
 const HOME_ZOOMS: u8 = HOME_K.len() as u8;
 /// The route's steps up close.
 const STEP_K: i32 = 208;
@@ -355,6 +361,8 @@ struct Ui {
     next_id: u8,
     /// the scene asked for: round where we are, or round this point
     asked: Option<(i32, i32)>,
+    /// that scene asked wide (far out: main roads and names over a few km)
+    wide: bool,
     /// last heard of (asks again when it stalls), tries left
     pic_at: u32,
     pic_tries: u8,
@@ -432,11 +440,17 @@ impl Ui {
             (x.clamp(-32000, 32000) as i16).to_le_bytes(),
             (y.clamp(-32000, 32000) as i16).to_le_bytes(),
         );
-        self.send(&[b'H', id, here, x[0], x[1], y[0], y[1]]);
+        let m = [b'H', id, here, x[0], x[1], y[0], y[1], 1];
+        // a close map as before (7 bytes); wide: one more
+        self.send(&m[..if self.wide { 8 } else { 7 }]);
     }
 
     /// A new scene: round where we are (None) or round a frame point.
     fn want_map(&mut self, round: Option<(i32, i32)>) {
+        if round.is_none() {
+            // round us: as wide as Home's zoom wants
+            self.wide = HOME_K[usize::from(self.zoom)] < WIDE_IN;
+        }
         self.next_id = self.next_id.wrapping_add(1).max(1);
         self.asked = round;
         scene().want = self.next_id;
@@ -445,10 +459,18 @@ impl Ui {
         self.pic_tries = 2;
     }
 
-    /// Past the scene's edge (less than half a panel of it left round `p`): the next one round `p`.
+    /// Past the scene's edge (less than half a panel of it left round `p`): the next one round `p`. Zoomed out past
+    /// a close scene a wide one comes, zoomed back in a close one.
     fn want_more(&mut self, p: (i32, i32), k: i32) {
         let sc = scene();
-        if !sc.active || self.asked == Some(p) {
+        let have = sc.r > WIDE_R;
+        let wide = k < WIDE_IN || (have && k < WIDE_OUT);
+        if !sc.active || (self.asked == Some(p) && self.wide == wide) {
+            return;
+        }
+        if wide != have {
+            self.wide = wide;
+            self.want_map(Some(p));
             return;
         }
         let half = 233 * 256 / k.max(1);
@@ -729,7 +751,7 @@ impl Ui {
         rrect(&mut s, cx - w / 2, cy - h / 2, w, h, h / 2, fill(on), BLACK);
         ring(&mut s, cx - 3, cy - 3, 9, 13, ink(on), fill(on));
         line(&mut s, cx + 6, cy + 6, cx + 14, cy + 14, 5, ink(on), fill(on));
-        // zoom: five dots over the button
+        // zoom: a dot each over the button
         for i in 0..HOME_ZOOMS {
             let col = if i == self.zoom {
                 WHITE
@@ -738,7 +760,7 @@ impl Ui {
             };
             disc(
                 &mut s,
-                C - 24 + i as i32 * 12,
+                C - (HOME_ZOOMS as i32 - 1) * 6 + i as i32 * 12,
                 cy - h / 2 - 12,
                 3,
                 col,
@@ -1918,7 +1940,7 @@ impl Ui {
         model().open(i);
         self.send(&[b'I', i as u8]);
         self.go(Screen::Place);
-        self.want_more(model().results[i].at, HOME_K[3]);
+        self.want_more(model().results[i].at, HOME_K[4]);
     }
 
     /// A place on the map (a pin tapped; a dropped pin: no name) opened as `PICKED`.
@@ -2431,7 +2453,7 @@ fn main(api: &'static Api) -> i32 {
         sym: false,
         dict: &mut crate::ram::ram().dict,
         key_on: None,
-        zoom: 2,
+        zoom: 3,
         at: None,
         drawn_at: 0,
         sel: 0,
@@ -2440,6 +2462,7 @@ fn main(api: &'static Api) -> i32 {
         step: 0,
         next_id: 0,
         asked: None,
+        wide: false,
         pic_at: api.now(),
         pic_tries: 0,
         busy: None,

@@ -324,8 +324,12 @@ pub fn show_places(on: bool) {
     unsafe { POIS = on }
 }
 
-/// Street names from this zoom in.
+/// Street names from this zoom in; main roads' (tertiary and up) at every zoom, so far out still says where.
 const NAMES_K: i32 = 80;
+
+fn shows_name(class: u8, k: i32) -> bool {
+    class <= scene::TERTIARY || k >= NAMES_K
+}
 
 /// The pins drawn last: (panel point, frame point), for a tap on one.
 const MAX_PINS: usize = 16;
@@ -477,11 +481,11 @@ pub fn draw(
         let Rec::Line { class, name, pts } = r else {
             continue;
         };
-        // no names far out: no need for their pieces
-        if v.k < NAMES_K
-            || class < scene::CARRIER
+        // only main roads' names far out: no need for the others' pieces
+        if class < scene::CARRIER
             || usize::from(name) >= scene::MAX_NAMES
             || !shows_line(class - scene::CARRIER, v.k)
+            || !shows_name(class - scene::CARRIER, v.k)
         {
             continue;
         }
@@ -578,8 +582,8 @@ fn labels(api: &'static Api, sc: &Scene, v: &View, keep: &[(i32, i32, i32, i32)]
             }
         }
     }
-    // street names along their streets, from the longest piece
-    if v.k >= NAMES_K {
+    // street names along their streets, from the longest piece (best() holds only those this zoom names)
+    {
         let best = best();
         // main roads' names first
         for class in scene::MOTORWAY..=scene::PATH {

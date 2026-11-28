@@ -97,10 +97,12 @@ class Host:
         op = m[:1]
         if op == b"R":
             await self.ch.send(b"A")
-        elif op == b"H" and len(m) == 7:
+        elif op == b"H" and len(m) in (7, 8):
             here = m[2] == 1
             x, y = struct.unpack("<hh", m[3:7])
-            self.log("map here" if here else f"map round {x} {y}")
+            wide = len(m) == 8 and m[7] == 1
+            # the stand-in has one scene: a wide ask gets it too
+            self.log(("map here" if here else f"map round {x} {y}") + (" wide" if wide else ""))
             await self.scene(m[1], (0, 0) if here else (x, y))
         elif op in (b"Q", b"C") and len(m) >= 3:
             what = m[2:].decode(errors="replace") if op == b"Q" else f"category {m[2]}"
