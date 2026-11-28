@@ -965,7 +965,7 @@ impl Ui {
         // as far out as the places need (past the map that came, the pins still show)
         let k = (330 * 256 / w)
             .min((SHEET_Y - 90) * 256 / h)
-            .clamp(12, HOME_K[3]);
+            .clamp(12, HOME_K[4]);
         View {
             at: ((lo.0 + hi.0) / 2, (lo.1 + hi.1) / 2),
             screen: (C, (SHEET_Y + 40) / 2),
@@ -1172,7 +1172,7 @@ impl Ui {
         View {
             at: self.place_at.unwrap_or(sc.centre),
             screen: (C, PLACE_Y),
-            k: HOME_K[3],
+            k: HOME_K[4],
             heading: 0,
         }
     }
@@ -1282,7 +1282,7 @@ impl Ui {
             return View {
                 at: scene().me,
                 screen: (C, 140),
-                k: HOME_K[1],
+                k: HOME_K[2],
                 heading: 0,
             };
         }
@@ -1290,7 +1290,7 @@ impl Ui {
         View {
             at: ((lo.0 + hi.0) / 2, (lo.1 + hi.1) / 2),
             screen: (C, 142),
-            k: (300 * 256 / w).min(190 * 256 / h).clamp(1, HOME_K[3]),
+            k: (300 * 256 / w).min(190 * 256 / h).clamp(1, HOME_K[4]),
             heading: 0,
         }
     }
