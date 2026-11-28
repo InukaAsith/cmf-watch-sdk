@@ -142,6 +142,19 @@ pub fn wrap<'a>(text: &'a str, px: i32, out: &mut [&'a str]) -> usize {
     n
 }
 
+/// The lines [`wrap`] makes, all of them, one at a time (no array to size): for a text that scrolls.
+pub fn lines(text: &str, px: i32) -> impl Iterator<Item = &str> {
+    let mut rest = text.trim_start_matches(' ');
+    core::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (line, next) = split(rest, px);
+        rest = next.trim_start_matches(' ');
+        Some(line.trim_end_matches(' '))
+    })
+}
+
 fn split(s: &str, px: i32) -> (&str, &str) {
     let (mut space, mut w) = (None, 0);
     for (i, ch) in s.char_indices() {

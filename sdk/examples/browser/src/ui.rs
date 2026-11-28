@@ -210,7 +210,7 @@ fn main(api: &'static Api) -> i32 {
     let mut msg = [0u8; MSG_MAX];
     loop {
         let typing = ui.screen == Screen::Keys && ui.keys.rotary;
-        let hold = typing.then(|| ui.keys.dial.hold_wait(api.now())).flatten();
+        let hold = if typing { ui.keys.dial.hold_wait(api.now()) } else { ui.keys.rep.wait(api.now()) };
         // a spinner turns while something loads
         if ui.loading() {
             ui.due = true;
@@ -223,7 +223,11 @@ fn main(api: &'static Api) -> i32 {
             let o = ui.keys.dict.tick(api);
             ui.voice(o);
         }
-        if typing && ui.keys.dial.tick(&mut { api }, api.now()) == Act::Show {
+        if typing {
+            // held: a capital, or delete again
+            let a = ui.keys.dial.tick(&mut { api }, api.now());
+            ui.dial(a);
+        } else if ui.screen == Screen::Keys && ui.keys.repeat(api) {
             ui.motor.play(haptic::TICK);
             api.show();
         }
@@ -232,6 +236,12 @@ fn main(api: &'static Api) -> i32 {
         }
         let Some(e) = e else { continue };
         match e.kind {
+            BUTTON if ui.screen == Screen::Keys && ui.keys.rotary && !ui.keys.dict.active() => {
+                // the rotary keyboard: back to the keys first
+                ui.motor.play(haptic::TICK);
+                ui.keys.to_keys();
+                ui.draw();
+            }
             BUTTON => {
                 // the swipe (loader 3: x 1) goes back; the crown press closes
                 if e.x != 1 || !ui.back() {
@@ -257,7 +267,10 @@ fn main(api: &'static Api) -> i32 {
                 ui.draw();
             }
             TOUCH_DOWN => ui.touch_down(e),
-            TOUCH_UP => ui.touch_up(e),
+            TOUCH_UP => {
+                ui.keys.rep.stop();
+                ui.touch_up(e);
+            }
             CROWN => ui.crown(i32::from(e.delta)),
             MESSAGE => {
                 let mut redraw = false;
@@ -534,6 +547,8 @@ impl Ui {
 
     fn draw(&mut self) {
         self.due = false;
+        // the status bar's clock sits on the rotary keyboard's top letter
+        self.api.status_bar(!(self.screen == Screen::Keys && self.keys.rotary));
         let mut s = self.api;
         match self.screen {
             Screen::Start => {

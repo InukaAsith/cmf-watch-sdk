@@ -447,3 +447,16 @@ which is exactly the SDK's fallback trigger.
 LVGL apps do not use this record: their screen replaces the framebuffer, so they show bitmaps
 with an `IMAGE_SRC` batch record instead (abi-1.2.md, "Command records"). Formats, budgets and
 the streaming receiver: docs/bitmap-assets.md.
+
+## Hiding the status bar (loader of 2026-11-28, no ABI bump)
+
+A screen that needs the top of the panel (the rotary keyboard's top letter sits under the clock) hides the bar and
+shows it again: `Api::status_bar(on: bool) -> i32`, `0`, or `-22` on an older loader (op 0x1C unknown there:
+`Malformed`). A STATUS record alone in an `lv_submit` batch, like SENSOR:
+
+```text
+[0x1C, 1, 0, 0, on u8]   on: 0 hidden, 1 shown
+```
+
+The call only records the wish (`status::SHOWN`); the UI thread hides or shows the label and the bars on its next
+tick, so a canvas app needs no LVGL. Every launch starts with the bar shown (`app::launch`).

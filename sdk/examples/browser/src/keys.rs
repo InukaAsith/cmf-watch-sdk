@@ -7,6 +7,7 @@ use cmf_wp2_ui::dial::{Act, Dial, Key};
 use cmf_wp2_ui::dictate::{mic_button, mic_hit, Dictate, Out};
 use cmf_wp2_ui::draw::rrect;
 use cmf_wp2_ui::font;
+use cmf_wp2_ui::repeat::Repeat;
 use cmf_wp2_ui::{C, Surface};
 
 pub const MAX: usize = 100;
@@ -57,11 +58,13 @@ pub struct Keys {
     pub hint: &'static str,
     /// voice typing (cmf_wp2_ui::dictate): its screen is up while it runs
     pub dict: &'static mut Dictate,
+    /// delete held on the keys: it repeats
+    pub rep: Repeat,
 }
 
 impl Keys {
     pub fn new() -> Self {
-        Keys { text: [0; MAX], n: 0, sym: false, lit: None, rotary: false, dial: Dial::new(), hint: "", dict: cmf_wp2_ui::dictate::kept() }
+        Keys { text: [0; MAX], n: 0, sym: false, lit: None, rotary: false, dial: Dial::new(), hint: "", dict: cmf_wp2_ui::dictate::kept(), rep: Repeat::new() }
     }
 
     pub fn open(&mut self, hint: &'static str) {
@@ -70,6 +73,7 @@ impl Keys {
         self.lit = None;
         self.rotary = false;
         self.dial.cancel();
+        self.rep.stop();
         self.hint = hint;
     }
 
@@ -117,7 +121,9 @@ impl Keys {
     }
 
     fn draw_text(&self, s: &mut &'static Api) {
-        Surface::rect(s, 40, 100, 386, 40, 0);
+        // inside the rotary keyboard's letters when it is up
+        let half = if self.rotary { 106 } else { 193 };
+        Surface::rect(s, C - half, 100, 2 * half, 40, 0);
         let q = self.text();
         if q.is_empty() {
             let w = font::width(self.hint).min(300);
@@ -179,7 +185,10 @@ impl Keys {
                 self.text[self.n] = b' ';
                 self.n += 1;
             }
-            K::Del => self.n = self.n.saturating_sub(1),
+            K::Del => {
+                self.n = self.n.saturating_sub(1);
+                self.rep.start(api.now());
+            }
             K::Sym => {
                 self.sym = !self.sym;
                 return Tap::Redraw;
@@ -200,6 +209,20 @@ impl Keys {
         draw_key(&mut s, sym, k, true);
         self.lit = Some(k);
         Tap::Typed
+    }
+
+    /// Delete held on the keys, due again: true when it deleted (drawn: tick and show).
+    pub fn repeat(&mut self, api: &'static Api) -> bool {
+        if self.rotary || !self.rep.due(api.now()) {
+            return false;
+        }
+        if self.n == 0 {
+            self.rep.stop();
+            return false;
+        }
+        self.n -= 1;
+        self.draw_text(&mut { api });
+        true
     }
 
     /// What the rotary keyboard did: a key into the words (true: Go with something typed).

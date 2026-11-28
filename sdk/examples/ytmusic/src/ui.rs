@@ -8,6 +8,7 @@ use crate::player::{Player, Sink};
 use cmf_wp2_app::{Api, Event, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
+use cmf_wp2_ui::repeat::Repeat;
 use cmf_wp2_ui::draw::{arc, disc, ring, rrect};
 use cmf_wp2_ui::font::{self, centre, clip, fitted};
 use cmf_wp2_ui::geom::chord;
@@ -182,6 +183,8 @@ struct Ui {
     down: Option<(i32, i32)>,
     motor: Motor,
     dial: Dial,
+    /// delete held on the keys: it repeats
+    rep: Repeat,
     /// the mini player as drawn: its state and song
     mini: u32,
 }
@@ -192,6 +195,8 @@ impl Ui {
     }
 
     fn draw(&mut self) {
+        // the status bar's clock sits on the rotary keyboard's top letter
+        self.api.status_bar(self.screen != Screen::Dial);
         let bg = if self.screen == Screen::Now && !self.record_home() { BG } else { BLACK };
         Surface::rect(&mut self.s, 0, 0, 466, 466, bg.rgb565());
         match self.screen {
@@ -1004,6 +1009,9 @@ impl Ui {
                     if let Some(k) = self.key_at(x, y) {
                         self.motor.play(haptic::TICK);
                         self.type_key(k);
+                        if k == K::Del {
+                            self.rep.start(self.api.now());
+                        }
                         if self.screen == Screen::Search && k != K::Sym {
                             self.pressed = Some(k);
                             self.draw_key(k, true);
@@ -1020,6 +1028,7 @@ impl Ui {
                 false
             }
             TOUCH_UP => {
+                self.rep.stop();
                 let Some((x, y)) = self.down.take() else { return false };
                 match self.screen {
                     Screen::Home => self.home_tap(x, y),
@@ -1088,9 +1097,18 @@ impl Ui {
                 self.draw();
             }
         }
-        if self.screen == Screen::Dial && self.dial.tick(&mut self.s, now) == Act::Show {
-            self.motor.play(haptic::TICK);
-            self.api.show();
+        if self.screen == Screen::Dial {
+            // held: a capital, or delete again
+            let a = self.dial.tick(&mut self.s, now);
+            self.dial_act(a);
+        } else if self.rep.due(now) {
+            if self.screen != Screen::Search || self.n_query == 0 {
+                self.rep.stop();
+            } else {
+                self.motor.play(haptic::TICK);
+                self.type_key(K::Del);
+                self.api.show();
+            }
         }
         if let Some(t) = self.toast_until {
             if now.wrapping_sub(t) < 1 << 31 {
@@ -1166,10 +1184,9 @@ impl Ui {
         if let Some(t) = self.toast_until {
             ms = ms.min(t.wrapping_sub(now).min(2000));
         }
-        if self.screen == Screen::Dial {
-            if let Some(h) = self.dial.hold_wait(now) {
-                ms = ms.min(h);
-            }
+        let hold = if self.screen == Screen::Dial { self.dial.hold_wait(now) } else { self.rep.wait(now) };
+        if let Some(h) = hold {
+            ms = ms.min(h);
         }
         ms
     }
@@ -1316,6 +1333,7 @@ fn main(api: &'static Api) -> i32 {
         down: None,
         motor: Motor::new(api),
         dial: Dial::new(),
+            rep: Repeat::new(),
         dict: Dictate::new(),
     };
     ui.send(b"R");

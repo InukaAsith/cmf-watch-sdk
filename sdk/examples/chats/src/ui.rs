@@ -10,7 +10,8 @@ use crate::rle::{self, Decoder};
 use cmf_wp2_ui::dictate::{Dictate, Out as DictOut};
 use cmf_wp2_app::{Api, BUTTON, CROWN, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::color::{rgb565, BLACK, Rgb};
-use cmf_wp2_ui::dial::{Act, Dial, Key};
+use cmf_wp2_ui::dial::{self, Act, Dial, Key};
+use cmf_wp2_ui::repeat::Repeat;
 use cmf_wp2_ui::draw::{arc, disc, ring, rrect};
 use cmf_wp2_ui::geom::chord;
 use cmf_wp2_ui::haptic::{self, Motor};
@@ -501,6 +502,8 @@ struct Ui {
     shift: bool,
     /// a key drawn pressed, to draw plain again at this time
     flash: Option<(K, u32)>,
+    /// delete held (QWERTY, emoji): it repeats
+    rep: Repeat,
     /// the emoji page shown
     em_page: usize,
     /// voice typing, and the keyboard it came from
@@ -582,6 +585,7 @@ fn main(api: &'static Api) -> i32 {
         voice_from: Screen::Qwerty,
         shift: true,
         flash: None,
+        rep: Repeat::new(),
         dial: Dial::new(),
         motor: Motor::new(api),
         down: None,
@@ -630,7 +634,7 @@ fn main(api: &'static Api) -> i32 {
     loop {
         let now = api.now();
         let flash = ui.flash.map(|(_, t)| t.wrapping_sub(now).min(1000));
-        let hold = if ui.screen == Screen::Dial { ui.dial.hold_wait(now) } else { None };
+        let hold = if ui.screen == Screen::Dial { ui.dial.hold_wait(now) } else { ui.rep.wait(now) };
         let again = retry.map(|(t, _)| t.wrapping_sub(now).min(RETRY_MS));
         let asked = ui.pending.map(|(t, _)| t.wrapping_add(ASK_AGAIN_MS).wrapping_sub(now).min(ASK_AGAIN_MS));
         let spin = ui.spinning().then(|| {
@@ -719,10 +723,17 @@ fn main(api: &'static Api) -> i32 {
                 }
             }
         }
-        if ui.screen == Screen::Dial && ui.dial.tick(&mut Dot(api), api.now()) == Act::Show {
-            // held: the letter becomes a capital, shown in the middle
-            ui.motor.play(haptic::TICK);
-            api.show();
+        if ui.screen == Screen::Dial {
+            // held: the letter becomes a capital (shown in the middle), or delete repeats
+            let a = ui.dial.tick(&mut Dot(api), api.now());
+            ui.dial_act(a);
+        } else if ui.rep.due(api.now()) {
+            if ui.n_typed == 0 {
+                ui.rep.stop();
+            } else {
+                ui.motor.play(haptic::TICK);
+                ui.typed_again(K::Del);
+            }
         }
         if ui.dict.active() {
             let o = ui.dict.tick(api);
@@ -733,6 +744,9 @@ fn main(api: &'static Api) -> i32 {
             ui.refresh();
         }
         let Some(e) = e else { continue };
+        if e.kind == TOUCH_UP {
+            ui.rep.stop();
+        }
         match e.kind {
             TOUCH_UP if ui.screen == Screen::Dial => {
                 let a = ui.dial.up(&mut Dot(api), e.x as i32, e.y as i32);
@@ -945,6 +959,9 @@ impl Ui {
             self.ask_list();
         }
         self.screen = to;
+        self.rep.stop();
+        // the status bar's clock sits on the rotary keyboard's top letter
+        self.api.status_bar(to != Screen::Dial);
         match to {
             Screen::Chat => self.chat_scroll = 0,
             Screen::Quick => self.quick_scroll = 0,
@@ -1458,8 +1475,9 @@ impl Ui {
                 self.draw_typed(76, 2, 290);
             }
             _ => {
-                Surface::rect(&mut s, 100, 104, 266, 54, 0);
-                self.draw_typed(108, 2, 230);
+                // the box inside the dial's letters only
+                Surface::rect(&mut s, C - dial::TEXT_PX / 2 - 6, dial::TEXT_Y - 6, dial::TEXT_PX + 12, dial::TEXT_ROWS as i32 * LINE + 8, 0);
+                self.draw_typed(dial::TEXT_Y, dial::TEXT_ROWS, dial::TEXT_PX);
             }
         }
     }
@@ -1595,10 +1613,21 @@ impl Ui {
             }
             _ => {}
         }
+        if k == K::Del {
+            self.rep.start(self.api.now());
+        }
+        self.typed_again(k);
+    }
+
+    /// `k` typed (a tap, or delete held): the text again, the key pressed for a moment.
+    fn typed_again(&mut self, k: K) {
+        if let Some((old, _)) = self.flash.take() {
+            self.draw_key(old, false);
+        }
         let was_shift = self.shift;
         self.type_key(k);
         // a press shows as a white key for a moment; the shifted letters change back after one
-        if was_shift != self.shift {
+        if was_shift != self.shift && self.screen == Screen::Qwerty {
             self.draw();
         } else {
             self.redraw_typed();
@@ -1722,14 +1751,10 @@ impl Ui {
             match k {
                 K::Send => return self.send_typed(),
                 K::Emoji => return self.go(Screen::Qwerty),
+                K::Del => self.rep.start(self.api.now()),
                 _ => {}
             }
-            self.type_key(k);
-            self.redraw_typed();
-            self.draw_key(k, true);
-            self.api.show();
-            self.flash = Some((k, self.api.now().wrapping_add(110)));
-            return;
+            return self.typed_again(k);
         }
         let x0 = C - EM_CELL * EM_COLS as i32 / 2;
         let (col, row) = ((x - x0).div_euclid(EM_CELL), (y - EM_TOP).div_euclid(EM_CELL));
@@ -1755,10 +1780,8 @@ impl Ui {
     // --- rotary dial
 
     fn draw_dial(&self) {
-        let mut s = Dot(self.api);
-        rule(&mut s, 170);
-        self.draw_typed(110, 2, 14);
-        self.dial.draw(&mut s);
+        self.draw_typed(dial::TEXT_Y, dial::TEXT_ROWS, dial::TEXT_PX);
+        self.dial.draw(&mut Dot(self.api));
     }
 
     /// What the keyboard said: typed into the text here (sentence capitals kept), or sent.

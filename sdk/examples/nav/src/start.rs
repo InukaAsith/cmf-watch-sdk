@@ -12,6 +12,7 @@ use cmf_wp2_ui::color::{rgb565, Rgb, BLACK};
 use cmf_wp2_ui::dial::{Act, Dial, Key};
 use cmf_wp2_ui::draw::rrect;
 use cmf_wp2_ui::font;
+use cmf_wp2_ui::repeat::Repeat;
 use cmf_wp2_ui::geom::chord;
 use cmf_wp2_ui::text::fit;
 use cmf_wp2_ui::{C, Surface};
@@ -98,6 +99,8 @@ pub struct Start {
     /// the key lit since it was typed (till the next touch)
     lit: Option<K>,
     pub dict: &'static mut Dictate,
+    /// delete held on the keys: it repeats
+    pub rep: Repeat,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -132,6 +135,7 @@ impl Start {
             walking: true,
             query: [0; QUERY],
             dict: cmf_wp2_ui::dictate::kept(),
+            rep: Repeat::new(),
             n_query: 0,
             dial: Dial::new(),
             note: [0; 60],
@@ -249,7 +253,9 @@ impl Start {
 
     fn draw_query(&self, s: &mut &'static Api) {
         let q = core::str::from_utf8(&self.query[..self.n_query]).unwrap_or("");
-        Surface::rect(s, 40, 100, 386, 40, 0);
+        // inside the rotary keyboard's letters when it is up
+        let half = if self.screen == Screen::Dial { 106 } else { 193 };
+        Surface::rect(s, C - half, 100, 2 * half, 40, 0);
         if q.is_empty() {
             return centre_fit(s, C, 110, "Where to?", 300, GREY);
         }
@@ -305,7 +311,10 @@ impl Start {
                 self.query[self.n_query] = b' ';
                 self.n_query += 1;
             }
-            K::Del => self.n_query = self.n_query.saturating_sub(1),
+            K::Del => {
+                self.n_query = self.n_query.saturating_sub(1);
+                self.rep.start(api.now());
+            }
             K::Sym => {
                 self.sym = !self.sym;
                 return Tap::Redraw;
@@ -415,6 +424,20 @@ impl Start {
             }
             _ => 0,
         }
+    }
+
+    /// Delete held on the keys, due again: true when it deleted (drawn: tick and show).
+    pub fn repeat(&mut self, api: &'static Api) -> bool {
+        if self.screen != Screen::Keys || !self.rep.due(api.now()) {
+            return false;
+        }
+        if self.n_query == 0 {
+            self.rep.stop();
+            return false;
+        }
+        self.n_query -= 1;
+        self.draw_query(&mut { api });
+        true
     }
 
     /// A key typed on the dial: the words to search for once sent (`Q text`).

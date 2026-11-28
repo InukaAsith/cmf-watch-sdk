@@ -150,6 +150,11 @@ pub extern "C" fn submit(buf: *const u8, len: usize) -> i32 {
     if !lvcmd::image_src_in(sl, block as u32, size as u32) {
         return E_ARG;
     }
+    // STATUS: the bar's objects are the UI thread's; it reads the wish on its tick (status.rs)
+    if let Some(on) = lvcmd::status_bar(sl) {
+        crate::status::SHOWN.store(on, Ordering::Release);
+        return 0;
+    }
     // SENSOR (heart rate, GPS) needs no LVGL: a canvas app sends it too, and it must not make the root
     if let Some((sensor, on)) = lvcmd::sensor(sl) {
         if sensor == wp2_core::gps::SENSOR_GPS {

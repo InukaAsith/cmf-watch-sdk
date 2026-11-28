@@ -90,7 +90,7 @@ fn main(api: &'static Api) -> i32 {
     loop {
         let pace = ui.due.then(|| FRAME_MS.saturating_sub(api.now().wrapping_sub(ui.shown_at)));
         let typing = !nav().active && ui.start.screen == Screen::Dial;
-        let hold = typing.then(|| ui.start.dial.hold_wait(api.now())).flatten();
+        let hold = if typing { ui.start.dial.hold_wait(api.now()) } else { ui.start.rep.wait(api.now()) };
         let quiet = nav().quiet_wait(api.now());
         let w = [ui.motor.wait(), ask.wait(api.now()), pace, hold, quiet].into_iter().flatten().min().unwrap_or(u32::MAX);
         let e = api.event(ui.start.dict.wait_ms(w));
@@ -101,8 +101,11 @@ fn main(api: &'static Api) -> i32 {
                 ui.draw();
             }
         }
-        if typing && ui.start.dial.tick(&mut ui.api, api.now()) == Act::Show {
-            // held: a capital
+        if typing {
+            // held: a capital, or delete again
+            let a = ui.start.dial.tick(&mut ui.api, api.now());
+            ui.dial_act(a);
+        } else if !nav().active && ui.start.repeat(api) {
             ui.motor.play(haptic::TICK);
             api.show();
         }
@@ -199,6 +202,7 @@ fn main(api: &'static Api) -> i32 {
                     ui.draw();
                 }
             }
+            TOUCH_UP if ui.start.rep.held() => ui.start.rep.stop(),
             TOUCH_UP if !nav().active && ui.start.screen == Screen::Dial => {
                 let a = ui.start.dial.up(&mut ui.api, e.x.into(), e.y.into());
                 ui.dial_act(a);
@@ -312,6 +316,8 @@ impl Ui {
     fn draw(&mut self) {
         let mut s = self.api;
         self.due = false;
+        // the status bar's clock sits on the rotary keyboard's top letter
+        self.api.status_bar(nav().active || self.start.screen != Screen::Dial);
         let n = nav();
         let now = if !n.active || n.arrived {
             Drawn::Other

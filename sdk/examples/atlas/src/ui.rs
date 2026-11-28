@@ -28,6 +28,7 @@ use crate::state::{Effect, Nav, instruction};
 use crate::view::{self, ZOOMS};
 use cmf_wp2_app::{Api, BUTTON, CROWN, GPS, MESSAGE, MSG_MAX, PAUSE, RESUME, TOUCH_DOWN, TOUCH_UP};
 use cmf_wp2_ui::ask::Ask;
+use cmf_wp2_ui::repeat::Repeat;
 use cmf_wp2_ui::color::{BLACK, Rgb, rgb565};
 use cmf_wp2_ui::draw::{arc, disc, line, ring, rrect};
 use cmf_wp2_ui::font;
@@ -346,6 +347,8 @@ struct Ui {
     dict: &'static mut Dictate,
     /// a QWERTY key flashing till the next touch
     key_on: Option<K>,
+    /// delete held on the keys: it repeats
+    rep: Repeat,
     zoom: u8,
     /// the middle of the home map, frame metres; None: where we are
     at: Option<(i32, i32)>,
@@ -534,6 +537,7 @@ impl Ui {
                 .then(|| left(self.pic_at.wrapping_add(STALL_MS))),
             self.hold.map(|h| left(h.2.wrapping_add(HOLD_MS))),
             self.me_down.map(|t| left(t.wrapping_add(GPS_HOLD_MS))),
+            self.rep.wait(now),
             self.nav_due.then(|| left(self.drawn_at.wrapping_add(FRAME_MS))),
             (self.screen == Screen::Nav).then(|| nav().quiet_wait(now)).flatten(),
         ]
@@ -911,6 +915,29 @@ impl Ui {
             }
         });
         hit
+    }
+
+    /// A key pressed on the keys (`None`: beside them): the one lit before goes plain, this one types.
+    /// Delete held repeats (the touch starts it, a repeat keeps it; nothing left or another screen: it stops).
+    fn press_key(&mut self, k: Option<K>) {
+        if self.screen != Screen::Search {
+            return self.rep.stop();
+        }
+        if k == Some(K::Del) && !self.rep.held() {
+            self.rep.start(self.api.now());
+        }
+        if self.n_query == 0 {
+            self.rep.stop();
+        }
+        if let Some(old) = self.key_on.take() {
+            self.draw_key(old, false);
+        }
+        if let Some(k) = k {
+            self.motor.play(haptic::TICK);
+            self.type_key(k);
+        } else {
+            self.api.show();
+        }
     }
 
     fn type_key(&mut self, k: K) {
@@ -1807,15 +1834,8 @@ impl Ui {
                 self.voice_out(o);
             }
             Screen::Search => {
-                if let Some(old) = self.key_on.take() {
-                    self.draw_key(old, false);
-                }
-                if let Some(k) = self.key_at(x, y) {
-                    self.motor.play(haptic::TICK);
-                    self.type_key(k);
-                } else {
-                    self.api.show();
-                }
+                let k = self.key_at(x, y);
+                self.press_key(k);
             }
             Screen::Nav if !self.confirm && nav().active && !nav().arrived => {
                 self.nav_map = !self.nav_map;
@@ -1841,6 +1861,7 @@ impl Ui {
 
     /// The finger lifted off the map before a long press.
     fn up(&mut self, x: i32, y: i32) {
+        self.rep.stop();
         self.me_down = None;
         let Some((x0, y0, _)) = self.hold.take() else {
             return;
@@ -2453,6 +2474,7 @@ fn main(api: &'static Api) -> i32 {
         sym: false,
         dict: &mut crate::ram::ram().dict,
         key_on: None,
+        rep: Repeat::new(),
         zoom: 3,
         at: None,
         drawn_at: 0,
@@ -2500,6 +2522,10 @@ fn main(api: &'static Api) -> i32 {
     loop {
         let e = api.event(ui.dict.wait_ms(ui.wait(&ask)));
         ui.motor.update();
+        if ui.rep.due(api.now()) {
+            // delete held: again, till the finger lifts or nothing is left
+            ui.press_key(Some(K::Del));
+        }
         if ui.dict.active() {
             let o = ui.dict.tick(api);
             ui.voice_out(o);

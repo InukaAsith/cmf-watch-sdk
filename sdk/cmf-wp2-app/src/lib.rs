@@ -56,6 +56,11 @@ pub static GPS_ON: &[u8] = &[0x13, 2, 0, 0, 2, 1];
 pub static GPS_OFF: &[u8] = &[0x13, 2, 0, 0, 2, 0];
 #[doc(hidden)]
 pub const GPS_FIX_LEN: usize = 20;
+/// STATUS records (docs/abi-1.4.md, "Status bar").
+#[doc(hidden)]
+pub static STATUS_ON: &[u8] = &[0x1C, 1, 0, 0, 1];
+#[doc(hidden)]
+pub static STATUS_OFF: &[u8] = &[0x1C, 1, 0, 0, 0];
 
 /// The latest GPS fix as the watch parsed it (docs/abi-1.4.md, "GPS"). Personal data: show it, record it on the
 /// watch if the user asked for that, but never log it or send it unasked.
@@ -295,6 +300,17 @@ impl Api {
     /// Keeps the display on while this app runs in the foreground; the loader drops it on pause and exit.
     pub fn keep_screen_on(&self, on: bool) {
         (self.screen_on)(on);
+    }
+
+    /// Shows (`true`, as every app starts) or hides the loader's status bar (the time and GPS bars at the top of
+    /// the panel) for a screen that needs the top, as a rotary keyboard's ring. `0`, or `-22` on a loader before
+    /// 2026-11-28 (the bar stays).
+    pub fn status_bar(&self, on: bool) -> i32 {
+        if self.abi_minor < 2 {
+            return -22;
+        }
+        let r = if on { STATUS_ON } else { STATUS_OFF };
+        (self.lv_submit)(r.as_ptr(), r.len())
     }
 
     /// Starts (`true`) or stops the watch's continuous heart-rate measurement for this app; while it runs in the
