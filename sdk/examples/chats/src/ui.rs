@@ -359,6 +359,9 @@ const NEW_Y: i32 = 414;
 /// the sync bar: light green, a step every SYNC_MS
 const SYNC: Rgb = Rgb(0x8E, 0xE6, 0xA8);
 const SYNC_MS: u32 = 60;
+/// The typing bubble (three dots, as WhatsApp's): its height, width.
+const TYPING_H: i32 = 44;
+const TYPING_W: i32 = 84;
 /// Dial letters per crown detent, in 1/100s: a slow turn, a fast spin (ui.crown).
 /// Moved more than this between down and up: a drag, not a tap.
 const DRAG: i32 = 14;
@@ -863,7 +866,13 @@ fn main(api: &'static Api) -> i32 {
                         // the online dot and the title (Notes: a new note's, once named) are in the header
                         head = true;
                     }
-                    match model().apply(m) {
+                    let typing = model().typing;
+                    let e = model().apply(m);
+                    if model().typing != typing {
+                        // typing… under the name, the dots in the feed
+                        head = true;
+                    }
+                    match e {
                         Effect::List => list = true,
                         Effect::Chat => chat = true,
                         Effect::Buzz(_) => ui.motor.play(haptic::DOUBLE),
@@ -1068,6 +1077,11 @@ impl Ui {
         true
     }
 
+    /// The open chat shows the typing bubble (WhatsApp's chat, its menu shut).
+    fn typing_shown(&self) -> bool {
+        crate::VOICE && self.screen == Screen::Chat && self.menu.is_none() && model().typing > 0
+    }
+
     fn draw_list(&self) {
         self.list_cards();
         let mut s = Dot(self.api);
@@ -1215,6 +1229,10 @@ impl Ui {
         // as on the phone: the picture, the name, and under it last seen (online, thinking)
         let (sub, sub_c) = if crate::ASSISTANT {
             if self.pending.is_some() || self.thinking { ("Thinking...", ACCENT.rgb565()) } else { ("AI assistant", GREY) }
+        } else if m.typing == 2 {
+            ("recording audio...", GREEN.rgb565())
+        } else if m.typing == 1 {
+            ("typing...", GREEN.rgb565())
         } else if m.online {
             ("online", GREEN.rgb565())
         } else {
@@ -1312,6 +1330,17 @@ impl Ui {
         let mut bottom = self.feed_bottom();
         Surface::rect(&mut s, 0, bottom, 466, FEED_END - bottom, 0);
         let mut total = 0;
+        if self.typing_shown() {
+            // they are typing: the dots under the last message
+            let top = bottom - TYPING_H;
+            if top < FEED_END && bottom > FEED_TOP {
+                Surface::rect(&mut s, 0, top, 466, TYPING_H, 0);
+                typing_bubble(&mut s, top);
+            }
+            Surface::rect(&mut s, 0, top - GAP, 466, GAP, 0);
+            bottom = top - GAP;
+            total += TYPING_H + GAP;
+        }
         for msg in m.msgs[..m.n_msgs].iter().rev() {
             if msg.kind == crate::model::NOT_YET {
                 continue;
@@ -2257,6 +2286,14 @@ fn voice_bubble(s: &mut Band, msg: &Msg, top: i32, playing: bool) {
         Surface::rect(s, x + 48 + k * 6, cy - bh / 2, 3, bh, if playing { ACCENT.rgb565() } else { SOFT });
     }
     font::draw(s, x + VOICE_W - 50, top + 9, msg.text.as_str(), GREY);
+}
+
+/// Their side's bubble with three dots (WhatsApp's typing).
+fn typing_bubble(s: &mut Band, top: i32) {
+    rrect(s, BUBBLE_X0, top, TYPING_W, TYPING_H, TYPING_H / 2, THEIRS, BLACK);
+    for i in 0..3 {
+        disc(s, BUBBLE_X0 + 22 + i * 20, top + TYPING_H / 2, 5, Rgb(0xB0, 0xB0, 0xB0), THEIRS);
+    }
 }
 
 fn draw_bubble(s: &mut Band, m: &Model, msg: &Msg, top: i32, playing: bool) {

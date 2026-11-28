@@ -17,6 +17,8 @@
 //!   New mail): the + button at the bottom opens it.
 //! - `K title…` the list that follows is a picker (whom to write to), under that title; the watch's back asks
 //!   the usual list again (`R`). `Y pct` how far the sync is (the bar).
+//! - `Z what` the open chat's contact is typing (1), recording a voice message (2) or neither (0); `H` and a
+//!   message from them (`A`) end it.
 //!
 //! Watch → phone: `R` ready, `o id` open chat, `s id text…` send, `t idx` a message tapped (Notes ticks a
 //! reminder; WhatsApp sends a sticker's or a photo's picture).
@@ -125,6 +127,8 @@ pub struct Model {
     pub online: bool,
     /// the open chat's line under its name
     pub seen: Str<40>,
+    /// the open chat's contact: 1 typing, 2 recording a voice message, 0 neither
+    pub typing: u8,
     /// the open chat's H came (its messages, if any, with it): an empty chat is empty, not loading
     pub headed: bool,
     /// the list is a picker under this title (empty: the usual list)
@@ -167,6 +171,7 @@ impl Model {
             n_quick: 0,
             online: false,
             seen: Str::EMPTY,
+            typing: 0,
             headed: false,
             picker: Str::EMPTY,
             sync: 0,
@@ -238,6 +243,7 @@ impl Model {
                 // the open chat sent again (WhatsApp synced): its picture and last seen stay
                 if !(self.headed && self.open == Some(a[0])) {
                     self.online = false;
+                    self.typing = 0;
                     self.seen = Str::EMPTY;
                     self.dp_parts = 0;
                 }
@@ -274,6 +280,10 @@ impl Model {
                 on_open(self)
             }
             b'A' if a.len() >= 2 => {
+                // their message came: they stopped typing
+                if a[0] & 1 == 0 {
+                    self.typing = 0;
+                }
                 self.push(a[0], a[1], &a[2..]);
                 on_open(self)
             }
@@ -287,6 +297,13 @@ impl Model {
             }
             b'P' if a.len() == 1 => {
                 self.online = a[0] != 0;
+                if !self.online {
+                    self.typing = 0;
+                }
+                on_open(self)
+            }
+            b'Z' if a.len() == 1 => {
+                self.typing = a[0].min(2);
                 on_open(self)
             }
             b'K' => {
@@ -514,6 +531,24 @@ mod tests {
         assert_eq!(m.n_quick, 2);
         assert_eq!(m.quick[0].as_str(), "On my way");
         assert_eq!(m.apply(b"N\x07"), Effect::Buzz(7));
+    }
+
+    #[test]
+    fn typing() {
+        let mut m = Model::new();
+        m.apply(&[b'H', 3, b'A']);
+        assert_eq!(m.apply(&[b'Z', 1]), Effect::Chat);
+        assert_eq!(m.typing, 1);
+        m.apply(&[b'Z', 9]);
+        assert_eq!(m.typing, 2);
+        // our own message leaves it, theirs ends it
+        m.apply(&[b'A', 1, 0, b'h', b'i']);
+        assert_eq!(m.typing, 2);
+        m.apply(&[b'A', 0, 0, b'y', b'o']);
+        assert_eq!(m.typing, 0);
+        m.apply(&[b'Z', 1]);
+        m.apply(&[b'H', 4, b'B']);
+        assert_eq!(m.typing, 0);
     }
 
     #[test]
