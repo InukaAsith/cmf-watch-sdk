@@ -457,6 +457,11 @@ SDK: `Api::file_read(name, skip, buf)`, `Api::file_write(name, data, append)`, `
 
 - Names: 1..=`FILE_NAME_MAX` (20) of `[a-z0-9_.]`, not starting with a dot. The loader stores them as
   `/NAND:/wp2apps/<slot>_<name>`, so an app only sees its own files.
+- The files belong to the app, not the slot: `<slot>.own` holds the package name of the app that has them
+  (`fw/wp2-loader/src/owner.rs`). When an app starts, and when the menu lists it, a marker with another name means
+  another app had the slot: its files are deleted and the marker rewritten. The same name (an update) keeps them; no
+  marker (files from before markers) makes them this app's. When the menu lists the apps, a slot with a marker and
+  no app (removed) loses its files and the marker. The stub's DELETE is unchanged.
 - `file_write` takes at most `FILE_CHUNK` bytes and writes NAND synchronously; append more for a bigger file.
 - The file a read leaves open is closed before a write and when the app ends.
 
@@ -479,7 +484,8 @@ SDK: `Api::audio_open(rate_khz)`, `audio_write(pcm)`, `audio_volume(percent)`, `
 `cmf_wp2_app::adpcm` for a compressed stream from the host.
 
 - 16-bit mono PCM at 8, 16, 24, 32 or 48 kHz. `audio_write` returns the bytes taken: 0 when the loader's 6 KiB queue
-  is full (try again shortly), `-107` when not open, `-12` when the speaker could not be opened, `-22` for a buffer
+  is full (try again shortly), `-107` when not open, `-12` when the speaker could not be opened (or the queue could
+  not be had: it comes from the RES heap at the first `audio_open` and goes back when the app ends), `-22` for a buffer
   outside the app block or an odd length. `pcm` must be a `static`.
 - `audio_volume` is 0..=100 % of the watch's maximum (0 mutes); until the first call the system level is used.
   **On a real watch the stock track level is all or nothing** (2026-11-21): set 100 and scale the samples in the

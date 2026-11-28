@@ -7,8 +7,12 @@
 // notification pauses the app and the track is destroyed before the stock needs the speaker; exit, crash and force
 // stop destroy it (`stop`). While the track lives the loader holds the wake lock: the UI tick, which feeds the
 // track, does not run while the panel is dark.
-use core::ptr::addr_of_mut;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
+//
+// RING comes from the RES heap at the app's first OPEN and goes back in `stop` (the app ended: its thread is gone and
+// the UI thread, the only reader, is the caller), so the loader's 64 KiB block doesn't carry 6 KiB for apps that
+// never play.
+use core::ptr::{addr_of_mut, null_mut};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU8, Ordering};
 use wp2_core::layout::stub_ram;
 use wp2_core::lvcmd::{audio_level, AudioCmd};
 use wp2_core::stock::*;
@@ -22,7 +26,7 @@ const MAX_LEVEL_DEFAULT: u8 = 16;
 
 /// 6 KiB: 190 ms at 16 kHz on top of the track's own 2 KiB; the UI tick runs every 10 ms.
 const RING_SIZE: usize = 6 * 1024;
-static mut RING: [u8; RING_SIZE] = [0; RING_SIZE];
+static RING: AtomicPtr<[u8; RING_SIZE]> = AtomicPtr::new(null_mut());
 // free-running byte counts: HEAD written by the app thread, TAIL by the UI thread
 static HEAD: AtomicU32 = AtomicU32::new(0);
 static TAIL: AtomicU32 = AtomicU32::new(0);
@@ -50,15 +54,27 @@ fn track() -> &'static mut Track {
     unsafe { &mut *addr_of_mut!(TRACK) }
 }
 
-fn ring() -> &'static mut [u8; RING_SIZE] {
-    unsafe { &mut *addr_of_mut!(RING) }
+/// The ring, once an OPEN got it from the heap.
+fn ring() -> Option<&'static mut [u8; RING_SIZE]> {
+    unsafe { RING.load(Ordering::Acquire).as_mut() }
+}
+
+// app thread (OPEN): the ring from the heap, unless the app has it already
+fn take_ring() -> bool {
+    if ring().is_some() {
+        return true;
+    }
+    let p = wp2_core::heap::alloc(wp2_core::heap::RES, RING_SIZE as u32, 4);
+    RING.store(p.cast(), Ordering::Release);
+    !p.is_null()
 }
 
 // app thread (lv_submit). `p`..`p + len` checked against the app block here.
 pub fn request(cmd: AudioCmd) -> i32 {
     match cmd {
         AudioCmd::Open { rate_khz } => {
-            ERROR.store(0, Ordering::Relaxed);
+            // no room for the ring: as a track that could not be made (STATE and WRITE answer -12)
+            ERROR.store(if take_ring() { 0 } else { E_NOMEM }, Ordering::Relaxed);
             WANT_KHZ.store(rate_khz, Ordering::Release);
             WANT_GEN.fetch_add(1, Ordering::AcqRel);
             0
@@ -89,6 +105,7 @@ fn write(ptr: u32, len: u32) -> i32 {
     if e != 0 {
         return e;
     }
+    let Some(r) = ring() else { return E_NOMEM };
     let ram = stub_ram();
     let (block, size) = (ram.app_block, ram.app_size);
     // no ptr + len: it could wrap
@@ -99,7 +116,6 @@ fn write(ptr: u32, len: u32) -> i32 {
     let free = RING_SIZE as u32 - head.wrapping_sub(TAIL.load(Ordering::Acquire));
     let n = len.min(free) & !1;
     let src = unsafe { core::slice::from_raw_parts(ptr as *const u8, n as usize) };
-    let r = ring();
     let at = head as usize % RING_SIZE;
     let first = (n as usize).min(RING_SIZE - at);
     r[at..at + first].copy_from_slice(&src[..first]);
@@ -161,6 +177,9 @@ pub fn tick(running: bool, paused: bool) {
         close(t); // a new rate: a new track
     }
     if t.handle == 0 {
+        if ERROR.load(Ordering::Relaxed) == E_NOMEM && ring().is_none() {
+            return; // no ring: no track either
+        }
         if t.tried == want && ERROR.load(Ordering::Relaxed) != 0 {
             return; // failed for this OPEN: not again every tick
         }
@@ -185,7 +204,7 @@ fn feed(t: &Track) {
     let queued = HEAD.load(Ordering::Acquire).wrapping_sub(tail);
     let mut n = (queued.min(space as u32) & !1) as usize;
     let mut at = tail as usize % RING_SIZE;
-    let r = ring();
+    let Some(r) = ring() else { return };
     while n > 0 {
         let chunk = n.min(RING_SIZE - at);
         let wrote = stock!(AUDIO_TRACK_WRITE, fn(u32, *const u8, u32) -> i32)(t.handle, r[at..].as_ptr(), chunk as u32);
@@ -211,4 +230,7 @@ pub fn stop() {
     track().tried = 0;
     HEAD.store(0, Ordering::Release);
     TAIL.store(0, Ordering::Release);
+    // the app is gone: its ring back to the heap
+    let p = RING.swap(null_mut(), Ordering::AcqRel);
+    unsafe { wp2_core::heap::free(wp2_core::heap::RES, p.cast()) };
 }

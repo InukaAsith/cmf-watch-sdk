@@ -676,6 +676,7 @@ pub fn teardown() {
         stock!(LV_OBJ_DEL, fn(Obj))(s.objs[0]);
     }
     crate::music::free();
+    crate::media::release();
     for slot in 0..MAX_FONTS as usize {
         if s.fonts_open >> slot & 1 != 0 {
             stock!(LVGL_BITMAP_FONT_CLOSE, fn(*mut u32))(s.fonts[slot].as_mut_ptr());
