@@ -103,7 +103,7 @@ fn clip(a: (i32, i32), b: (i32, i32), m: i32) -> Option<((i32, i32), (i32, i32))
                 return None;
             }
         } else {
-            let t = q * 65536 / p;
+            let t = ratio(q, p);
             if p < 0 {
                 t0 = t0.max(t);
             } else {
@@ -116,6 +116,29 @@ fn clip(a: (i32, i32), b: (i32, i32), m: i32) -> Option<((i32, i32), (i32, i32))
     }
     let at = |t: i64| ((x0 + dx * t / 65536) as i32, (y0 + dy * t / 65536) as i32);
     Some((at(t0), at(t1)))
+}
+
+/// q / p in 1/65536 where it decides the clip: exact for 0 <= q/p <= 1, else
+/// any value on the same side (-1 below, 65537 above). No 64-bit division: its runtime is a kilobyte of the app.
+fn ratio(q: i64, p: i64) -> i64 {
+    if q != 0 && (q < 0) != (p < 0) {
+        return -1;
+    }
+    let (aq, ap) = (q.abs(), p.abs());
+    if aq >= ap {
+        return if aq == ap { 65536 } else { 65537 };
+    }
+    // 16 bits of aq / ap by long division (aq < ap): exactly q * 65536 / p
+    let (mut r, mut t) = (aq, 0);
+    for _ in 0..16 {
+        r <<= 1;
+        t <<= 1;
+        if r >= ap {
+            r -= ap;
+            t |= 1;
+        }
+    }
+    t
 }
 
 fn on_panel(p: (i32, i32), m: i32) -> bool {
@@ -687,3 +710,4 @@ pub fn along(pts: &[(i16, i16)], d: i32) -> Option<(i32, i32)> {
     }
     pts.last().map(|p| (i32::from(p.0), i32::from(p.1)))
 }
+

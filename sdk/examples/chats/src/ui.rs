@@ -841,7 +841,8 @@ fn main(api: &'static Api) -> i32 {
                         }
                     } else if dy.abs() > DRAG {
                         ui.drag(dy);
-                    } else {
+                    } else if dx.abs() <= DRAG {
+                        // (a swipe across that wasn't a reply: nothing)
                         ui.tap(x, y);
                     }
                 }
@@ -955,6 +956,8 @@ impl Ui {
         self.menu = None;
         self.del = false;
         self.doomed = None;
+        // a touch from the screen before (the swipe that went back) is not a tap on this one
+        self.down = None;
         if RELIST && to == Screen::List && self.screen != Screen::List {
             self.ask_list();
         }

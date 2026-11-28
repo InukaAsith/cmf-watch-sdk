@@ -81,6 +81,15 @@ class AtlasTest(unittest.TestCase):
             tap(emu, ME, pause=2)
             self.assertNotEqual(emu.frame()[2], moved, "back to us")
 
+            # a swipe moves the map with the finger (no tap, no long press: the home map stays, nothing opens)
+            swiped_from = emu.frame()[2]
+            emu.send("t 1 300 300", "t 1 260 280", "t 1 220 260", pause=0.7)
+            emu.send("t 0 180 240", pause=2)
+            shot(emu, "1c-swiped")
+            self.assertNotEqual(emu.frame()[2], swiped_from, "the swipe moved the map")
+            self.assertFalse(any("place" in l or "ways to" in l for l in log), log)
+            tap(emu, ME, pause=2)
+
             tap(emu, SEARCH)
             tap(emu, FIND_SEARCH)
             for ch in "park":

@@ -144,6 +144,8 @@ const ROUTE_SCENE: (i32, i32) = (i32::MIN, i32::MIN);
 const FOCUS_SCENE: (i32, i32) = (i32::MIN, i32::MAX);
 /// A touch held this long on the map drops a pin.
 const HOLD_MS: u32 = 600;
+/// A lift this far (px) from where the finger went down: a swipe, not a tap.
+const SWIPE: i32 = 30;
 /// The ◎ button held this long: the watch's own GPS on or off; each fix goes to the phone as `Y`, which uses it
 /// instead of its own. ◎'s colour (as Offline Maps'): blue the iPhone's GPS, orange the iPhone's and the watch's
 /// (orange and blue in turn: the iPhone's while the watch looks for satellites), red the watch's only (blinking: it looks, no
@@ -503,12 +505,6 @@ impl Ui {
             self.me_down = None;
             self.toggle_gps();
         }
-        if let Some((x, y, t)) = self.hold {
-            if now.wrapping_sub(t) >= HOLD_MS {
-                self.hold = None;
-                self.long_press(x, y);
-            }
-        }
         let sc = scene();
         if sc.want != 0
             && !(sc.done && sc.id == sc.want)
@@ -535,7 +531,6 @@ impl Ui {
             ask.wait(now),
             (sc.want != 0 && !(sc.done && sc.id == sc.want) && self.pic_tries > 0)
                 .then(|| left(self.pic_at.wrapping_add(STALL_MS))),
-            self.hold.map(|h| left(h.2.wrapping_add(HOLD_MS))),
             self.me_down.map(|t| left(t.wrapping_add(GPS_HOLD_MS))),
             self.rep.wait(now),
             self.nav_due.then(|| left(self.drawn_at.wrapping_add(FRAME_MS))),
@@ -1863,12 +1858,12 @@ impl Ui {
     fn up(&mut self, x: i32, y: i32) {
         self.rep.stop();
         self.me_down = None;
-        let Some((x0, y0, _)) = self.hold.take() else {
+        let Some((x0, y0, t0)) = self.hold.take() else {
             return;
         };
-        // TOUCH_UP's place is not reliable (docs/app-guide.md: the emulator gives a top-row y): a lift at the very top
-        // or at 0, 0 is taken as where the finger went down (a tap); a pull ends lower, mid-panel
-        let y = if (x, y) == (0, 0) || y < 60 { y0 } else { y };
+        // TOUCH_UP's place is not always right (docs/app-guide.md: a top-row y seen in the emulator): a lift at the
+        // very top or at 0, 0 is taken as where the finger went down (a tap); a pull or a swipe ends elsewhere
+        let (x, y) = if (x, y) == (0, 0) || y < 30 { (x0, y0) } else { (x, y) };
         if self.screen == Screen::Place {
             // the card pulled up, or tapped: the place's details
             if y0 > CARD_Y - 20 {
@@ -1884,6 +1879,20 @@ impl Ui {
             self.motor.play(haptic::TICK);
             self.go(Screen::List);
             return;
+        }
+        let (dx, dy) = (x - x0, y - y0);
+        if dx.abs() > SWIPE || dy.abs() > SWIPE {
+            // a swipe: the home map follows the finger (no tap, no long press)
+            if self.screen == Screen::Home && scene().active {
+                let v = self.home_view();
+                let k = v.k.max(1);
+                self.move_to((v.at.0 - dx * 256 / k, v.at.1 + dy * 256 / k), v.k);
+            }
+            return;
+        }
+        // held without moving: a long press (known only at the lift: a slow swipe is not one)
+        if self.api.now().wrapping_sub(t0) >= HOLD_MS {
+            return self.long_press(x0, y0);
         }
         self.tap_map(x0, y0);
     }
@@ -2001,11 +2010,15 @@ impl Ui {
         };
         let v = self.home_view();
         let m = v.metres(155);
-        let at = (v.at.0 + step(dx) * m, v.at.1 - step(dy) * m);
+        self.move_to((v.at.0 + step(dx) * m, v.at.1 - step(dy) * m), v.k);
+    }
+
+    /// The home map's middle to `at` (frame metres), and its streets round there asked for.
+    fn move_to(&mut self, at: (i32, i32), k: i32) {
         self.at = Some(at);
         self.motor.play(haptic::TICK);
         self.draw();
-        self.want_more(at, v.k);
+        self.want_more(at, k);
     }
 
     /// Only what the press changed (the map under it stays).
