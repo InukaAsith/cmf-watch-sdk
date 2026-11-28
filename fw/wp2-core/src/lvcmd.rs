@@ -16,6 +16,8 @@ const STYLE_STATES: [u32; 5] = [0, 0x01, 0x02, 0x20, 0x80];
 
 pub const MAX_OBJS: usize = 192;
 pub const MAX_FONTS: u8 = 4;
+/// Image objects alive at once: the loader keeps one `lv_img_dsc_t` for each (docs/bitmap-assets.md).
+pub const MAX_IMAGES: usize = 8;
 pub const FONT_FILES: u8 = 16;
 pub const MAX_TEXT: usize = 128;
 pub const MAX_OPTIONS: usize = 240;
@@ -51,6 +53,9 @@ pub enum Class {
     /// "No music", previous / play-pause / next and volume, with the stock images and fonts. The loader fills it
     /// from the phone and sends the keys itself. One at a time. Loader of 2026-11-16; an older loader answers `-22`.
     Music = 11,
+    /// A bitmap the app carries: `lv_img` over pixels in the app block (docs/bitmap-assets.md). Set with the
+    /// IMAGE_SRC record. Loader with bitmaps; an older one refuses CREATE (`-22`).
+    Image = 12,
 }
 
 impl Class {
@@ -68,6 +73,7 @@ impl Class {
             9 => Class::Page,
             10 => Class::PagerH,
             11 => Class::Music,
+            12 => Class::Image,
             _ => return None,
         })
     }
@@ -112,6 +118,9 @@ pub enum Rec<'a> {
     Focus { h: u16, icon: u16 },
     LongMode { h: u16, mode: u8 },
     AppIcon { h: u16, slot: u8, side: u8 },
+    /// Pixels in the app block as an `lv_img_dsc_t` source (`IMAGE_SRC`, opcode 0x19): `ptr` points at `w * hh`
+    /// RGB565 pixels (`cf` 4) that must lie inside the running app's image (checked in `lv::submit`).
+    Image { h: u16, ptr: u32, w: u16, hh: u16, cf: u8 },
 }
 
 /// Handle table: class per handle (`0xFF` = free; 0 is the root, class Obj) and the parent
@@ -261,6 +270,10 @@ fn decode<'a>(buf: &mut &'a [u8]) -> Result<Rec<'a>, Error> {
             need(2)?;
             Rec::AppIcon { h, slot: p[0], side: p[1] }
         }
+        0x19 => {
+            need(9)?;
+            Rec::Image { h, ptr: u32le(p), w: u16le(&p[4..]), hh: u16le(&p[6..]), cf: p[8] }
+        }
         0x12 => {
             need(1)?;
             Rec::LongMode { h, mode: p[0] }
@@ -348,6 +361,7 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
             }
             // the loader keeps one music tile's images, fonts and objects
             bad(class == Class::Music && t.has(Class::Music))?;
+            bad(class == Class::Image && t.class[1..].iter().filter(|&&c| c == Class::Image as u8).count() >= MAX_IMAGES)?;
         }
         Rec::Del(h) => {
             // a bar goes with its target: the target keeps callbacks into the bar (Ruling 13). A page goes with its
@@ -435,6 +449,10 @@ fn check(t: &Table, fonts: &mut u8, r: &Rec) -> Result<(), Error> {
         Rec::AppIcon { h, slot, side } => {
             want(t, h, &[Class::Obj])?;
             bad(slot >= crate::layout::SLOTS || !matches!(side, 64 | 96))?;
+        }
+        Rec::Image { h, w, hh, cf, .. } => {
+            want(t, h, &[Class::Image])?;
+            bad(!(1..=466).contains(&w) || !(1..=466).contains(&hh) || cf != 4)?;
         }
         Rec::LongMode { h, mode } => {
             want(t, h, &[Class::Label])?;
@@ -547,6 +565,41 @@ pub fn widget(buf: &[u8]) -> Option<&[u8]> {
         }
         _ => None,
     }
+}
+
+/// BLIT record (op 0x1B, handle 0, payload `ptr u32, x i16, y i16, w u16, h u16`), alone in a batch: the loader
+/// copies `w * h` RGB565 pixels from the app block into the framebuffer (docs/bitmap-assets.md). It runs on the app
+/// thread before LVGL, like SENSOR, so a canvas app may send it. Inside a longer batch, and on an older loader,
+/// op 0x1B is `None` and the batch falls through to the LVGL path (`Malformed`, -22). An odd `ptr` is `None` too:
+/// the loader reads the pixels as `u16`.
+pub fn blit(buf: &[u8]) -> Option<(u32, i16, i16, u16, u16)> {
+    match *buf {
+        [0x1B, 12, 0, 0, p0, p1, p2, p3, x0, x1, y0, y1, w0, w1, h0, h1]
+            if p0 & 1 == 0
+                && (1..=466).contains(&u16::from_le_bytes([w0, w1]))
+                && (1..=466).contains(&u16::from_le_bytes([h0, h1])) => {
+            Some((u32::from_le_bytes([p0, p1, p2, p3]), i16::from_le_bytes([x0, x1]), i16::from_le_bytes([y0, y1]),
+                  u16::from_le_bytes([w0, w1]), u16::from_le_bytes([h0, h1])))
+        }
+        _ => None,
+    }
+}
+
+/// Whether every IMAGE_SRC source in `buf` points at `w * hh * 2` pixel bytes, 2-aligned, inside
+/// `[block, block + size)` (the running app's image). The batch itself is range-checked in `lv::submit`; this is the same check for the
+/// pixels it names, so a record can never make the loader render memory outside the app. A malformed record returns
+/// `true`: the batch validator rejects the batch before any record runs.
+pub fn image_src_in(buf: &[u8], block: u32, size: u32) -> bool {
+    for r in records(buf) {
+        // cf is 4 (RGB565) only: `check` refuses the rest, so 2 bytes per pixel
+        let Ok(Rec::Image { ptr, w, hh, .. }) = r else { continue };
+        let (start, end) = (u64::from(ptr), u64::from(ptr) + u64::from(w) * u64::from(hh) * 2);
+        let (lo, hi) = (u64::from(block), u64::from(block) + u64::from(size));
+        if ptr & 1 != 0 || start < lo || end > hi {
+            return false;
+        }
+    }
+    true
 }
 
 /// PAGE query (op 0x15, handle 0, no payload), alone in a batch: 1 when the app runs as its page next to the watch
@@ -855,6 +908,55 @@ mod tests {
         assert_eq!(check(&[create(1, 0, 0), r(0x1A, 1, &[0, 65])]), Err(Error::BadValue));
         assert_eq!(check(&[create(1, 1, 0), r(0x1A, 1, &[0, 96])]), Err(Error::BadClass));
         assert_eq!(check(&[r(0x1A, 1, &[0, 96])]), Err(Error::BadHandle));
+    }
+    #[test]
+    fn image_records() {
+        let src = |h: u16, w: u16, hh: u16, cf: u8| {
+            let mut p = 0x0010_0000u32.to_le_bytes().to_vec();
+            p.extend_from_slice(&w.to_le_bytes());
+            p.extend_from_slice(&hh.to_le_bytes());
+            p.push(cf);
+            r(0x19, h, &p)
+        };
+        assert!(matches!(decode(&mut &src(12, 64, 32, 4)[..]),
+                         Ok(Rec::Image { h: 12, ptr: 0x0010_0000, w: 64, hh: 32, cf: 4 })));
+        assert!(decode(&mut &src(12, 64, 0, 4)[..]).is_ok(), "dims are checked, not decoded");
+        let image = |w: u16, hh: u16, cf: u8| vec![create(12, Class::Image as u8, 0), src(12, w, hh, cf)];
+        assert_eq!(check(&image(64, 32, 4)), Ok(()));
+        assert_eq!(check(&image(0, 32, 4)), Err(Error::BadValue));
+        assert_eq!(check(&image(467, 32, 4)), Err(Error::BadValue));
+        assert_eq!(check(&image(64, 32, 5)), Err(Error::BadValue), "alpha waits");
+        assert_eq!(check(&[src(1, 64, 32, 4)]), Err(Error::BadHandle));
+        let mut many: Vec<Vec<u8>> = (1..=MAX_IMAGES as u16).map(|h| create(h, Class::Image as u8, 0)).collect();
+        assert_eq!(check(&many), Ok(()));
+        many.push(create(20, Class::Image as u8, 0));
+        assert_eq!(check(&many), Err(Error::BadValue), "one descriptor per image in the loader");
+    }
+    #[test]
+    fn blit_record_alone() {
+        let good = [0x1B, 12, 0, 0, 0x00, 0x00, 0x10, 0x00, 0x10, 0xFF, 0x20, 0xFF, 64, 0, 32, 0];
+        assert_eq!(blit(&good), Some((0x0010_0000, -240, -224, 64, 32)));
+        assert_eq!(blit(&[0x1B, 12, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 32, 0]), None, "w 0");
+        assert_eq!(blit(&[0x1B, 12, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 64, 0]), None, "short");
+        assert_eq!(blit(&[0x1B, 12, 0, 0, 1, 0, 0x10, 0, 0, 0, 0, 0, 64, 0, 32, 0]), None, "odd ptr");
+        let mut longer = good.to_vec();
+        longer.extend_from_slice(&[0x13, 2, 0, 0, 1, 1]);
+        assert_eq!(blit(&longer), None, "alone in its batch");
+    }
+    #[test]
+    fn image_sources_stay_in_the_app_block() {
+        let src = |ptr: u32| {
+            let mut p = ptr.to_le_bytes().to_vec();
+            p.extend_from_slice(&4u16.to_le_bytes());
+            p.extend_from_slice(&4u16.to_le_bytes());
+            p.push(4);
+            r(0x19, 12, &p)
+        };
+        assert!(image_src_in(&src(0x1000), 0x1000, 32), "4*4*2 = 32 B, exact fit");
+        assert!(!image_src_in(&src(0x0FFE), 0x1000, 32), "starts before");
+        assert!(!image_src_in(&src(0x1000), 0x1000, 31), "runs past");
+        assert!(!image_src_in(&src(0x1001), 0x1000, 64), "odd: the pixels are u16");
+        assert!(image_src_in(&[0x99, 3], 0x1000, 1), "malformed: the validator rejects it");
     }
     fn create(h: u16, class: u8, parent: u16) -> Vec<u8> {
         let mut p = vec![class];
@@ -1174,7 +1276,7 @@ mod tests {
         assert_eq!(v(&[value(1, -1)]), Err(Error::BadValue));
         assert_eq!(v(&[value(1, 193)]), Err(Error::BadValue));
         assert_eq!(v(&[value(2, 0)]), Err(Error::BadClass));
-        assert_eq!(v(&[r(1, 4, &[12, 0, 0])]), Err(Error::BadValue), "no class 12");
+        assert_eq!(v(&[r(1, 4, &[13, 0, 0])]), Err(Error::BadValue), "no class 13");
     }
 
     #[test]
