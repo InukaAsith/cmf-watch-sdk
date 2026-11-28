@@ -26,6 +26,7 @@ mod music;
 mod menu;
 #[cfg(target_os = "none")]
 mod motor;
+mod owner;
 #[cfg(target_os = "none")]
 mod storage;
 #[cfg(target_os = "none")]

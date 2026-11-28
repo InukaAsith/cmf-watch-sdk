@@ -83,6 +83,8 @@ pub fn launch(slot: u8) -> Result<(), i32> {
     POLLED_AT.store(millis(), Ordering::Relaxed);
     motor::reset();
     QUEUE.clear();
+    // the slot's named files are this app's (another app's that were there go)
+    crate::owner::adopt(slot, &h.name);
     svc::start(slot, h.abi_minor);
     ui::canvas().fill_rect(0, 0, 466, 466, 0);
     ui::PENDING.store(gfx::EMPTY, Ordering::Relaxed);
