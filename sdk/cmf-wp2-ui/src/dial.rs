@@ -5,7 +5,11 @@
 //! The app has no finger-move events (TOUCH_DOWN and TOUCH_UP only), so a slide counts from where the finger went
 //! down to where it came up.
 //!
-//! The app keeps the typed text and draws it above y 170; [`Dial`] draws the rest and answers with an [`Act`].
+//! The app keeps the typed text and draws it inside the letters, in the box [`TEXT_Y`], [`TEXT_ROWS`], [`TEXT_PX`]
+//! ([`crate::keyboard::Keyboard::draw_text_in`] clears that box only); [`Dial`] draws the rest and answers with an
+//! [`Act`]. Delete held repeats: the app's event timeout includes [`Dial::hold_wait`] and each pass calls
+//! [`Dial::tick`]. The status bar's clock sits on the top letter: an app hides it while the dial is up
+//! (`Api::status_bar`).
 
 use core::cell::Cell;
 
@@ -13,6 +17,7 @@ use crate::color::{rgb565, Rgb, BLACK};
 use crate::draw::{disc, rrect};
 use crate::geom::polar;
 use crate::motion::{angle, isqrt};
+use crate::repeat::Repeat;
 use crate::{font, text, Surface, C};
 
 pub const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ?#";
@@ -33,6 +38,10 @@ const PUNCT_R: i32 = 26;
 const PUNCT_Y: i32 = C - 6;
 /// Top of the middle (typed text above).
 const MID_Y: i32 = 176;
+/// The typed text's box inside the letters: first line's y, lines, width (its corners clear the letters' discs).
+pub const TEXT_Y: i32 = 92;
+pub const TEXT_ROWS: usize = 3;
+pub const TEXT_PX: i32 = 196;
 /// Held this long: a capital.
 pub const HOLD_MS: u32 = 450;
 /// Crown gain in 1/100 letter per detent: slow turn, fast spin.
@@ -79,6 +88,8 @@ pub struct Dial {
     at: u32,
     gap: i32,
     pitch: Cell<i32>,
+    /// delete held
+    del: Repeat,
 }
 
 impl Default for Dial {
@@ -89,7 +100,7 @@ impl Default for Dial {
 
 impl Dial {
     pub const fn new() -> Self {
-        Dial { sym: false, shift: true, sel: 0, press: None, grab: false, acc: 0, at: 0, gap: 400, pitch: Cell::new(0) }
+        Dial { sym: false, shift: true, sel: 0, press: None, grab: false, acc: 0, at: 0, gap: 400, pitch: Cell::new(0), del: Repeat::new() }
     }
 
     fn keys(&self) -> &'static [u8] {
@@ -238,13 +249,18 @@ impl Dial {
         Act::Show
     }
 
-    /// TOUCH_DOWN: a bar key types at once; a letter is picked; the middle and the grip wait for the lift.
+    /// TOUCH_DOWN: a bar key types at once (delete held repeats); a letter is picked; the middle and the grip wait
+    /// for the lift.
     pub fn down(&mut self, s: &mut impl Surface, x: i32, y: i32, now: u32) -> Act {
         self.press = None;
         self.grab = false;
+        self.del.stop();
         if let Some(k) = Self::bar_key(x, y) {
             return Act::Key(match k {
-                b'<' => Key::Del,
+                b'<' => {
+                    self.del.start(now);
+                    Key::Del
+                }
                 b'>' => Key::Send,
                 _ => Key::Space,
             });
@@ -275,6 +291,7 @@ impl Dial {
         // the letter touched is the one typed, wherever the finger lifts (no sliding to another)
         let _ = (x, y);
         self.grab = false;
+        self.del.stop();
         let Some((i, _, upper)) = self.press.take() else { return Act::None };
         let c = self.keys()[i];
         if c == b'#' {
@@ -288,16 +305,20 @@ impl Dial {
         Act::Key(Key::Ch(c))
     }
 
-    /// When a held letter turns capital (ms from `now`), for the app's event timeout.
+    /// When a held letter turns capital or a held delete repeats (ms from `now`), for the app's event timeout.
     pub fn hold_wait(&self, now: u32) -> Option<u32> {
         match self.press {
-            Some((_, t, false)) => Some(t.wrapping_add(HOLD_MS).wrapping_sub(now).min(HOLD_MS)),
-            _ => None,
+            Some((_, t, false)) => Some((t.wrapping_add(HOLD_MS).wrapping_sub(now) as i32).clamp(0, HOLD_MS as i32) as u32),
+            _ => self.del.wait(now),
         }
     }
 
-    /// Held long enough: the letter becomes a capital (shown in the middle). `Show` when it did.
+    /// Held long enough: the letter becomes a capital (shown in the middle, `Show`), or delete deletes again
+    /// (`Key(Del)`).
     pub fn tick(&mut self, s: &mut impl Surface, now: u32) -> Act {
+        if self.del.due(now) {
+            return Act::Key(Key::Del);
+        }
         if let Some((i, t, false)) = self.press {
             if now.wrapping_sub(t) >= HOLD_MS {
                 self.press = Some((i, t, true));
@@ -312,6 +333,7 @@ impl Dial {
     pub fn cancel(&mut self) {
         self.press = None;
         self.grab = false;
+        self.del.stop();
     }
 }
 
@@ -344,6 +366,35 @@ mod tests {
         let (ix, iy) = (C + (lx - C) * (R - 50) / R, C + (ly - C) * (R - 50) / R);
         assert_eq!(d.down(&mut s, ix, iy, 0), Act::Show);
         assert_eq!(d.up(&mut s, ix, iy), Act::Key(Key::Ch(b'd')));
+    }
+
+    #[test]
+    fn delete_held_repeats_until_lifted() {
+        let mut px = fb();
+        let mut s = Fb::new(&mut px);
+        let mut d = Dial::new();
+        let x0 = Dial::bar_x0();
+        assert_eq!(d.down(&mut s, x0 + 20, BAR_Y + 20, 1000), Act::Key(Key::Del));
+        assert_eq!(d.tick(&mut s, 1100), Act::None);
+        assert_eq!(d.hold_wait(1100), Some(crate::repeat::DELAY_MS - 100));
+        assert_eq!(d.tick(&mut s, 1000 + crate::repeat::DELAY_MS), Act::Key(Key::Del));
+        d.up(&mut s, x0 + 20, BAR_Y + 20);
+        assert_eq!(d.tick(&mut s, 5000), Act::None);
+        assert_eq!(d.hold_wait(5000), None);
+    }
+
+    #[test]
+    fn the_text_box_is_inside_the_letters() {
+        let d = Dial::new();
+        let (x0, x1) = (C - TEXT_PX / 2 - 6, C + TEXT_PX / 2 + 6);
+        let (y0, y1) = (TEXT_Y - 6, TEXT_Y - 6 + TEXT_ROWS as i32 * 25 + 8);
+        assert!(y1 <= MID_Y);
+        for i in 0..LETTERS.len() {
+            let (x, y) = d.at(i);
+            // the box's nearest point to the letter is outside its disc
+            let (nx, ny) = (x.clamp(x0, x1), y.clamp(y0, y1));
+            assert!((x - nx).pow(2) + (y - ny).pow(2) > CELL * CELL, "letter {i} under the text box");
+        }
     }
 
     #[test]

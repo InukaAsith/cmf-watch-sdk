@@ -7,8 +7,10 @@
 //! - voice typing: the mic button; the phone writes the words down (`cmf_wp2_ui::dictate`, needs loader 6 and a
 //!   phone app that answers the `~` messages, docs/keyboards.md)
 //!
-//! Send shows what was typed and sends it to the phone as `T text`. The button goes back (and leaves from the
-//! keyboard). Nothing is kept.
+//! A small form shows the field kinds: a name (text, Next), an amount (a signed decimal on the number pad, Next) and
+//! a note (multiline: the action key types a new line, the button beside the text sends). Send shows what was typed
+//! and sends it to the phone as `T name\namount\nnote`. The button goes back: from the rotary keyboard to QWERTY,
+//! to the field before, and from the first field out. Nothing is kept.
 
 #[cfg(not(any(target_os = "none", wp2_sim)))]
 fn main() {}
@@ -21,7 +23,7 @@ mod device {
     use cmf_wp2_ui::dictate::{Dictate, Out};
     use cmf_wp2_ui::font::{self, centre, wrap};
     use cmf_wp2_ui::haptic::{self, Motor};
-    use cmf_wp2_ui::keyboard::{Act, Key, Keyboard, FLASH_MS};
+    use cmf_wp2_ui::keyboard::{Act, Action, Input, Key, Keyboard, FLASH_MS};
     use cmf_wp2_ui::{emoji, Rgb, Surface, C};
     use core::ptr::addr_of_mut;
 
@@ -58,10 +60,19 @@ mod device {
         }
     }
 
+    /// The form's fields: title, hint, input, action, multiline.
+    const FIELDS: [(&str, &str, Input, Action, bool); 3] = [
+        ("Name", "Your name", Input::Text, Action::Next, false),
+        ("Amount", "0.00", Input::Decimal { signed: true }, Action::Next, false),
+        ("Note", "Type something", Input::Text, Action::Send, true),
+    ];
+
     struct App {
         api: &'static Api,
         screen: Screen,
-        kb: Keyboard,
+        fields: [Keyboard; 3],
+        /// the field being typed
+        field: usize,
         dial: Dial,
         dict: Dictate,
         motor: Motor,
@@ -72,26 +83,37 @@ mod device {
     }
 
     impl App {
+        fn kb(&mut self) -> &mut Keyboard {
+            &mut self.fields[self.field]
+        }
+
         fn draw(&mut self) {
             let mut s = Dot(self.api);
+            let kb = &self.fields[self.field];
             match self.screen {
-                Screen::Keys => self.kb.draw(&mut s, "Keyboards"),
+                Screen::Keys => kb.draw(&mut s, FIELDS[self.field].0),
                 Screen::Dial => {
                     s.rect(0, 0, 466, 466, 0);
-                    self.kb.draw_text(&mut s);
+                    kb.draw_text_in(&mut s, dial::TEXT_Y, dial::TEXT_ROWS, dial::TEXT_PX);
                     self.dial.draw(&mut s);
                 }
                 Screen::Voice => self.dict.draw(&mut s),
                 Screen::Sent => {
                     s.rect(0, 0, 466, 466, 0);
                     centre(&mut s, C, 60, "Sent", SOFT);
-                    let mut lines = [""; 8];
-                    let n = wrap(self.kb.text(), 320, &mut lines).min(7);
-                    let y0 = C - n as i32 * 26 / 2;
-                    for (i, l) in lines[..n].iter().enumerate() {
-                        centre(&mut s, C, y0 + i as i32 * 26, l, 0xFFFF);
+                    let mut y = 110;
+                    for (i, f) in self.fields.iter().enumerate() {
+                        centre(&mut s, C, y, FIELDS[i].0, GREY);
+                        y += 26;
+                        let mut lines = [""; 4];
+                        let n = wrap(f.text(), 320, &mut lines);
+                        for l in &lines[..n] {
+                            centre(&mut s, C, y, l, 0xFFFF);
+                            y += 26;
+                        }
+                        y += 8;
                     }
-                    centre(&mut s, C, 390, "Tap to type again", GREY);
+                    centre(&mut s, C, 400, "Tap to type again", GREY);
                 }
             }
             self.api.show();
@@ -100,22 +122,35 @@ mod device {
         fn go(&mut self, screen: Screen) {
             self.flash = None;
             self.dial.cancel();
-            self.dial.shift = self.kb.shift;
+            self.dial.shift = self.fields[self.field].shift;
+            // the status bar's clock sits on the rotary keyboard's top letter
+            self.api.status_bar(screen != Screen::Dial);
             self.screen = screen;
             self.draw();
         }
 
-        fn send(&mut self) {
-            let text = self.kb.text().as_bytes();
-            if text.is_empty() {
-                return;
+        /// The action key: on to the next field, or send them all from the last.
+        fn submit(&mut self) {
+            self.motor.play(haptic::TICK);
+            if self.field + 1 < self.fields.len() {
+                self.field += 1;
+                return self.go(Screen::Keys);
             }
             let mut m = [0u8; MSG_MAX];
-            let n = text.len().min(MSG_MAX - 1);
             m[0] = b'T';
-            m[1..1 + n].copy_from_slice(&text[..n]);
+            let mut n = 1;
+            for (i, f) in self.fields.iter().enumerate() {
+                if i > 0 && n < MSG_MAX {
+                    m[n] = b'\n';
+                    n += 1;
+                }
+                let t = f.text().as_bytes();
+                let k = t.len().min(MSG_MAX - n);
+                m[n..n + k].copy_from_slice(&t[..k]);
+                n += k;
+            }
             // no phone: still shown, the demo is about typing
-            let _ = self.api.send(&m[..1 + n]);
+            let _ = self.api.send(&m[..n]);
             self.motor.play(haptic::DOUBLE);
             self.go(Screen::Sent);
         }
@@ -141,19 +176,19 @@ mod device {
                     self.motor.play(haptic::TICK);
                     // a key still shown pressed goes plain first
                     if let Some((old, _)) = self.flash.take() {
-                        self.kb.draw_key(&mut s, old, false);
+                        self.kb().draw_key(&mut s, old, false);
                     }
-                    self.kb.draw_text(&mut s);
-                    self.kb.draw_key(&mut s, k, true);
+                    self.kb().draw_text(&mut s);
+                    self.kb().draw_key(&mut s, k, true);
                     self.api.show();
                     self.flash = Some((k, self.api.now().wrapping_add(FLASH_MS)));
                 }
                 Act::Text => {
                     self.motor.play(haptic::TICK);
-                    self.kb.draw_text(&mut s);
+                    self.kb().draw_text(&mut s);
                     self.api.show();
                 }
-                Act::Send => self.send(),
+                Act::Submit => self.submit(),
                 Act::Dial => {
                     self.motor.play(haptic::TICK);
                     self.go(Screen::Dial);
@@ -178,20 +213,23 @@ mod device {
                 }
                 dial::Act::Key(k) => {
                     self.motor.play(haptic::TICK);
+                    let kb = &mut self.fields[self.field];
                     match k {
-                        DialKey::Send => return self.send(),
-                        DialKey::Del => self.kb.type_key(Key::Del),
+                        DialKey::Send => return self.submit(),
+                        DialKey::Del => {
+                            kb.type_key(Key::Del);
+                        }
                         DialKey::Space => {
-                            self.kb.shift = false;
-                            self.kb.type_key(Key::Space);
+                            kb.shift = false;
+                            kb.type_key(Key::Space);
                         }
                         DialKey::Ch(c) => {
-                            self.kb.shift = false;
-                            self.kb.type_key(Key::Ch(c));
+                            kb.shift = false;
+                            kb.type_key(Key::Ch(c));
                         }
                     }
-                    self.dial.shift = self.kb.shift;
-                    self.kb.draw_text(&mut s);
+                    self.dial.shift = kb.shift;
+                    kb.draw_text_in(&mut s, dial::TEXT_Y, dial::TEXT_ROWS, dial::TEXT_PX);
                     self.dial.draw_centre(&mut s);
                     self.api.show();
                 }
@@ -208,7 +246,7 @@ mod device {
                     }
                 }
                 Out::Done => {
-                    self.kb.add_words(self.dict.text());
+                    self.fields[self.field].add_words(self.dict.text());
                     self.motor.play(haptic::TICK);
                     self.go(self.from);
                 }
@@ -219,7 +257,8 @@ mod device {
         fn touch_down(&mut self, x: i32, y: i32) {
             match self.screen {
                 Screen::Keys => {
-                    let a = self.kb.tap(x, y);
+                    let now = self.api.now();
+                    let a = self.kb().tap(x, y, now);
                     self.keys_act(a);
                 }
                 Screen::Dial => {
@@ -231,7 +270,10 @@ mod device {
                     self.voice_out(o);
                 }
                 Screen::Sent => {
-                    self.kb.clear();
+                    for f in &mut self.fields {
+                        f.clear();
+                    }
+                    self.field = 0;
                     self.go(Screen::Keys);
                 }
             }
@@ -241,12 +283,18 @@ mod device {
     fn main(api: &'static Api) -> i32 {
         // the watch's emoji in text and on the keyboard's second page (none on a loader before 6)
         emoji::init(api, unsafe { &mut *addr_of_mut!(EMOJI) });
-        let mut kb = Keyboard::new(RED);
-        kb.hint = "Type something";
+        // the button is the app's: back to QWERTY, to the field before, then out (not the loader's escape)
+        api.own_back(true);
+        let fields = FIELDS.map(|(_, hint, input, action, multiline)| {
+            let mut kb = Keyboard::new(RED);
+            (kb.hint, kb.input, kb.action, kb.multiline) = (hint, input, action, multiline);
+            kb
+        });
         let mut app = App {
             api,
             screen: Screen::Keys,
-            kb,
+            fields,
+            field: 0,
             dial: Dial::new(),
             dict: Dictate::new(),
             motor: Motor::new(api),
@@ -258,7 +306,11 @@ mod device {
         loop {
             let now = api.now();
             let flash = app.flash.map(|(_, t)| t.wrapping_sub(now).min(1000));
-            let hold = if app.screen == Screen::Dial { app.dial.hold_wait(now) } else { None };
+            let hold = match app.screen {
+                Screen::Dial => app.dial.hold_wait(now),
+                Screen::Keys => app.kb().hold_wait(now),
+                _ => None,
+            };
             let wait = [app.motor.wait(), flash, hold].into_iter().flatten().min().unwrap_or(u32::MAX);
             let e = api.event(app.dict.wait_ms(wait));
             app.motor.update();
@@ -266,15 +318,22 @@ mod device {
                 if api.now().wrapping_sub(t) as i32 >= 0 {
                     app.flash = None;
                     if app.screen == Screen::Keys {
-                        app.kb.draw_key(&mut Dot(api), k, false);
+                        app.kb().draw_key(&mut Dot(api), k, false);
                         api.show();
                     }
                 }
             }
-            if app.screen == Screen::Dial && app.dial.tick(&mut Dot(api), api.now()) == dial::Act::Show {
-                // held: the letter becomes a capital
-                app.motor.play(haptic::TICK);
-                api.show();
+            match app.screen {
+                // held: the letter becomes a capital, or delete repeats
+                Screen::Dial => {
+                    let a = app.dial.tick(&mut Dot(api), api.now());
+                    app.dial_act(a);
+                }
+                Screen::Keys => {
+                    let a = app.kb().tick(api.now());
+                    app.keys_act(a);
+                }
+                _ => {}
             }
             if app.dict.active() {
                 let o = app.dict.tick(api);
@@ -287,9 +346,10 @@ mod device {
                     let a = app.dial.up(&mut Dot(api), e.x.into(), e.y.into());
                     app.dial_act(a);
                 }
+                TOUCH_UP => app.kb().release(),
                 CROWN => match app.screen {
                     Screen::Keys => {
-                        let a = app.kb.crown(e.delta.into());
+                        let a = app.kb().crown(e.delta.into());
                         app.keys_act(a);
                     }
                     Screen::Dial => {
@@ -313,11 +373,17 @@ mod device {
                             app.voice_out(o);
                         }
                         Screen::Dial => app.go(Screen::Keys),
+                        Screen::Keys if app.field > 0 => {
+                            app.field -= 1;
+                            app.go(Screen::Keys);
+                        }
                         Screen::Keys | Screen::Sent => return 0,
                     }
                 }
                 PAUSE => {
                     app.motor.off();
+                    app.kb().release();
+                    app.dial.cancel();
                     // the loader stops the mic while paused: dictation ends with it
                     if app.dict.active() {
                         let o = app.dict.cancel(api);

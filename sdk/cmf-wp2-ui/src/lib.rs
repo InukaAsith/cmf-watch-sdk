@@ -15,6 +15,7 @@ pub mod haptic;
 pub mod keyboard;
 pub mod logo;
 pub mod motion;
+pub mod repeat;
 pub mod text;
 pub mod widget;
 

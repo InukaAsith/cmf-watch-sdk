@@ -9,9 +9,9 @@ scripts/build-app keyboards 1 && uv run wp2apps install target/keyboards.wp2app 
 
 | Module | What | Needs |
 |---|---|---|
-| `keyboard` | QWERTY laid out for the round panel (Wear OS style): letters, `?12` symbols, shift, delete, space, send; a capital after the end of a sentence; the typed text with a caret | nothing |
+| `keyboard` | QWERTY laid out for the round panel (Wear OS style): letters, `?12` symbols, shift, delete (held: repeats), space, the action key; a capital after the end of a sentence; the typed text with a caret, scrolled by the crown. Number fields get a number pad; multiline fields a new-line key | nothing |
 | `emoji` | the watch's own 52 emoji (the stock `emoji28.font`), in text and as the keyboard's second page | loader 6 (`emoji_read`); older: no emoji key, emoji draw as boxes |
-| `dial` | the rotary keyboard: letters round the rim, the crown picks, a tap types, held a capital | nothing |
+| `dial` | the rotary keyboard: letters round the rim, the crown picks, a tap types, held a capital, delete held repeats | nothing; hiding the status bar over it needs the loader of 2026-11-28 |
 | `dictate` | voice typing: the mic as IMA ADPCM to the phone, the words back as they come | loader 6 (mic) and a phone app that answers (below) |
 
 ## In an app
@@ -26,24 +26,41 @@ static mut EMOJI: [u8; cmf_wp2_ui::emoji::ram_for(18)] = [0; cmf_wp2_ui::emoji::
 
 cmf_wp2_ui::emoji::init(api, unsafe { &mut *core::ptr::addr_of_mut!(EMOJI) });
 let mut kb = Keyboard::new(ACCENT);
+kb.input = Input::Text;        // or Input::Integer { signed }, Input::Decimal { signed }: a number pad
+kb.action = Action::Send;      // the action key's label: Send (>), Done (ok), Next (next)
+kb.multiline = false;          // true: the action key types a new line, a button left of the text submits
+api.own_back(true);            // the button is the app's (back from the rotary keyboard), not the loader's escape
 kb.draw(&mut surface, "Title");
-// TOUCH_DOWN
-match kb.tap(x, y) {
+// TOUCH_DOWN (TOUCH_UP: kb.release(), so a held delete stops)
+match kb.tap(x, y, api.now()) {
     Act::Typed(k) => { /* kb.draw_text, kb.draw_key(k, true), plain again after FLASH_MS */ }
+    Act::Text => kb.draw_text(&mut surface),
     Act::Redraw => kb.draw(&mut surface, "Title"),
-    Act::Send => use_the_text(kb.text()),
+    Act::Submit => use_the_text(kb.text()),  // the action key or the submit button: send, done, next field
     Act::Voice => dict.start(api, false),   // then dict.draw
     Act::Dial => { /* the rotary keyboard */ }
     _ => {}
 }
 ```
 
+- **Delete held**: wait at most `kb.hold_wait(now)` for events and call `kb.tick(now)` on every pass; it answers
+  like a tap (`Typed(Del)`). A tap deletes one char (a whole emoji), held it repeats every 90 ms after 450 ms, the
+  lift stops it.
+- **Crown**: `kb.crown(d)` turns the emoji pages, or else scrolls the text a line (`Act::Text`); typing goes back
+  to the caret.
+- **Number fields**: digits, a minus first when `signed`, one point for decimals; anything else is ignored, voice
+  typing included. No emoji, symbols, mic or rotary keyboard there.
+
 - **Voice typing**: while `dict.active()`, wait at most `dict.wait_ms(...)` for events and call `dict.tick(api)`.
   Give every message to `dict.message(m)` first, touches to `dict.tap`, the button to `dict.cancel`. On
   `Out::Done`, `kb.add_words(dict.text())`.
 - **Rotary keyboard**: `dial.down` on TOUCH_DOWN, `dial.up` on TOUCH_UP, `dial.crown` on CROWN, `dial.tick` with
-  `dial.hold_wait` as a timeout (held letters become capitals). Its letters come in their case: set `kb.shift =
-  false` before `kb.type_key`, and `dial.shift = kb.shift` after.
+  `dial.hold_wait` as a timeout (held letters become capitals, held delete repeats). Its letters come in their case:
+  set `kb.shift = false` before `kb.type_key`, and `dial.shift = kb.shift` after. Draw the text inside its letters
+  with `kb.draw_text_in(s, dial::TEXT_Y, dial::TEXT_ROWS, dial::TEXT_PX)`: that box only is cleared, so typing
+  leaves the letters alone. Hide the status bar while it is up (`api.status_bar(false)`, `true` when leaving), and
+  let the button go back to QWERTY first (with `own_back(true)` the app gets the press; without it the loader
+  stops the app a second later).
 - **Emoji memory**: `ram_for(n)` keeps `n` emoji at once (18 = a whole page, about 20 KB). An app short of room
   can give the icon's memory once it runs (`app_icon_ram()`), as Chats does.
 - **PAUSE**: the loader stops the mic, so cancel dictation (`dict.cancel`).
@@ -75,4 +92,4 @@ uv run python hosts/voicehost.py --sim 7798 --words "coffee at ten" heard.wav
 ## Limits
 
 - At most `TEXT_MAX` (100) bytes of text; emoji take 4 each.
-- The rotary keyboard's top letter sits under the loader's status bar (loader 7) while it is selected.
+- Before the loader of 2026-11-28 the status bar can't be hidden: the rotary keyboard's top letter sits under it.

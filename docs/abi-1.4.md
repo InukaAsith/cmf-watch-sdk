@@ -521,3 +521,16 @@ clock) and, while the app holds the GPS, its strength in three bars. LVGL object
 (`fw/wp2-loader/src/status.rs`): the app's pixels are never touched and touches go through. It sits centred at
 y = 4, about 72 px wide; apps keep their titles clear of it. Refreshed every 500 ms. A pause no longer drops the
 app's GPS hold (the bars come back on `RESUME`).
+
+### Hiding it (loader of 2026-11-28, no ABI bump)
+
+A screen that needs the top of the panel (the rotary keyboard's top letter sits under the clock) hides the bar and
+shows it again: `Api::status_bar(on: bool) -> i32`, `0`, or `-22` on an older loader (op 0x1C unknown there:
+`Malformed`). A STATUS record alone in an `lv_submit` batch, like SENSOR:
+
+```text
+[0x1C, 1, 0, 0, on u8]   on: 0 hidden, 1 shown
+```
+
+The call only records the wish (`status::SHOWN`); the UI thread hides or shows the label and the bars on its next
+tick, so a canvas app needs no LVGL. Every launch starts with the bar shown (`app::launch`).

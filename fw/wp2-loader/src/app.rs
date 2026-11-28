@@ -83,6 +83,7 @@ pub fn launch(slot: u8) -> Result<(), i32> {
     POLLED_AT.store(millis(), Ordering::Relaxed);
     motor::reset();
     QUEUE.clear();
+    crate::status::SHOWN.store(true, Ordering::Relaxed);
     // the slot's named files are this app's (another app's that were there go)
     crate::owner::adopt(slot, &h.name);
     svc::start(slot, h.abi_minor);

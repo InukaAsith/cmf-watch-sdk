@@ -618,6 +618,16 @@ pub fn sensor(buf: &[u8]) -> Option<(u8, bool)> {
     }
 }
 
+/// STATUS record (op 0x1C, handle 0, payload `[on]`), alone in a batch: the loader's status bar (time, GPS bars)
+/// shown (1, as every app starts) or hidden (0) for a screen that needs the top of the panel (a rotary keyboard).
+/// On an older loader op 0x1C is `Malformed` (-22).
+pub fn status_bar(buf: &[u8]) -> Option<bool> {
+    match *buf {
+        [0x1C, 1, 0, 0, on @ (0 | 1)] => Some(on == 1),
+        _ => None,
+    }
+}
+
 /// FILE record (op 0x16, handle 0), alone in a batch: the app's own files on NAND, for data bigger than the 4 KiB
 /// blob (offline map tiles). `[0x16, 0, 0, 0, cmd, name_len, name…, rest…]`: cmd 1 read, rest = `ptr: u32, cap: u32`
 /// LE (a buffer in the app block) → bytes read; 2 write (replaces), 3 append, rest = the data → bytes written;
@@ -939,6 +949,10 @@ mod tests {
         assert_eq!(blit(&[0x1B, 12, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 32, 0]), None, "w 0");
         assert_eq!(blit(&[0x1B, 12, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 64, 0]), None, "short");
         assert_eq!(blit(&[0x1B, 12, 0, 0, 1, 0, 0x10, 0, 0, 0, 0, 0, 64, 0, 32, 0]), None, "odd ptr");
+        assert_eq!(status_bar(&[0x1C, 1, 0, 0, 0]), Some(false));
+        assert_eq!(status_bar(&[0x1C, 1, 0, 0, 1]), Some(true));
+        assert_eq!(status_bar(&[0x1C, 1, 0, 0, 2]), None);
+        assert_eq!(status_bar(&[0x1C, 2, 0, 0, 1, 0]), None);
         let mut longer = good.to_vec();
         longer.extend_from_slice(&[0x13, 2, 0, 0, 1, 1]);
         assert_eq!(blit(&longer), None, "alone in its batch");

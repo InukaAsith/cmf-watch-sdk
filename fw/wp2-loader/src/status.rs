@@ -3,6 +3,7 @@
 // whatever the app draws and the app's pixels are never touched; non-clickable, touches go through to the app.
 use core::ffi::c_void;
 use core::ptr::{addr_of_mut, null_mut};
+use core::sync::atomic::{AtomicBool, Ordering};
 use wp2_core::stock::*;
 
 type Obj = *mut c_void;
@@ -26,6 +27,9 @@ const WHITE: u32 = 0xFFFF;
 const GREY: u32 = 0x4208;
 const EVERY_MS: u32 = 500;
 
+/// The app's wish (STATUS record, lv.rs): the bar shown; every app starts with it (app::launch).
+pub static SHOWN: AtomicBool = AtomicBool::new(true);
+
 struct Status {
     parent: Obj,
     label: Obj,
@@ -36,6 +40,8 @@ struct Status {
     minute: u16,
     level: u8,
     at: u32,
+    /// the app hid the bar (SHOWN false), as last applied
+    hidden: bool,
 }
 
 static mut ST: Status = Status {
@@ -47,6 +53,7 @@ static mut ST: Status = Status {
     minute: 0xFFFE,
     level: 0xFE,
     at: 0,
+    hidden: false,
 };
 
 fn st() -> &'static mut Status {
@@ -96,7 +103,7 @@ pub fn attach(parent: Obj) {
     style(l, LV_STYLE_TEXT_OPA, 0xFF);
     style(l, LV_STYLE_TEXT_ALIGN, TEXT_ALIGN_CENTER);
     s.label = l;
-    (s.minute, s.level, s.at) = (0xFFFE, 0xFE, 0);
+    (s.minute, s.level, s.at, s.hidden) = (0xFFFE, 0xFE, 0, false);
     update(crate::app::millis(), true);
 }
 
@@ -119,7 +126,23 @@ pub fn tick() {
 
 fn update(now: u32, force: bool) {
     let s = st();
-    if s.label.is_null() || (!force && now.wrapping_sub(s.at) < EVERY_MS) {
+    if s.label.is_null() {
+        return;
+    }
+    // hidden or shown again at once, not on the next half second
+    let hide = !SHOWN.load(Ordering::Acquire);
+    if hide != s.hidden {
+        s.hidden = hide;
+        for o in [s.label, s.bars[0], s.bars[1], s.bars[2]] {
+            stock!(LV_OBJ_ADD_FLAG, fn(Obj, u32))(o, FLAG_HIDDEN);
+        }
+        if !hide {
+            // shown again: the label back, the bars as the GPS level wants
+            stock!(LV_OBJ_CLEAR_FLAG, fn(Obj, u32))(s.label, FLAG_HIDDEN);
+            (s.level, s.at) = (0xFE, 0);
+        }
+    }
+    if hide || (!force && now.wrapping_sub(s.at) < EVERY_MS) {
         return;
     }
     s.at = now;
